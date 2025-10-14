@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# MCP Development
+.mcp.json
+.claude/settings.local.json
+
+# Build artifacts
+apple-mail-mcpb/build/
+*.mcpb
+
+# Archive
+archive/
+
+# Logs
+*.log
+
+# Personal configuration examples (keep templates only)
+claude_desktop_config.json
