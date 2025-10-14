@@ -168,7 +168,8 @@ def get_email_with_content(
     account: str,
     subject_keyword: str,
     max_results: int = 5,
-    max_content_length: int = 300
+    max_content_length: int = 300,
+    mailbox: str = "INBOX"
 ) -> str:
     """
     Search for emails by subject keyword and return with full content preview.
@@ -178,73 +179,97 @@ def get_email_with_content(
         subject_keyword: Keyword to search for in email subjects
         max_results: Maximum number of matching emails to return (default: 5)
         max_content_length: Maximum content length in characters (default: 300, 0 = unlimited)
+        mailbox: Mailbox to search (default: "INBOX", use "All" for all mailboxes)
 
     Returns:
         Detailed email information including content preview
     """
 
+    # Build mailbox selection logic
+    if mailbox == "All":
+        mailbox_script = '''
+            set allMailboxes to every mailbox of targetAccount
+            set searchMailboxes to allMailboxes
+        '''
+        search_location = "all mailboxes"
+    else:
+        mailbox_script = f'''
+            try
+                set searchMailbox to mailbox "{mailbox}" of targetAccount
+            on error
+                if "{mailbox}" is "INBOX" then
+                    set searchMailbox to mailbox "Inbox" of targetAccount
+                else
+                    error "Mailbox not found: {mailbox}"
+                end if
+            end try
+            set searchMailboxes to {{searchMailbox}}
+        '''
+        search_location = mailbox
+
     script = f'''
     tell application "Mail"
-        set outputText to "SEARCH RESULTS FOR: {subject_keyword}" & return & return
+        set outputText to "SEARCH RESULTS FOR: {subject_keyword}" & return
+        set outputText to outputText & "Searching in: {search_location}" & return & return
         set resultCount to 0
 
         try
             set targetAccount to account "{account}"
-            -- Try to get inbox (handle both "INBOX" and "Inbox")
-            try
-                set inboxMailbox to mailbox "INBOX" of targetAccount
-            on error
-                set inboxMailbox to mailbox "Inbox" of targetAccount
-            end try
-            set inboxMessages to every message of inboxMailbox
+            {mailbox_script}
 
-            repeat with aMessage in inboxMessages
-                if resultCount >= {max_results} then exit repeat
+            repeat with currentMailbox in searchMailboxes
+                set mailboxMessages to every message of currentMailbox
+                set mailboxName to name of currentMailbox
 
-                try
-                    set messageSubject to subject of aMessage
+                repeat with aMessage in mailboxMessages
+                    if resultCount >= {max_results} then exit repeat
 
-                    -- Check if subject contains keyword (case insensitive)
-                    if messageSubject contains "{subject_keyword}" then
-                        set messageSender to sender of aMessage
-                        set messageDate to date received of aMessage
-                        set messageRead to read status of aMessage
+                    try
+                        set messageSubject to subject of aMessage
 
-                        if messageRead then
-                            set readIndicator to "✓"
-                        else
-                            set readIndicator to "✉"
-                        end if
+                        -- Check if subject contains keyword (case insensitive)
+                        if messageSubject contains "{subject_keyword}" then
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
+                            set messageRead to read status of aMessage
 
-                        set outputText to outputText & readIndicator & " " & messageSubject & return
-                        set outputText to outputText & "   From: " & messageSender & return
-                        set outputText to outputText & "   Date: " & (messageDate as string) & return
-
-                        -- Get content preview
-                        try
-                            set msgContent to content of aMessage
-                            set AppleScript's text item delimiters to {{return, linefeed}}
-                            set contentParts to text items of msgContent
-                            set AppleScript's text item delimiters to " "
-                            set cleanText to contentParts as string
-                            set AppleScript's text item delimiters to ""
-
-                            -- Handle content length limit (0 = unlimited)
-                            if {max_content_length} > 0 and length of cleanText > {max_content_length} then
-                                set contentPreview to text 1 thru {max_content_length} of cleanText & "..."
+                            if messageRead then
+                                set readIndicator to "✓"
                             else
-                                set contentPreview to cleanText
+                                set readIndicator to "✉"
                             end if
 
-                            set outputText to outputText & "   Content: " & contentPreview & return
-                        on error
-                            set outputText to outputText & "   Content: [Not available]" & return
-                        end try
+                            set outputText to outputText & readIndicator & " " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return
+                            set outputText to outputText & "   Mailbox: " & mailboxName & return
 
-                        set outputText to outputText & return
-                        set resultCount to resultCount + 1
-                    end if
-                end try
+                            -- Get content preview
+                            try
+                                set msgContent to content of aMessage
+                                set AppleScript's text item delimiters to {{return, linefeed}}
+                                set contentParts to text items of msgContent
+                                set AppleScript's text item delimiters to " "
+                                set cleanText to contentParts as string
+                                set AppleScript's text item delimiters to ""
+
+                                -- Handle content length limit (0 = unlimited)
+                                if {max_content_length} > 0 and length of cleanText > {max_content_length} then
+                                    set contentPreview to text 1 thru {max_content_length} of cleanText & "..."
+                                else
+                                    set contentPreview to cleanText
+                                end if
+
+                                set outputText to outputText & "   Content: " & contentPreview & return
+                            on error
+                                set outputText to outputText & "   Content: [Not available]" & return
+                            end try
+
+                            set outputText to outputText & return
+                            set resultCount to resultCount + 1
+                        end if
+                    end try
+                end repeat
             end repeat
 
             set outputText to outputText & "========================================" & return
@@ -1299,6 +1324,7 @@ def search_emails(
 
             repeat with currentMailbox in searchMailboxes
                 set mailboxMessages to every message of currentMailbox
+                set mailboxName to name of currentMailbox
 
                 repeat with aMessage in mailboxMessages
                     if resultCount >= {max_results} then exit repeat
@@ -1319,6 +1345,7 @@ def search_emails(
                             set outputText to outputText & readIndicator & " " & messageSubject & return
                             set outputText to outputText & "   From: " & messageSender & return
                             set outputText to outputText & "   Date: " & (messageDate as string) & return
+                            set outputText to outputText & "   Mailbox: " & mailboxName & return
 
                             {content_script}
 

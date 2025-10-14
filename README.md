@@ -11,6 +11,7 @@ A comprehensive Model Context Protocol (MCP) server that provides AI assistants 
 ### 📧 Email Reading & Search
 - **Inbox Overview**: Dashboard view with unread counts, folder structure, and recent emails
 - **Advanced Search**: Multi-criteria search (subject, sender, attachments, read status, date ranges)
+- **Cross-Folder Search**: Search across all mailboxes or specific folders
 - **Email Content**: Full content preview with configurable length
 - **Thread View**: Conversation threading across all mailboxes
 - **Recent Emails**: Quick access to latest messages per account
@@ -116,6 +117,7 @@ Show me an overview of my inbox
 How many unread emails do I have?
 List recent emails from my work account
 Search for emails about "project update" in my Gmail account
+Search for emails about "invoice" across all folders in my work account
 Show me the conversation thread about "meeting"
 ```
 
