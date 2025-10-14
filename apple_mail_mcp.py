@@ -208,6 +208,11 @@ def get_email_with_content(
         search_location = mailbox
 
     script = f'''
+    on lowercase(str)
+        set lowerStr to do shell script "echo " & quoted form of str & " | tr '[:upper:]' '[:lower:]'"
+        return lowerStr
+    end lowercase
+
     tell application "Mail"
         set outputText to "SEARCH RESULTS FOR: {subject_keyword}" & return
         set outputText to outputText & "Searching in: {search_location}" & return & return
@@ -227,8 +232,12 @@ def get_email_with_content(
                     try
                         set messageSubject to subject of aMessage
 
+                        -- Convert to lowercase for case-insensitive matching
+                        set lowerSubject to my lowercase(messageSubject)
+                        set lowerKeyword to my lowercase("{subject_keyword}")
+
                         -- Check if subject contains keyword (case insensitive)
-                        if messageSubject contains "{subject_keyword}" then
+                        if lowerSubject contains lowerKeyword then
                             set messageSender to sender of aMessage
                             set messageDate to date received of aMessage
                             set messageRead to read status of aMessage
