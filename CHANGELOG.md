@@ -5,6 +5,26 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-10-14
+
+### Added
+- **User Preferences Configuration**: New configurable preference string in MCPB user_config
+  - Allows users to set personal email preferences (default account, max emails, preferred folders, etc.)
+  - Preferences automatically injected into all tool descriptions
+  - Helps Claude understand user workflow and make context-aware decisions
+  - Configurable via Claude Desktop UI for .mcpb installations
+  - Environment variable support for manual installations (USER_EMAIL_PREFERENCES)
+
+### Changed
+- Updated manifest.json to include user_config section (version 1.4.0)
+- Enhanced all 20 tool functions with @inject_preferences decorator
+- Updated README.md with comprehensive configuration documentation
+
+### Technical
+- Added environment variable loading at server startup
+- Implemented decorator pattern for dynamic docstring injection
+- Zero-config default behavior maintained (preferences optional)
+
 ## [1.3.0] - 2025-10-14
 
 ### Added

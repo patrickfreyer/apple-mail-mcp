@@ -6,12 +6,26 @@ Provides tools to query and interact with Apple Mail inboxes
 
 import subprocess
 import json
+import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
+# Load user preferences from environment
+USER_PREFERENCES = os.environ.get("USER_EMAIL_PREFERENCES", "")
+
 # Initialize FastMCP server
 mcp = FastMCP("Apple Mail MCP")
+
+# Decorator to inject user preferences into tool docstrings
+def inject_preferences(func):
+    """Decorator that appends user preferences to tool docstrings"""
+    if USER_PREFERENCES:
+        if func.__doc__:
+            func.__doc__ = func.__doc__.rstrip() + f"\n\nUser Preferences: {USER_PREFERENCES}"
+        else:
+            func.__doc__ = f"User Preferences: {USER_PREFERENCES}"
+    return func
 
 
 def run_applescript(script: str) -> str:
@@ -71,6 +85,7 @@ def parse_email_list(output: str) -> List[Dict[str, Any]]:
 
 
 @mcp.tool()
+@inject_preferences
 def list_inbox_emails(
     account: Optional[str] = None,
     max_emails: int = 0,
@@ -164,6 +179,7 @@ def list_inbox_emails(
 
 
 @mcp.tool()
+@inject_preferences
 def get_email_with_content(
     account: str,
     subject_keyword: str,
@@ -298,6 +314,7 @@ def get_email_with_content(
 
 
 @mcp.tool()
+@inject_preferences
 def get_unread_count() -> Dict[str, int]:
     """
     Get the count of unread emails for each account.
@@ -349,6 +366,7 @@ def get_unread_count() -> Dict[str, int]:
 
 
 @mcp.tool()
+@inject_preferences
 def list_accounts() -> List[str]:
     """
     List all available Mail accounts.
@@ -377,6 +395,7 @@ def list_accounts() -> List[str]:
 
 
 @mcp.tool()
+@inject_preferences
 def get_recent_emails(
     account: str,
     count: int = 10,
@@ -473,6 +492,7 @@ def get_recent_emails(
 
 
 @mcp.tool()
+@inject_preferences
 def list_mailboxes(
     account: Optional[str] = None,
     include_counts: bool = True
@@ -559,6 +579,7 @@ def list_mailboxes(
 
 
 @mcp.tool()
+@inject_preferences
 def move_email(
     account: str,
     subject_keyword: str,
@@ -657,6 +678,7 @@ def move_email(
 
 
 @mcp.tool()
+@inject_preferences
 def reply_to_email(
     account: str,
     subject_keyword: str,
@@ -754,6 +776,7 @@ def reply_to_email(
 
 
 @mcp.tool()
+@inject_preferences
 def compose_email(
     account: str,
     to: str,
@@ -854,6 +877,7 @@ def compose_email(
 
 
 @mcp.tool()
+@inject_preferences
 def list_email_attachments(
     account: str,
     subject_keyword: str,
@@ -945,6 +969,7 @@ def list_email_attachments(
 
 
 @mcp.tool()
+@inject_preferences
 def save_email_attachment(
     account: str,
     subject_keyword: str,
@@ -1028,6 +1053,7 @@ def save_email_attachment(
 
 
 @mcp.tool()
+@inject_preferences
 def get_inbox_overview() -> str:
     """
     Get a comprehensive overview of your email inbox status across all accounts.
@@ -1224,6 +1250,7 @@ def get_inbox_overview() -> str:
 
 
 @mcp.tool()
+@inject_preferences
 def search_emails(
     account: str,
     mailbox: str = "INBOX",
@@ -1382,6 +1409,7 @@ def search_emails(
 
 
 @mcp.tool()
+@inject_preferences
 def update_email_status(
     account: str,
     action: str,
@@ -1488,6 +1516,7 @@ def update_email_status(
 
 
 @mcp.tool()
+@inject_preferences
 def manage_trash(
     account: str,
     action: str,
@@ -1656,6 +1685,7 @@ def manage_trash(
 
 
 @mcp.tool()
+@inject_preferences
 def forward_email(
     account: str,
     subject_keyword: str,
@@ -1757,6 +1787,7 @@ def forward_email(
 
 
 @mcp.tool()
+@inject_preferences
 def get_email_thread(
     account: str,
     subject_keyword: str,
@@ -1898,6 +1929,7 @@ def get_email_thread(
 
 
 @mcp.tool()
+@inject_preferences
 def manage_drafts(
     account: str,
     action: str,
@@ -2118,6 +2150,7 @@ def manage_drafts(
 
 
 @mcp.tool()
+@inject_preferences
 def get_statistics(
     account: str,
     scope: str = "account_overview",
@@ -2370,6 +2403,7 @@ def get_statistics(
 
 
 @mcp.tool()
+@inject_preferences
 def export_emails(
     account: str,
     scope: str,

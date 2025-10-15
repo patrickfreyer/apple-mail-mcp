@@ -179,10 +179,51 @@ The MCP server provides 20 tools:
 
 ## Configuration
 
-### No Configuration Required!
-The MCP server automatically uses the accounts configured in your Apple Mail app. No additional setup or API keys needed.
+### Email Preferences (Optional)
+
+You can configure personal email preferences that will be provided to the AI assistant when using email tools. This helps Claude understand your preferred email accounts, defaults, and workflow.
+
+**MCP Bundle Installation (.mcpb):**
+
+When installing via the .mcpb bundle, you can set preferences through Claude Desktop:
+1. Open Claude Desktop settings
+2. Navigate to **Developer > MCP Servers**
+3. Click on the **Apple Mail MCP** server
+4. Configure **Email Preferences** field
+
+**Example preferences:**
+```
+Default to BCG account, show max 50 emails, prefer Archive and Projects folders
+```
+
+**Manual Installation:**
+
+Add the `env` section to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/venv/bin/python3",
+      "args": ["/path/to/apple_mail_mcp.py"],
+      "env": {
+        "USER_EMAIL_PREFERENCES": "Default to BCG account, show max 50 emails, prefer Archive and Projects folders"
+      }
+    }
+  }
+}
+```
+
+**What to include in preferences:**
+- Default email account name (e.g., "BCG", "Gmail", "Personal")
+- Preferred maximum email results
+- Frequently used mailboxes/folders
+- Any workflow preferences
+
+These preferences are automatically injected into every tool's description, helping Claude make better decisions aligned with your workflow.
 
 ### Safety Limits
+
 Several operations include safety limits to prevent accidental bulk actions:
 - `update_email_status`: Default max 10 updates
 - `manage_trash`: Default max 5 deletions

@@ -1,7 +1,7 @@
 {
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Natural language interface for Apple Mail - comprehensive email management including advanced search, status updates, thread views, draft management, statistics, and export capabilities",
   "author": {
     "name": "Patrick Freyer"
@@ -13,7 +13,15 @@
     "url": "https://github.com/patrickfreyer/apple-mail-mcp.git"
   },
   "documentation": "https://github.com/patrickfreyer/apple-mail-mcp#readme",
-  "user_config": {},
+  "user_config": {
+    "user_preferences": {
+      "type": "string",
+      "title": "Email Preferences",
+      "description": "Your personal email preferences that will be provided to the AI assistant when using email tools (e.g., 'Default to BCG account, show max 50 emails, prefer Archive folder')",
+      "required": false,
+      "default": ""
+    }
+  },
   "server": {
     "type": "python",
     "entry_point": "apple_mail_mcp.py",
@@ -22,7 +30,9 @@
       "args": [
         "${__dirname}/apple_mail_mcp.py"
       ],
-      "env": {}
+      "env": {
+        "USER_EMAIL_PREFERENCES": "${user_config.user_preferences}"
+      }
     }
   },
   "tools": [
