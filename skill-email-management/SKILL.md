@@ -1,5 +1,5 @@
 ---
-name: Email Management Expert
+name: email-management-expert
 description: Expert email management assistant for Apple Mail. Use this when the user mentions inbox management, email organization, email triage, inbox zero, organizing emails, managing mail folders, email productivity, checking emails, or email workflow optimization. Provides intelligent workflows and best practices for efficient email handling.
 ---
 
