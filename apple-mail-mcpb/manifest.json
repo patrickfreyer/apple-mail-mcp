@@ -26,9 +26,9 @@
     "type": "python",
     "entry_point": "apple_mail_mcp.py",
     "mcp_config": {
-      "command": "${__dirname}/venv/bin/python3",
+      "command": "/bin/bash",
       "args": [
-        "${__dirname}/apple_mail_mcp.py"
+        "${__dirname}/start_mcp.sh"
       ],
       "env": {
         "USER_EMAIL_PREFERENCES": "${user_config.user_preferences}"

@@ -55,25 +55,18 @@ if [ ! -f "${SOURCE_DIR}/requirements.txt" ]; then
 fi
 cp "${SOURCE_DIR}/requirements.txt" "${BUILD_DIR}/"
 
-# Step 4: Create virtual environment
-echo -e "\n${YELLOW}Step 4: Creating virtual environment...${NC}"
-cd "${BUILD_DIR}"
-python3 -m venv venv
+# Copy startup wrapper script
+echo -e "\n${YELLOW}Step 4: Copying startup wrapper script...${NC}"
+if [ ! -f "${SOURCE_DIR}/start_mcp.sh" ]; then
+    echo -e "  ${RED}✗${NC} Startup script not found: ${SOURCE_DIR}/start_mcp.sh"
+    exit 1
+fi
+cp "${SOURCE_DIR}/start_mcp.sh" "${BUILD_DIR}/"
+chmod +x "${BUILD_DIR}/start_mcp.sh"
 
-# Step 5: Install dependencies
-echo -e "\n${YELLOW}Step 5: Installing dependencies...${NC}"
-source venv/bin/activate
-pip install --quiet --upgrade pip
-pip install --quiet -r requirements.txt
-deactivate
-
-# Clean up unnecessary files from venv
-echo "  Cleaning up virtual environment..."
-find venv -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-find venv -name "*.pyc" -delete 2>/dev/null || true
-find venv -name "*.pyo" -delete 2>/dev/null || true
-
-cd "${SCRIPT_DIR}"
+# Note: Virtual environment will be created on user's machine during first run
+echo -e "\n${YELLOW}Step 5: Skipping venv creation (will be created on user's machine)...${NC}"
+echo -e "  ${GREEN}✓${NC} Venv will be initialized automatically on first run using user's Python installation"
 
 # Step 6: Create README
 echo -e "\n${YELLOW}Step 6: Creating README...${NC}"
