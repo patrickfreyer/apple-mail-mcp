@@ -6,6 +6,8 @@
 
 A comprehensive Model Context Protocol (MCP) server that provides AI assistants with natural language access to Apple Mail. Built with [FastMCP](https://github.com/jlowin/fastmcp), this server enables reading, searching, organizing, composing, and managing emails directly through Claude Desktop or other MCP-compatible clients.
 
+**✨ NEW:** Now includes the [Email Management Expert Skill](#-email-management-expert-skill) - a comprehensive Claude Code skill that teaches Claude intelligent email management workflows and productivity strategies!
+
 ## Features
 
 ### 📧 Email Reading & Search
@@ -35,6 +37,101 @@ A comprehensive Model Context Protocol (MCP) server that provides AI assistants 
 ### 📊 Analytics & Export
 - **Statistics**: Comprehensive email analytics (volume, top senders, mailbox distribution)
 - **Export**: Export single emails or entire mailboxes to TXT/HTML formats
+
+## 🎓 Email Management Expert Skill
+
+**NEW:** This repository now includes a comprehensive **Claude Code Skill** that teaches Claude how to be an expert email management assistant!
+
+### What's a Skill?
+
+A **Skill** is a Claude Code feature that packages expertise and workflows, teaching Claude not just *what* it can do (MCP tools), but *how* to do it effectively. It's like giving Claude a productivity consultant for email management.
+
+### MCP + Skill = Intelligent Email Management
+
+- **Apple Mail MCP** (this server) = The **tools** (18 email functions)
+- **Email Management Skill** ([skill-email-management/](skill-email-management/)) = The **expertise** (workflows, strategies, best practices)
+
+Together, they create an intelligent assistant that knows both the capabilities and the best ways to use them.
+
+### What You Get with the Skill
+
+**📋 Complete Workflows:**
+- **Inbox Zero** - Achieve and maintain empty inbox
+- **Daily Email Triage** - Process emails quickly (10-15 min)
+- **Folder Organization** - Structure strategies and filing systems
+- **Advanced Search** - Find any email instantly
+- **Bulk Operations** - Clean up and organize efficiently
+
+**🧠 Expert Knowledge:**
+- Industry-standard productivity methods (GTD, Inbox Zero)
+- Tool orchestration patterns (when to use which tool)
+- Safety-first approaches (backups, limits, confirmations)
+- Context-aware suggestions based on inbox state
+
+**📚 Ready-to-Use Resources:**
+- 6 detailed documents (3,500+ lines)
+- Copy-paste workflow templates
+- Comprehensive search pattern reference
+- Common scenarios and solutions
+
+### Installing the Skill
+
+The skill works alongside the MCP. Install it to your Claude Code user scope:
+
+```bash
+# Clone this repo (if you haven't already)
+git clone https://github.com/patrickfreyer/apple-mail-mcp.git
+cd apple-mail-mcp
+
+# Install skill to user scope (available in all projects)
+cp -r skill-email-management ~/.claude/skills/email-management
+```
+
+That's it! The skill activates automatically when you mention email management topics.
+
+### Using the Skill
+
+Once installed, just ask Claude Code about email management:
+
+**Examples:**
+- "Help me achieve inbox zero"
+- "Triage my inbox"
+- "How should I organize my project emails?"
+- "Find all emails from John about the Alpha project"
+- "Clean up old emails from last year"
+
+Claude will now:
+1. ✅ Recognize email management requests
+2. ✅ Load expert workflows and best practices
+3. ✅ Use MCP tools intelligently
+4. ✅ Provide actionable step-by-step guidance
+
+### What's Inside the Skill
+
+```
+skill-email-management/
+├── SKILL.md                        # Core workflows & tool orchestration
+├── examples/
+│   ├── inbox-zero-workflow.md     # Complete inbox zero methodology
+│   ├── email-triage.md            # Quick daily triage techniques
+│   └── folder-organization.md     # Folder structure strategies
+└── templates/
+    ├── common-workflows.md        # Copy-paste workflow patterns
+    └── search-patterns.md         # Comprehensive search reference
+```
+
+**📖 [Read the full Skill documentation →](skill-email-management/README.md)**
+
+### Before vs. After the Skill
+
+| Before Skill | After Skill |
+|--------------|-------------|
+| "Show me my emails" | "Let me analyze your inbox state and suggest an optimal workflow" |
+| Uses tools individually | Orchestrates multi-step workflows intelligently |
+| Generic responses | Expert productivity strategies and context-aware advice |
+| User figures out sequences | Pre-built workflows (Inbox Zero, GTD, triage, etc.) |
+
+**💡 Pro Tip:** The skill and MCP are designed to work together. Install both for the complete intelligent email management experience!
 
 ## Installation
 
@@ -257,9 +354,19 @@ apple-mail-mcp/
 ├── LICENSE                        # MIT License
 ├── CHANGELOG.md                   # Version history
 ├── claude_desktop_config_example.json  # Configuration example
-└── apple-mail-mcpb/
-    ├── manifest.json              # MCP Bundle metadata
-    └── build-mcpb.sh             # Bundle build script
+├── apple-mail-mcpb/
+│   ├── manifest.json              # MCP Bundle metadata
+│   └── build-mcpb.sh             # Bundle build script
+└── skill-email-management/        # 🎓 Email Management Expert Skill
+    ├── README.md                  # Skill installation & usage guide
+    ├── SKILL.md                   # Core workflows & expertise
+    ├── examples/                  # Workflow examples
+    │   ├── inbox-zero-workflow.md
+    │   ├── email-triage.md
+    │   └── folder-organization.md
+    └── templates/                 # Reusable patterns
+        ├── common-workflows.md
+        └── search-patterns.md
 ```
 
 ## Troubleshooting
@@ -297,6 +404,9 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ## Roadmap
 
+Recent additions:
+- [x] ✨ Email Management Expert Skill with workflows and best practices (v1.0.0)
+
 Future enhancements under consideration:
 - [ ] Smart mailbox support
 - [ ] Rule/filter management
@@ -313,7 +423,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Built with [FastMCP](https://github.com/jlowin/fastmcp) by Jeremiah Lowin
 - Inspired by the [Model Context Protocol](https://modelcontextprotocol.io) specification
-- Thanks to Anthropic for Claude Desktop and MCP support
+- Thanks to Anthropic for Claude Desktop, MCP support, and [Claude Code Skills](https://docs.claude.com/en/docs/claude-code/skills)
+- Email Management Expert Skill demonstrates best practices for combining MCPs with Skills
 
 ## Support
 
