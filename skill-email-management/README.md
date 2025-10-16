@@ -51,28 +51,40 @@ skill-email-management/
 
 ## Installation
 
-### Option 1: User Scope (Recommended)
+### Option 1: From Zip Package (Easiest)
 
-Install the skill for all your Claude Code projects:
+**Download and install:**
 
+1. Download `email-management-skill.zip` from the [releases page](https://github.com/patrickfreyer/apple-mail-mcp/releases)
+
+2. Extract and install to user scope (available in all projects):
+   ```bash
+   unzip email-management-skill.zip -d ~/.claude/skills/
+   ```
+
+3. That's it! The skill is now available in Claude Code.
+
+**Or install to project scope** (available in current project only):
+```bash
+unzip email-management-skill.zip -d .claude/skills/
+```
+
+### Option 2: From Repository
+
+Install the skill directly from the cloned repository:
+
+**User Scope (Recommended):**
 ```bash
 # From the repo directory
 cp -r skill-email-management ~/.claude/skills/email-management
 ```
 
-The skill will now be available in all your projects.
-
-### Option 2: Project Scope
-
-Install the skill for this project only:
-
+**Project Scope:**
 ```bash
 # From the repo directory
 mkdir -p .claude/skills
 cp -r skill-email-management .claude/skills/email-management
 ```
-
-The skill will only be available in this project.
 
 ## Usage
 
