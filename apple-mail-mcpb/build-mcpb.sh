@@ -64,22 +64,49 @@ fi
 cp "${SOURCE_DIR}/start_mcp.sh" "${BUILD_DIR}/"
 chmod +x "${BUILD_DIR}/start_mcp.sh"
 
+# Copy Email Management Skill
+echo -e "\n${YELLOW}Step 5: Copying Email Management Skill...${NC}"
+if [ -d "${SOURCE_DIR}/skill-email-management" ]; then
+    cp -r "${SOURCE_DIR}/skill-email-management" "${BUILD_DIR}/"
+    echo -e "  ${GREEN}✓${NC} Email Management Expert Skill included"
+else
+    echo -e "  ${YELLOW}⚠${NC} Skill directory not found (optional, skipping)"
+fi
+
 # Note: Virtual environment will be created on user's machine during first run
-echo -e "\n${YELLOW}Step 5: Skipping venv creation (will be created on user's machine)...${NC}"
+echo -e "\n${YELLOW}Step 6: Skipping venv creation (will be created on user's machine)...${NC}"
 echo -e "  ${GREEN}✓${NC} Venv will be initialized automatically on first run using user's Python installation"
 
-# Step 6: Create README
-echo -e "\n${YELLOW}Step 6: Creating README...${NC}"
+# Step 7: Create README
+echo -e "\n${YELLOW}Step 7: Creating README...${NC}"
 cat > "${BUILD_DIR}/README.md" << 'EOF'
-# Apple Mail MCP Server
+# Apple Mail MCP Server + Email Management Expert Skill
 
-Natural language interface for Apple Mail - query inboxes, search emails, move messages, compose and reply to emails, and manage attachments.
+Natural language interface for Apple Mail with expert email management workflows.
 
-## Installation
+**What's Included:**
+- 🔧 **MCP Server**: 18 powerful email management tools
+- 🎓 **Expert Skill**: Comprehensive workflows and productivity strategies
 
-1. Install this .mcpb file in Claude Desktop
+## Quick Installation
+
+### Step 1: Install MCP in Claude Desktop
+1. Install this .mcpb file in Claude Desktop (Developer > MCP Servers > Install from file)
 2. Grant permissions when prompted for Mail.app access
-3. Start using natural language to interact with your email
+3. Restart Claude Desktop
+
+### Step 2: Install Email Management Skill (Recommended)
+The skill teaches Claude intelligent email workflows. Install to Claude Code:
+
+```bash
+# Extract skill from this bundle (or clone from repo)
+cp -r skill-email-management ~/.claude/skills/email-management
+```
+
+**Or manually:** Copy the `skill-email-management/` folder from this bundle to `~/.claude/skills/email-management`
+
+### Step 3: Start Using!
+Ask Claude about email management and watch the magic happen!
 
 ## Features
 
@@ -157,9 +184,40 @@ Download attachments:
 - Specify attachment name
 - Save to custom path
 
+## 🎓 About the Email Management Skill
+
+The included skill transforms Claude into an expert email management assistant:
+
+**Intelligent Workflows:**
+- ✅ Inbox Zero methodology
+- ✅ Daily email triage (10-15 min routines)
+- ✅ Folder organization strategies
+- ✅ Advanced search patterns
+- ✅ Bulk cleanup operations
+
+**What You Get:**
+- 3,500+ lines of email productivity expertise
+- 6 comprehensive workflow documents
+- Copy-paste ready templates
+- Industry best practices (GTD, Inbox Zero)
+- Context-aware suggestions
+
+**Example Queries with Skill:**
+- "Help me achieve inbox zero" → Full workflow guidance
+- "Triage my inbox" → Quick daily routine
+- "How should I organize my project emails?" → Structure recommendations
+- "Clean up old emails" → Safe cleanup process
+
 ## Configuration
 
-No configuration required! The MCP uses the accounts configured in your Apple Mail app.
+**Email Preferences (Optional):**
+Configure preferences in Claude Desktop settings under this MCP to customize behavior:
+- Default email account
+- Preferred maximum results
+- Frequently used folders
+
+**MCP Configuration:**
+No additional configuration required! Uses your Apple Mail accounts.
 
 ## Permissions
 
@@ -232,11 +290,20 @@ rm -rf "${BUILD_DIR}"
 echo -e "\n${GREEN}=========================================${NC}"
 echo -e "${GREEN}Build completed successfully!${NC}"
 echo -e "\nPackage created: ${GREEN}${OUTPUT_FILE}${NC}"
-echo -e "\nTo install in Claude Desktop:"
+echo -e "\n${YELLOW}Installation Instructions:${NC}"
+echo -e "\n${GREEN}Step 1: Install MCP in Claude Desktop${NC}"
 echo -e "  1. Open Claude Desktop settings"
 echo -e "  2. Navigate to Developer > MCP Servers"
 echo -e "  3. Click 'Install from file' and select the .mcpb file"
 echo -e "  4. Grant Mail.app permissions when prompted"
-echo -e "\nThis MCP provides natural language access to Apple Mail,"
-echo -e "enabling email reading, searching, organizing, composing,"
-echo -e "and attachment management directly from Claude."
+echo -e "  5. Restart Claude Desktop"
+echo -e "\n${GREEN}Step 2: Install Email Management Skill (Recommended)${NC}"
+echo -e "  Extract and install the skill to Claude Code:"
+echo -e "  ${YELLOW}unzip -q \"${OUTPUT_FILE}\" skill-email-management -d /tmp/${NC}"
+echo -e "  ${YELLOW}cp -r /tmp/skill-email-management ~/.claude/skills/email-management${NC}"
+echo -e "\n  Or extract the .mcpb and manually copy the skill-email-management/ folder"
+echo -e "\n${GREEN}What You Get:${NC}"
+echo -e "  🔧 MCP Server: 18 powerful email management tools"
+echo -e "  🎓 Expert Skill: Intelligent workflows and productivity strategies"
+echo -e "\nThis bundle provides comprehensive email management for Claude,"
+echo -e "combining powerful tools with expert workflow knowledge!"

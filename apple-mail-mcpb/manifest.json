@@ -1,8 +1,8 @@
 {
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
-  "version": "1.4.0",
-  "description": "Natural language interface for Apple Mail - comprehensive email management including advanced search, status updates, thread views, draft management, statistics, and export capabilities",
+  "version": "1.5.0",
+  "description": "Natural language interface for Apple Mail with Email Management Expert Skill - comprehensive email management including advanced search, intelligent workflows, productivity strategies, status updates, thread views, draft management, statistics, and export capabilities",
   "author": {
     "name": "Patrick Freyer"
   },
