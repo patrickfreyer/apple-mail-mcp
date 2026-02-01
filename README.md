@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
+[![GitHub stars](https://img.shields.io/github/stars/patrickfreyer/apple-mail-mcp?style=social)](https://github.com/patrickfreyer/apple-mail-mcp/stargazers)
 
 A comprehensive Model Context Protocol (MCP) server that provides AI assistants with natural language access to Apple Mail. Built with [FastMCP](https://github.com/jlowin/fastmcp), this server enables reading, searching, organizing, composing, and managing emails directly through Claude Desktop or other MCP-compatible clients.
 
