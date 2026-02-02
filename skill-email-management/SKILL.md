@@ -20,7 +20,7 @@ You are an expert email management assistant with deep knowledge of productivity
 The Apple Mail MCP provides comprehensive email management capabilities:
 
 - **Overview & Discovery**: `get_inbox_overview`, `list_accounts`, `list_mailboxes`
-- **Reading & Searching**: `list_inbox_emails`, `get_recent_emails`, `get_email_with_content`, `search_emails`, `get_email_thread`
+- **Reading & Searching**: `list_inbox_emails`, `get_recent_emails`, `get_email_with_content`, `search_emails`, `get_email_thread`, `search_by_sender`, `search_all_accounts`, `search_email_content`, `get_newsletters`
 - **Composing & Responding**: `compose_email`, `reply_to_email`, `forward_email`
 - **Organization**: `move_email`, `update_email_status` (read/unread, flag/unflag)
 - **Drafts**: `manage_drafts` (list, create, send, delete)
@@ -73,11 +73,14 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 
 **Search Strategies**:
 - **By Subject**: `get_email_with_content(subject_keyword="keyword")`
-- **By Sender**: `search_emails(sender="name@example.com")`
+- **By Sender**: `search_by_sender(sender="name@example.com")` or `search_emails(sender="name@example.com")`
+- **By Email Body Content**: `search_email_content(search_term="keyword")`
 - **By Date Range**: `search_emails(date_from="2025-01-01", date_to="2025-01-31")`
 - **With Attachments**: `search_emails(has_attachments=True)`
 - **Unread Only**: `search_emails(read_status="unread")`
 - **Cross-Mailbox**: Use `mailbox="All"` parameter
+- **Cross-Account**: `search_all_accounts(subject_keyword="keyword")` to search across all email accounts
+- **Find Newsletters**: `get_newsletters()` to identify and manage newsletter subscriptions
 
 **Action Patterns**:
 - View thread context: `get_email_thread(subject_keyword="keyword")`
@@ -202,7 +205,11 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 |------|-------------|-------------|
 | Get overview | `get_inbox_overview` | - |
 | Find specific email | `get_email_with_content` | `search_emails` |
-| Advanced search | `search_emails` | - |
+| Advanced search | `search_emails` | `search_all_accounts` |
+| Search by sender | `search_by_sender` | `search_emails(sender)` |
+| Search email body | `search_email_content` | `get_email_with_content` |
+| Find newsletters | `get_newsletters` | `search_emails` |
+| Cross-account search | `search_all_accounts` | - |
 | View conversation | `get_email_thread` | `search_emails(subject_keyword)` |
 | Recent emails | `get_recent_emails` | `list_inbox_emails` |
 | Organize emails | `move_email` | - |
@@ -272,10 +279,11 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 4. Specify save location (default: ~/Desktop)
 
 ### "Too many emails from one sender"
-1. Check statistics: `get_statistics(scope="sender_stats", sender="...")`
-2. If unwanted: Search and bulk delete/trash
-3. If wanted but overwhelming: Create dedicated folder and move all
-4. If newsletters: Consider unsubscribing (do in Mail app)
+1. Find all emails from sender: `search_by_sender(sender="...")` for quick sender-based search
+2. Check statistics: `get_statistics(scope="sender_stats", sender="...")`
+3. If unwanted: Search and bulk delete/trash
+4. If wanted but overwhelming: Create dedicated folder and move all
+5. If newsletters: Use `get_newsletters()` to identify newsletter subscriptions, then unsubscribe in Mail app
 
 ### "I need to follow up on emails"
 1. Use flagging: `update_email_status(action="flag", subject_keyword="...")`

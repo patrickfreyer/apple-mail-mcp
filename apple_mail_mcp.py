@@ -1593,131 +1593,6 @@ def search_by_sender(
 
 @mcp.tool()
 @inject_preferences
-def search_all_accounts(
-    subject_keyword: Optional[str] = None,
-    sender: Optional[str] = None,
-    days_back: int = 7,
-    max_results: int = 30,
-    include_content: bool = True,
-    max_content_length: int = 400
-) -> str:
-    """
-    Search across ALL email accounts at once.
-    Returns consolidated results sorted by date (newest first).
-
-    Args:
-        subject_keyword: Optional keyword to search in subject
-        sender: Optional sender name/email to filter by
-        days_back: Only search last N days (default: 7, 0 = all time)
-        max_results: Maximum total results across all accounts (default: 30)
-        include_content: Whether to include content preview (default: True)
-        max_content_length: Max content preview length (default: 400)
-
-    Returns:
-        Consolidated list of matching emails from all accounts, sorted by date
-    """
-    conditions = []
-    if subject_keyword:
-        escaped_subject = subject_keyword.replace('"', '\\"')
-        conditions.append(f'messageSubject contains "{escaped_subject}"')
-    if sender:
-        escaped_sender = sender.replace('"', '\\"')
-        conditions.append(f'lowerSender contains "{escaped_sender.lower()}"')
-
-    condition_str = ' and '.join(conditions) if conditions else 'true'
-
-    date_filter = ""
-    date_check = ""
-    if days_back > 0:
-        date_filter = f'set cutoffDate to (current date) - ({days_back} * days)'
-        date_check = " and messageDate > cutoffDate"
-
-    content_script = ""
-    if include_content:
-        content_script = f'''
-                                try
-                                    set msgContent to content of aMessage
-                                    set AppleScript's text item delimiters to {{return, linefeed}}
-                                    set contentParts to text items of msgContent
-                                    set AppleScript's text item delimiters to " "
-                                    set cleanText to contentParts as string
-                                    set AppleScript's text item delimiters to ""
-                                    if length of cleanText > {max_content_length} then
-                                        set contentPreview to text 1 thru {max_content_length} of cleanText & "..."
-                                    else
-                                        set contentPreview to cleanText
-                                    end if
-                                    set outputText to outputText & "   Content: " & contentPreview & return
-                                on error
-                                    set outputText to outputText & "   Content: [Not available]" & return
-                                end try
-        '''
-
-    script = f'''
-    on lowercase(str)
-        set lowerStr to do shell script "echo " & quoted form of str & " | tr '[:upper:]' '[:lower:]'"
-        return lowerStr
-    end lowercase
-
-    tell application "Mail"
-        set outputText to "🔍 CROSS-ACCOUNT SEARCH RESULTS" & return
-        set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
-        set resultCount to 0
-        {date_filter}
-        set allAccounts to every account
-        repeat with anAccount in allAccounts
-            set accountName to name of anAccount
-            try
-                set accountMailboxes to every mailbox of anAccount
-                repeat with aMailbox in accountMailboxes
-                    try
-                        set mailboxName to name of aMailbox
-                        if mailboxName is not in {{"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}} then
-                            set mailboxMessages to every message of aMailbox
-                            repeat with aMessage in mailboxMessages
-                                if resultCount >= {max_results} then exit repeat
-                                try
-                                    set messageSubject to subject of aMessage
-                                    set messageSender to sender of aMessage
-                                    set messageDate to date received of aMessage
-                                    set messageRead to read status of aMessage
-                                    set lowerSender to my lowercase(messageSender)
-                                    if {condition_str}{date_check} then
-                                        if messageRead then
-                                            set readIndicator to "✓"
-                                        else
-                                            set readIndicator to "✉"
-                                        end if
-                                        set outputText to outputText & readIndicator & " " & messageSubject & return
-                                        set outputText to outputText & "   From: " & messageSender & return
-                                        set outputText to outputText & "   Date: " & (messageDate as string) & return
-                                        set outputText to outputText & "   Account: " & accountName & return
-                                        set outputText to outputText & "   Mailbox: " & mailboxName & return
-                                        {content_script}
-                                        set outputText to outputText & return
-                                        set resultCount to resultCount + 1
-                                    end if
-                                end try
-                            end repeat
-                        end if
-                    end try
-                    if resultCount >= {max_results} then exit repeat
-                end repeat
-            end try
-            if resultCount >= {max_results} then exit repeat
-        end repeat
-        set outputText to outputText & "========================================" & return
-        set outputText to outputText & "FOUND: " & resultCount & " email(s) across all accounts" & return
-        set outputText to outputText & "========================================" & return
-        return outputText
-    end tell
-    '''
-    result = run_applescript(script)
-    return result
-
-
-@mcp.tool()
-@inject_preferences
 def search_email_content(
     account: str,
     search_text: str,
@@ -3349,7 +3224,7 @@ def search_all_accounts(
     # Build subject filter
     subject_filter = ""
     if subject_keyword:
-        escaped_keyword = subject_keyword.replace('"', '\\"').replace("'", "'\\''"  )
+        escaped_keyword = subject_keyword.replace('"', '\\"').replace("'", "'\\''"))
         subject_filter = f'''
             set lowerSubject to my lowercase(messageSubject)
             set lowerKeyword to my lowercase("{escaped_keyword}")
@@ -3361,7 +3236,7 @@ def search_all_accounts(
     # Build sender filter
     sender_filter = ""
     if sender:
-        escaped_sender = sender.replace('"', '\\"').replace("'", "'\\''"  )
+        escaped_sender = sender.replace('"', '\\"').replace("'", "'\\''"))
         sender_filter = f'''
             set lowerSender to my lowercase(messageSender)
             set lowerSenderFilter to my lowercase("{escaped_sender}")

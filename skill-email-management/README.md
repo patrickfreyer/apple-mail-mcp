@@ -6,7 +6,7 @@ An expert email management skill for Claude Code that provides intelligent workf
 
 This is a **Claude Code Skill** that teaches Claude how to be an expert email management assistant. It works together with the Apple Mail MCP:
 
-- **Apple Mail MCP** = The tools (18 email management functions)
+- **Apple Mail MCP** = The tools (25 email management functions)
 - **Email Management Skill** = The expertise (workflows, strategies, best practices)
 
 Together, they create an intelligent email management assistant that knows both what it CAN do (MCP tools) and HOW to do it effectively (Skill knowledge).
@@ -229,7 +229,7 @@ Example: Add your company's email policies:
 ## Version
 
 **Version:** 1.0.0
-**Compatible with:** Apple Mail MCP v1.4.0+
+**Compatible with:** Apple Mail MCP v1.5.0+
 **Last Updated:** 2025-01-16
 
 ## About Skills

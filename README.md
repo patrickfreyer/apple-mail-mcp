@@ -3,7 +3,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
-[![GitHub stars](https://img.shields.io/github/stars/patrickfreyer/apple-mail-mcp?style=social)](https://github.com/patrickfreyer/apple-mail-mcp/stargazers)
 
 A comprehensive Model Context Protocol (MCP) server that provides AI assistants with natural language access to Apple Mail. Built with [FastMCP](https://github.com/jlowin/fastmcp), this server enables reading, searching, organizing, composing, and managing emails directly through Claude Desktop or other MCP-compatible clients.
 
@@ -49,7 +48,7 @@ A **Skill** is a Claude Code feature that packages expertise and workflows, teac
 
 ### MCP + Skill = Intelligent Email Management
 
-- **Apple Mail MCP** (this server) = The **tools** (18 email functions)
+- **Apple Mail MCP** (this server) = The **tools** (25 email functions)
 - **Email Management Skill** ([skill-email-management/](skill-email-management/)) = The **expertise** (workflows, strategies, best practices)
 
 Together, they create an intelligent assistant that knows both the capabilities and the best ways to use them.
@@ -250,7 +249,7 @@ Get statistics for emails from sarah@example.com
 
 ## Available Tools
 
-The MCP server provides 20 tools:
+The MCP server provides 25 tools:
 
 | Tool | Description |
 |------|-------------|
@@ -274,6 +273,11 @@ The MCP server provides 20 tools:
 | `save_email_attachment` | Download attachments |
 | `get_statistics` | Email analytics |
 | `export_emails` | Export to TXT/HTML |
+| `search_by_sender` | Find all emails from a specific sender |
+| `search_all_accounts` | Search across all accounts and mailboxes |
+| `search_email_content` | Deep search within email body content |
+| `get_newsletters` | Find newsletter and subscription emails |
+| `get_recent_from_sender` | Get recent emails from a specific sender |
 
 ## Configuration
 
@@ -435,16 +439,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
-
-## Star History
-
-<a href="https://star-history.com/#patrickfreyer/apple-mail-mcp&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
- </picture>
-</a>
 
 ---
 

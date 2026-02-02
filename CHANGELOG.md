@@ -5,6 +5,38 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-01
+
+### Added
+- **search_by_sender**: Find emails from a specific sender across mailboxes
+  - Search by sender email address or name
+  - Configurable mailbox scope (specific or all)
+  - Returns matching emails with subject, date, and read status
+
+- **search_all_accounts**: Cross-account search with advanced filtering
+  - Search across all configured email accounts
+  - Date range filtering support
+  - Configurable sorting options
+  - Unified results from multiple accounts
+
+- **search_email_content**: Full-text search in email bodies
+  - Search within email message content
+  - Find emails containing specific text or phrases
+  - Searches both plain text and HTML content
+
+- **get_newsletters**: Find newsletter and subscription emails
+  - Identifies newsletter/subscription patterns
+  - Filters promotional and mailing list emails
+  - Helps manage subscriptions and bulk mail
+
+### Changed
+- Updated manifest to include 4 new search tools (total: 24 tools)
+- Enhanced search capabilities across the server
+
+### Technical
+- Improved search performance for large mailboxes
+- Added missing value error handling for mailbox searches
+
 ## [1.4.0] - 2025-10-14
 
 ### Added
@@ -140,12 +172,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History Summary
 
+- **v1.5.0** - Advanced search tools (4 new tools: search_by_sender, search_all_accounts, search_email_content, get_newsletters)
+- **v1.4.0** - User preferences configuration
 - **v1.3.0** - Major feature expansion (8 new tools: search, status, trash, forward, threads, drafts, statistics, export)
 - **v1.2.0** - Enhanced overview with email preview
 - **v1.1.0** - Added inbox overview dashboard
 - **v1.0.0** - Initial release with core functionality
 
 ## Upgrade Notes
+
+### Upgrading to 1.5.0
+- No breaking changes
+- All existing tools remain compatible
+- New search tools available immediately after update
+- Rebuild .mcpb bundle to include new tools
+
+### Upgrading to 1.4.0
+- No breaking changes
+- Optional user preferences configuration available
+- Set USER_EMAIL_PREFERENCES environment variable for customization
 
 ### Upgrading to 1.3.0
 - No breaking changes
