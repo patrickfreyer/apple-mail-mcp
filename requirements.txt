@@ -1,1 +1,2 @@
 fastmcp>=0.1.0
+mcp-ui-server>=0.1.0

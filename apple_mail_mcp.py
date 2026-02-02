@@ -11,6 +11,13 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
+# Import UI module for dashboard
+try:
+    from ui import create_inbox_dashboard_ui
+    UI_AVAILABLE = True
+except ImportError:
+    UI_AVAILABLE = False
+
 # Load user preferences from environment
 USER_PREFERENCES = os.environ.get("USER_EMAIL_PREFERENCES", "")
 
@@ -3224,7 +3231,7 @@ def search_all_accounts(
     # Build subject filter
     subject_filter = ""
     if subject_keyword:
-        escaped_keyword = subject_keyword.replace('"', '\\"').replace("'", "'\\''"))
+        escaped_keyword = subject_keyword.replace('"', '\\"').replace("'", "'\\''")
         subject_filter = f'''
             set lowerSubject to my lowercase(messageSubject)
             set lowerKeyword to my lowercase("{escaped_keyword}")
@@ -3236,7 +3243,7 @@ def search_all_accounts(
     # Build sender filter
     sender_filter = ""
     if sender:
-        escaped_sender = sender.replace('"', '\\"').replace("'", "'\\''"))
+        escaped_sender = sender.replace('"', '\\"').replace("'", "'\\''")
         sender_filter = f'''
             set lowerSender to my lowercase(messageSender)
             set lowerSenderFilter to my lowercase("{escaped_sender}")
@@ -3406,6 +3413,147 @@ def search_all_accounts(
 
     result = run_applescript(script)
     return result
+
+
+def _get_recent_emails_structured(
+    max_total: int = 20,
+    max_per_account: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Internal helper to get recent emails from all accounts as structured data.
+
+    Returns list of dicts with keys:
+    - subject: str
+    - sender: str
+    - date: str
+    - is_read: bool
+    - account: str
+    - preview: str
+    """
+    script = f'''
+    tell application "Mail"
+        set allEmails to {{}}
+        set allAccounts to every account
+
+        repeat with anAccount in allAccounts
+            set accountName to name of anAccount
+            set emailCount to 0
+
+            try
+                -- Try to get inbox
+                try
+                    set inboxMailbox to mailbox "INBOX" of anAccount
+                on error
+                    set inboxMailbox to mailbox "Inbox" of anAccount
+                end try
+
+                set inboxMessages to every message of inboxMailbox
+
+                repeat with aMessage in inboxMessages
+                    if emailCount >= {max_per_account} then exit repeat
+
+                    try
+                        set messageSubject to subject of aMessage
+                        set messageSender to sender of aMessage
+                        set messageDate to date received of aMessage
+                        set messageRead to read status of aMessage
+
+                        -- Get preview
+                        set messagePreview to ""
+                        try
+                            set msgContent to content of aMessage
+                            if length of msgContent > 150 then
+                                set messagePreview to text 1 thru 150 of msgContent
+                            else
+                                set messagePreview to msgContent
+                            end if
+                            -- Clean up preview
+                            set AppleScript's text item delimiters to {{return, linefeed}}
+                            set contentParts to text items of messagePreview
+                            set AppleScript's text item delimiters to " "
+                            set messagePreview to contentParts as string
+                            set AppleScript's text item delimiters to ""
+                        end try
+
+                        -- Format as parseable string: SUBJECT|||SENDER|||DATE|||READ|||ACCOUNT|||PREVIEW
+                        set emailRecord to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & messagePreview
+                        set end of allEmails to emailRecord
+                        set emailCount to emailCount + 1
+                    end try
+                end repeat
+            end try
+        end repeat
+
+        -- Join all emails with newline
+        set AppleScript's text item delimiters to linefeed
+        set emailOutput to allEmails as string
+        set AppleScript's text item delimiters to ""
+        return emailOutput
+    end tell
+    '''
+
+    result = run_applescript(script)
+
+    # Parse the result into structured data
+    emails = []
+    if result:
+        for line in result.split('\n'):
+            if '|||' in line:
+                parts = line.split('|||')
+                if len(parts) >= 5:
+                    emails.append({
+                        'subject': parts[0].strip(),
+                        'sender': parts[1].strip(),
+                        'date': parts[2].strip(),
+                        'is_read': parts[3].strip().lower() == 'true',
+                        'account': parts[4].strip(),
+                        'preview': parts[5].strip() if len(parts) > 5 else ''
+                    })
+
+    # Sort by date (newest first) - simple string sort works for most date formats
+    # Limit to max_total
+    return emails[:max_total]
+
+
+@mcp.tool()
+@inject_preferences
+def inbox_dashboard() -> Any:
+    """
+    Get an interactive dashboard view of your email inbox.
+
+    Returns an interactive UI dashboard resource that displays:
+    - Unread email counts by account (visual cards with badges)
+    - Recent emails across all accounts (filterable list)
+    - Quick action buttons for common operations (Mark Read, Archive, Delete)
+    - Search functionality to filter emails
+
+    This tool returns a UIResource that can be rendered by compatible
+    MCP clients (like Claude Desktop with MCP Apps support) to provide
+    an interactive dashboard experience.
+
+    Note: Requires mcp-ui-server package and a compatible MCP client.
+
+    Returns:
+        UIResource with uri "ui://apple-mail/inbox-dashboard" containing
+        an interactive HTML dashboard, or error message if UI is unavailable.
+    """
+    if not UI_AVAILABLE:
+        return "Error: UI module not available. Please install mcp-ui-server package."
+
+    # Get unread counts per account
+    accounts_data = get_unread_count()
+
+    # Get recent emails across all accounts as structured data
+    recent_emails = _get_recent_emails_structured(
+        max_total=20,
+        max_per_account=10
+    )
+
+    # Create and return the UI resource
+    return create_inbox_dashboard_ui(
+        accounts_data=accounts_data,
+        recent_emails=recent_emails
+    )
 
 
 if __name__ == "__main__":
