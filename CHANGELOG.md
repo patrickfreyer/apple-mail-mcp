@@ -5,6 +5,24 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-02-06
+
+### Added
+- **CC/BCC support on `reply_to_email`**: Optional `cc` and `bcc` parameters for adding recipients when replying
+- **CC/BCC support on `forward_email`**: Optional `cc` and `bcc` parameters for adding recipients when forwarding
+- **`get_recent_from_sender`**: Retrieve recent emails from a sender with human-friendly time filters (today, week, month, all)
+- **`inbox_dashboard`**: Interactive UI dashboard resource for compatible MCP clients (requires `mcp-ui-server`)
+
+### Changed
+- AppleScript execution now uses **stdin pipe** (`osascript -` with `subprocess.run(input=...)`) instead of `-e` flag, fixing reliability issues with multi-line scripts and special characters
+- Improved error surfacing: AppleScript stderr is now properly captured and raised
+- Tool count updated to 26 (from 25)
+- README fully rewritten for conciseness and scannability
+
+### Fixed
+- Multi-line AppleScript commands that previously failed due to shell escaping now execute reliably via stdin
+- AppleScript timeout handling consolidated (120s default)
+
 ## [1.5.0] - 2026-02-01
 
 ### Added
@@ -172,6 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History Summary
 
+- **v1.6.0** - CC/BCC on reply/forward, stdin-based AppleScript execution, interactive dashboard, README rewrite
 - **v1.5.0** - Advanced search tools (4 new tools: search_by_sender, search_all_accounts, search_email_content, get_newsletters)
 - **v1.4.0** - User preferences configuration
 - **v1.3.0** - Major feature expansion (8 new tools: search, status, trash, forward, threads, drafts, statistics, export)
@@ -180,6 +199,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **v1.0.0** - Initial release with core functionality
 
 ## Upgrade Notes
+
+### Upgrading to 1.6.0
+- No breaking changes
+- `reply_to_email` and `forward_email` now accept optional `cc` and `bcc` parameters
+- AppleScript execution method changed internally (stdin pipe); no user action required
+- Install `mcp-ui-server` to use the new `inbox_dashboard` tool
+- Rebuild `.mcpb` bundle to include new tools
 
 ### Upgrading to 1.5.0
 - No breaking changes

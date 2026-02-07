@@ -7,6 +7,7 @@ Provides tools to query and interact with Apple Mail inboxes
 import subprocess
 import json
 import os
+import tempfile
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from mcp.server.fastmcp import FastMCP
@@ -35,15 +36,26 @@ def inject_preferences(func):
     return func
 
 
+def escape_applescript(value: str) -> str:
+    """Escape a string for safe injection into AppleScript double-quoted strings.
+
+    Handles backslashes first, then double quotes, to prevent injection.
+    """
+    return value.replace('\\', '\\\\').replace('"', '\\"')
+
+
 def run_applescript(script: str) -> str:
-    """Execute AppleScript and return output"""
+    """Execute AppleScript via stdin pipe for reliable multi-line handling"""
     try:
         result = subprocess.run(
-            ['osascript', '-e', script],
+            ['osascript', '-'],
+            input=script,
             capture_output=True,
             text=True,
             timeout=120
         )
+        if result.returncode != 0 and result.stderr.strip():
+            raise Exception(f"AppleScript error: {result.stderr.strip()}")
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
         raise Exception("AppleScript execution timed out")
@@ -208,6 +220,11 @@ def get_email_with_content(
         Detailed email information including content preview
     """
 
+    # Escape user inputs for AppleScript
+    escaped_keyword = subject_keyword.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_mailbox = mailbox.replace('\\', '\\\\').replace('"', '\\"')
+
     # Build mailbox selection logic
     if mailbox == "All":
         mailbox_script = '''
@@ -218,12 +235,12 @@ def get_email_with_content(
     else:
         mailbox_script = f'''
             try
-                set searchMailbox to mailbox "{mailbox}" of targetAccount
+                set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
-                if "{mailbox}" is "INBOX" then
+                if "{escaped_mailbox}" is "INBOX" then
                     set searchMailbox to mailbox "Inbox" of targetAccount
                 else
-                    error "Mailbox not found: {mailbox}"
+                    error "Mailbox not found: {escaped_mailbox}"
                 end if
             end try
             set searchMailboxes to {{searchMailbox}}
@@ -237,12 +254,12 @@ def get_email_with_content(
     end lowercase
 
     tell application "Mail"
-        set outputText to "SEARCH RESULTS FOR: {subject_keyword}" & return
+        set outputText to "SEARCH RESULTS FOR: {escaped_keyword}" & return
         set outputText to outputText & "Searching in: {search_location}" & return & return
         set resultCount to 0
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             {mailbox_script}
 
             repeat with currentMailbox in searchMailboxes
@@ -257,7 +274,7 @@ def get_email_with_content(
 
                         -- Convert to lowercase for case-insensitive matching
                         set lowerSubject to my lowercase(messageSubject)
-                        set lowerKeyword to my lowercase("{subject_keyword}")
+                        set lowerKeyword to my lowercase("{escaped_keyword}")
 
                         -- Check if subject contains keyword (case insensitive)
                         if lowerSubject contains lowerKeyword then
@@ -420,6 +437,9 @@ def get_recent_emails(
         Formatted list of recent emails
     """
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+
     content_script = '''
         try
             set msgContent to content of aMessage
@@ -443,10 +463,10 @@ def get_recent_emails(
 
     script = f'''
     tell application "Mail"
-        set outputText to "RECENT EMAILS - {account}" & return & return
+        set outputText to "RECENT EMAILS - {escaped_account}" & return & return
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             -- Try to get inbox (handle both "INBOX" and "Inbox")
             try
                 set inboxMailbox to mailbox "INBOX" of targetAccount
@@ -526,8 +546,11 @@ def list_mailboxes(
         end try
     ''' if include_counts else ''
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"') if account else None
+
     account_filter = f'''
-        if accountName is "{account}" then
+        if accountName is "{escaped_account}" then
     ''' if account else ''
 
     account_filter_end = 'end if' if account else ''
@@ -608,19 +631,24 @@ def move_email(
         Confirmation message with details of moved emails
     """
 
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_subject_keyword = escape_applescript(subject_keyword)
+    safe_from_mailbox = escape_applescript(from_mailbox)
+    safe_to_mailbox = escape_applescript(to_mailbox)
+
     # Parse nested mailbox path
     mailbox_parts = to_mailbox.split('/')
 
     # Build the nested mailbox reference
     if len(mailbox_parts) > 1:
         # Nested mailbox
-        dest_mailbox_script = f'mailbox "{mailbox_parts[-1]}" of '
+        dest_mailbox_script = f'mailbox "{escape_applescript(mailbox_parts[-1])}" of '
         for i in range(len(mailbox_parts) - 2, -1, -1):
-            dest_mailbox_script += f'mailbox "{mailbox_parts[i]}" of '
+            dest_mailbox_script += f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
         dest_mailbox_script += 'targetAccount'
     else:
-        # Top-level mailbox
-        dest_mailbox_script = f'mailbox "{to_mailbox}" of targetAccount'
+        dest_mailbox_script = f'mailbox "{safe_to_mailbox}" of targetAccount'
 
     script = f'''
     tell application "Mail"
@@ -628,12 +656,12 @@ def move_email(
         set movedCount to 0
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{safe_account}"
             -- Try to get source mailbox (handle both "INBOX"/"Inbox" variations)
             try
-                set sourceMailbox to mailbox "{from_mailbox}" of targetAccount
+                set sourceMailbox to mailbox "{safe_from_mailbox}" of targetAccount
             on error
-                if "{from_mailbox}" is "INBOX" then
+                if "{safe_from_mailbox}" is "INBOX" then
                     set sourceMailbox to mailbox "Inbox" of targetAccount
                 else
                     error "Source mailbox not found"
@@ -651,7 +679,7 @@ def move_email(
                     set messageSubject to subject of aMessage
 
                     -- Check if subject contains keyword (case insensitive)
-                    if messageSubject contains "{subject_keyword}" then
+                    if messageSubject contains "{safe_subject_keyword}" then
                         set messageSender to sender of aMessage
                         set messageDate to date received of aMessage
 
@@ -661,7 +689,7 @@ def move_email(
                         set outputText to outputText & "✓ Moved: " & messageSubject & return
                         set outputText to outputText & "  From: " & messageSender & return
                         set outputText to outputText & "  Date: " & (messageDate as string) & return
-                        set outputText to outputText & "  {from_mailbox} → {to_mailbox}" & return & return
+                        set outputText to outputText & "  {safe_from_mailbox} → {safe_to_mailbox}" & return & return
 
                         set movedCount to movedCount + 1
                     end if
@@ -690,7 +718,9 @@ def reply_to_email(
     account: str,
     subject_keyword: str,
     reply_body: str,
-    reply_to_all: bool = False
+    reply_to_all: bool = False,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -700,13 +730,17 @@ def reply_to_email(
         subject_keyword: Keyword to search for in email subjects
         reply_body: The body text of the reply
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
+        cc: Optional CC recipients, comma-separated for multiple
+        bcc: Optional BCC recipients, comma-separated for multiple
 
     Returns:
         Confirmation message with details of the reply sent
     """
 
-    # Escape quotes in reply_body for AppleScript
-    escaped_body = reply_body.replace('"', '\\"')
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_subject_keyword = escape_applescript(subject_keyword)
+    escaped_body = escape_applescript(reply_body)
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
@@ -714,12 +748,35 @@ def reply_to_email(
     else:
         reply_command = 'set replyMessage to reply foundMessage with opening window'
 
+    # Build CC recipients if provided
+    cc_script = ''
+    if cc:
+        cc_addresses = [addr.strip() for addr in cc.split(',')]
+        for addr in cc_addresses:
+            safe_addr = escape_applescript(addr)
+            cc_script += f'''
+            make new cc recipient at end of cc recipients of replyMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    # Build BCC recipients if provided
+    bcc_script = ''
+    if bcc:
+        bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+        for addr in bcc_addresses:
+            safe_addr = escape_applescript(addr)
+            bcc_script += f'''
+            make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    safe_cc = escape_applescript(cc) if cc else ""
+    safe_bcc = escape_applescript(bcc) if bcc else ""
+
     script = f'''
     tell application "Mail"
         set outputText to "SENDING REPLY" & return & return
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{safe_account}"
             -- Try to get inbox (handle both "INBOX" and "Inbox")
             try
                 set inboxMailbox to mailbox "INBOX" of targetAccount
@@ -734,7 +791,7 @@ def reply_to_email(
                 try
                     set messageSubject to subject of aMessage
 
-                    if messageSubject contains "{subject_keyword}" then
+                    if messageSubject contains "{safe_subject_keyword}" then
                         set foundMessage to aMessage
                         exit repeat
                     end if
@@ -750,10 +807,16 @@ def reply_to_email(
                 {reply_command}
 
                 -- Ensure the reply is from the correct account
-                set sender of replyMessage to targetAccount
+                set emailAddrs to email addresses of targetAccount
+                set senderAddress to item 1 of emailAddrs
+                set sender of replyMessage to senderAddress
 
                 -- Set reply content
                 set content of replyMessage to "{escaped_body}"
+
+                -- Add CC/BCC recipients
+                {cc_script}
+                {bcc_script}
 
                 -- Send the reply
                 send replyMessage
@@ -765,9 +828,21 @@ def reply_to_email(
                 set outputText to outputText & "  Date: " & (messageDate as string) & return & return
                 set outputText to outputText & "Reply body:" & return
                 set outputText to outputText & "  " & "{escaped_body}" & return
+    '''
 
+    if cc:
+        script += f'''
+                set outputText to outputText & "CC: {safe_cc}" & return
+    '''
+
+    if bcc:
+        script += f'''
+                set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    script += f'''
             else
-                set outputText to outputText & "⚠ No email found matching: {subject_keyword}" & return
+                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
             end if
 
         on error errMsg
@@ -807,17 +882,28 @@ def compose_email(
         Confirmation message with details of the sent email
     """
 
-    # Escape quotes for AppleScript
-    escaped_subject = subject.replace('"', '\\"')
-    escaped_body = body.replace('"', '\\"')
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    escaped_subject = escape_applescript(subject)
+    escaped_body = escape_applescript(body)
+
+    # Build TO recipients (split comma-separated addresses)
+    to_script = ''
+    to_addresses = [addr.strip() for addr in to.split(',')]
+    for addr in to_addresses:
+        safe_addr = escape_applescript(addr)
+        to_script += f'''
+                make new to recipient at end of to recipients with properties {{address:"{safe_addr}"}}
+        '''
 
     # Build CC recipients if provided
     cc_script = ''
     if cc:
         cc_addresses = [addr.strip() for addr in cc.split(',')]
         for addr in cc_addresses:
+            safe_addr = escape_applescript(addr)
             cc_script += f'''
-            make new cc recipient at end of cc recipients of newMessage with properties {{address:"{addr}"}}
+                make new cc recipient at end of cc recipients with properties {{address:"{safe_addr}"}}
             '''
 
     # Build BCC recipients if provided
@@ -825,26 +911,33 @@ def compose_email(
     if bcc:
         bcc_addresses = [addr.strip() for addr in bcc.split(',')]
         for addr in bcc_addresses:
+            safe_addr = escape_applescript(addr)
             bcc_script += f'''
-            make new bcc recipient at end of bcc recipients of newMessage with properties {{address:"{addr}"}}
+                make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
             '''
+
+    safe_to = escape_applescript(to)
+    safe_cc = escape_applescript(cc) if cc else ""
+    safe_bcc = escape_applescript(bcc) if bcc else ""
 
     script = f'''
     tell application "Mail"
         set outputText to "COMPOSING EMAIL" & return & return
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{safe_account}"
 
             -- Create new outgoing message
             set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:false}}
 
             -- Set the sender account
-            set sender of newMessage to targetAccount
+            set emailAddrs to email addresses of targetAccount
+            set senderAddress to item 1 of emailAddrs
+            set sender of newMessage to senderAddress
 
-            -- Add TO recipients
+            -- Add TO/CC/BCC recipients
             tell newMessage
-                make new to recipient at end of to recipients with properties {{address:"{to}"}}
+                {to_script}
                 {cc_script}
                 {bcc_script}
             end tell
@@ -854,17 +947,17 @@ def compose_email(
 
             set outputText to outputText & "✓ Email sent successfully!" & return & return
             set outputText to outputText & "From: " & name of targetAccount & return
-            set outputText to outputText & "To: {to}" & return
+            set outputText to outputText & "To: {safe_to}" & return
     '''
 
     if cc:
         script += f'''
-            set outputText to outputText & "CC: {cc}" & return
+            set outputText to outputText & "CC: {safe_cc}" & return
     '''
 
     if bcc:
         script += f'''
-            set outputText to outputText & "BCC: {bcc}" & return
+            set outputText to outputText & "BCC: {safe_bcc}" & return
     '''
 
     script += f'''
@@ -902,13 +995,17 @@ def list_email_attachments(
         List of attachments with their names and sizes
     """
 
+    # Escape for AppleScript
+    escaped_keyword = escape_applescript(subject_keyword)
+    escaped_account = escape_applescript(account)
+
     script = f'''
     tell application "Mail"
-        set outputText to "ATTACHMENTS FOR: {subject_keyword}" & return & return
+        set outputText to "ATTACHMENTS FOR: {escaped_keyword}" & return & return
         set resultCount to 0
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             -- Try to get inbox (handle both "INBOX" and "Inbox")
             try
                 set inboxMailbox to mailbox "INBOX" of targetAccount
@@ -924,7 +1021,7 @@ def list_email_attachments(
                     set messageSubject to subject of aMessage
 
                     -- Check if subject contains keyword
-                    if messageSubject contains "{subject_keyword}" then
+                    if messageSubject contains "{escaped_keyword}" then
                         set messageSender to sender of aMessage
                         set messageDate to date received of aMessage
 
@@ -996,12 +1093,21 @@ def save_email_attachment(
         Confirmation message with save location
     """
 
+    # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
+    expanded_path = os.path.expanduser(save_path)
+
+    # Escape for AppleScript
+    escaped_account = escape_applescript(account)
+    escaped_keyword = escape_applescript(subject_keyword)
+    escaped_attachment = escape_applescript(attachment_name)
+    escaped_path = escape_applescript(expanded_path)
+
     script = f'''
     tell application "Mail"
         set outputText to ""
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             -- Try to get inbox (handle both "INBOX" and "Inbox")
             try
                 set inboxMailbox to mailbox "INBOX" of targetAccount
@@ -1016,20 +1122,20 @@ def save_email_attachment(
                     set messageSubject to subject of aMessage
 
                     -- Check if subject contains keyword
-                    if messageSubject contains "{subject_keyword}" then
+                    if messageSubject contains "{escaped_keyword}" then
                         set msgAttachments to mail attachments of aMessage
 
                         repeat with anAttachment in msgAttachments
                             set attachmentFileName to name of anAttachment
 
-                            if attachmentFileName contains "{attachment_name}" then
+                            if attachmentFileName contains "{escaped_attachment}" then
                                 -- Save the attachment
-                                save anAttachment in POSIX file "{save_path}"
+                                save anAttachment in POSIX file "{escaped_path}"
 
                                 set outputText to "✓ Attachment saved successfully!" & return & return
                                 set outputText to outputText & "Email: " & messageSubject & return
                                 set outputText to outputText & "Attachment: " & attachmentFileName & return
-                                set outputText to outputText & "Saved to: {save_path}" & return
+                                set outputText to outputText & "Saved to: {escaped_path}" & return
 
                                 set foundAttachment to true
                                 exit repeat
@@ -1043,8 +1149,8 @@ def save_email_attachment(
 
             if not foundAttachment then
                 set outputText to "⚠ Attachment not found" & return
-                set outputText to outputText & "Email keyword: {subject_keyword}" & return
-                set outputText to outputText & "Attachment name: {attachment_name}" & return
+                set outputText to outputText & "Email keyword: {escaped_keyword}" & return
+                set outputText to outputText & "Attachment name: {escaped_attachment}" & return
             end if
 
         on error errMsg
@@ -1289,14 +1395,20 @@ def search_emails(
         Formatted list of matching emails with all requested details
     """
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_mailbox = mailbox.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_subject = subject_keyword.replace('\\', '\\\\').replace('"', '\\"') if subject_keyword else None
+    escaped_sender = sender.replace('\\', '\\\\').replace('"', '\\"') if sender else None
+
     # Build AppleScript search conditions
     conditions = []
 
     if subject_keyword:
-        conditions.append(f'messageSubject contains "{subject_keyword}"')
+        conditions.append(f'messageSubject contains "{escaped_subject}"')
 
     if sender:
-        conditions.append(f'messageSender contains "{sender}"')
+        conditions.append(f'messageSender contains "{escaped_sender}"')
 
     if has_attachments is not None:
         if has_attachments:
@@ -1343,12 +1455,12 @@ def search_emails(
     else:
         mailbox_script = f'''
             try
-                set searchMailbox to mailbox "{mailbox}" of targetAccount
+                set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
-                if "{mailbox}" is "INBOX" then
+                if "{escaped_mailbox}" is "INBOX" then
                     set searchMailbox to mailbox "Inbox" of targetAccount
                 else
-                    error "Mailbox not found: {mailbox}"
+                    error "Mailbox not found: {escaped_mailbox}"
                 end if
             end try
             set searchMailboxes to {{searchMailbox}}
@@ -1357,12 +1469,12 @@ def search_emails(
     script = f'''
     tell application "Mail"
         set outputText to "SEARCH RESULTS" & return & return
-        set outputText to outputText & "Searching in: {mailbox}" & return
-        set outputText to outputText & "Account: {account}" & return & return
+        set outputText to outputText & "Searching in: {escaped_mailbox}" & return
+        set outputText to outputText & "Account: {escaped_account}" & return & return
         set resultCount to 0
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             {mailbox_script}
 
             repeat with currentMailbox in searchMailboxes
@@ -1492,16 +1604,19 @@ def search_by_sender(
                             end try
         '''
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"') if account else None
+
     # Build account filter script
     if account:
-        account_filter_start = f'if accountName is "{account}" then'
+        account_filter_start = f'if accountName is "{escaped_account}" then'
         account_filter_end = "end if"
     else:
         account_filter_start = ""
         account_filter_end = ""
 
     # Escape the sender parameter for AppleScript
-    escaped_sender = sender.replace('"', '\\"')
+    escaped_sender = sender.replace('\\', '\\\\').replace('"', '\\"')
 
     script = f'''
     on lowercase(str)
@@ -1625,7 +1740,9 @@ def search_email_content(
     Returns:
         Emails where the search text appears in body and/or subject
     """
-    escaped_search = search_text.replace('"', '\\"').lower()
+    escaped_search = search_text.replace('\\', '\\\\').replace('"', '\\"').lower()
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_mailbox = mailbox.replace('\\', '\\\\').replace('"', '\\"')
     search_conditions = []
     if search_subject:
         search_conditions.append(f'lowerSubject contains "{escaped_search}"')
@@ -1645,14 +1762,14 @@ def search_email_content(
         set outputText to outputText & "⚠ Note: Body search is slower - searching {max_results} results max" & return & return
         set resultCount to 0
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             try
-                set targetMailbox to mailbox "{mailbox}" of targetAccount
+                set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
-                if "{mailbox}" is "INBOX" then
+                if "{escaped_mailbox}" is "INBOX" then
                     set targetMailbox to mailbox "Inbox" of targetAccount
                 else
-                    error "Mailbox not found: {mailbox}"
+                    error "Mailbox not found: {escaped_mailbox}"
                 end if
             end try
             set mailboxMessages to every message of targetMailbox
@@ -1678,7 +1795,7 @@ def search_email_content(
                         set outputText to outputText & readIndicator & " " & messageSubject & return
                         set outputText to outputText & "   From: " & messageSender & return
                         set outputText to outputText & "   Date: " & (messageDate as string) & return
-                        set outputText to outputText & "   Mailbox: {mailbox}" & return
+                        set outputText to outputText & "   Mailbox: {escaped_mailbox}" & return
                         try
                             set AppleScript's text item delimiters to {{return, linefeed}}
                             set contentParts to text items of msgContent
@@ -1735,6 +1852,9 @@ def get_newsletters(
     Returns:
         List of detected newsletter emails sorted by date
     """
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"') if account else None
+
     content_script = ""
     if include_content:
         content_script = f'''
@@ -1759,7 +1879,7 @@ def get_newsletters(
     account_filter_start = ""
     account_filter_end = ""
     if account:
-        account_filter_start = f'if accountName is "{account}" then'
+        account_filter_start = f'if accountName is "{escaped_account}" then'
         account_filter_end = "end if"
 
     date_filter = ""
@@ -1893,10 +2013,13 @@ def get_recent_from_sender(
                                     end try
         '''
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"') if account else None
+
     account_filter_start = ""
     account_filter_end = ""
     if account:
-        account_filter_start = f'if accountName is "{account}" then'
+        account_filter_start = f'if accountName is "{escaped_account}" then'
         account_filter_end = "end if"
 
     date_filter = ""
@@ -1912,7 +2035,7 @@ def get_recent_from_sender(
         else:
             date_check = " and messageDate > cutoffDate"
 
-    escaped_sender = sender.replace('"', '\\"')
+    escaped_sender = sender.replace('\\', '\\\\').replace('"', '\\"')
 
     script = f'''
     on lowercase(str)
@@ -2005,12 +2128,16 @@ def update_email_status(
         Confirmation message with details of updated emails
     """
 
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_mailbox = escape_applescript(mailbox)
+
     # Build search condition
     conditions = []
     if subject_keyword:
-        conditions.append(f'messageSubject contains "{subject_keyword}"')
+        conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
     if sender:
-        conditions.append(f'messageSender contains "{sender}"')
+        conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
 
     condition_str = ' and '.join(conditions) if conditions else 'true'
 
@@ -2036,15 +2163,15 @@ def update_email_status(
         set updateCount to 0
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{safe_account}"
             -- Try to get mailbox
             try
-                set targetMailbox to mailbox "{mailbox}" of targetAccount
+                set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
             on error
-                if "{mailbox}" is "INBOX" then
+                if "{safe_mailbox}" is "INBOX" then
                     set targetMailbox to mailbox "Inbox" of targetAccount
                 else
-                    error "Mailbox not found: {mailbox}"
+                    error "Mailbox not found: {safe_mailbox}"
                 end if
             end try
 
@@ -2112,13 +2239,17 @@ def manage_trash(
         Confirmation message with details of deleted emails
     """
 
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_mailbox = escape_applescript(mailbox)
+
     if action == "empty_trash":
         script = f'''
         tell application "Mail"
             set outputText to "EMPTYING TRASH" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 set trashMailbox to mailbox "Trash" of targetAccount
                 set trashMessages to every message of trashMailbox
                 set messageCount to count of trashMessages
@@ -2128,7 +2259,7 @@ def manage_trash(
                     delete aMessage
                 end repeat
 
-                set outputText to outputText & "✓ Emptied trash for account: {account}" & return
+                set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
                 set outputText to outputText & "   Deleted " & messageCount & " message(s)" & return
 
             on error errMsg
@@ -2139,12 +2270,12 @@ def manage_trash(
         end tell
         '''
     elif action == "delete_permanent":
-        # Build search condition
+        # Build search condition with escaped inputs
         conditions = []
         if subject_keyword:
-            conditions.append(f'messageSubject contains "{subject_keyword}"')
+            conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
         if sender:
-            conditions.append(f'messageSender contains "{sender}"')
+            conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
 
         condition_str = ' and '.join(conditions) if conditions else 'true'
 
@@ -2154,7 +2285,7 @@ def manage_trash(
             set deleteCount to 0
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 set trashMailbox to mailbox "Trash" of targetAccount
                 set trashMessages to every message of trashMailbox
 
@@ -2188,12 +2319,12 @@ def manage_trash(
         end tell
         '''
     else:  # move_to_trash
-        # Build search condition
+        # Build search condition with escaped inputs
         conditions = []
         if subject_keyword:
-            conditions.append(f'messageSubject contains "{subject_keyword}"')
+            conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
         if sender:
-            conditions.append(f'messageSender contains "{sender}"')
+            conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
 
         condition_str = ' and '.join(conditions) if conditions else 'true'
 
@@ -2203,15 +2334,15 @@ def manage_trash(
             set deleteCount to 0
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 -- Get source mailbox
                 try
-                    set sourceMailbox to mailbox "{mailbox}" of targetAccount
+                    set sourceMailbox to mailbox "{safe_mailbox}" of targetAccount
                 on error
-                    if "{mailbox}" is "INBOX" then
+                    if "{safe_mailbox}" is "INBOX" then
                         set sourceMailbox to mailbox "Inbox" of targetAccount
                     else
-                        error "Mailbox not found: {mailbox}"
+                        error "Mailbox not found: {safe_mailbox}"
                     end if
                 end try
 
@@ -2263,7 +2394,9 @@ def forward_email(
     subject_keyword: str,
     to: str,
     message: Optional[str] = None,
-    mailbox: str = "INBOX"
+    mailbox: str = "INBOX",
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None
 ) -> str:
     """
     Forward an email to one or more recipients.
@@ -2274,27 +2407,66 @@ def forward_email(
         to: Recipient email address(es), comma-separated for multiple
         message: Optional message to add before forwarded content
         mailbox: Mailbox to search in (default: "INBOX")
+        cc: Optional CC recipients, comma-separated for multiple
+        bcc: Optional BCC recipients, comma-separated for multiple
 
     Returns:
         Confirmation message with details of forwarded email
     """
 
-    escaped_message = message.replace('"', '\\"') if message else ""
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_subject_keyword = escape_applescript(subject_keyword)
+    safe_to = escape_applescript(to)
+    safe_mailbox = escape_applescript(mailbox)
+    escaped_message = escape_applescript(message) if message else ""
+
+    # Build CC recipients if provided
+    cc_script = ''
+    if cc:
+        cc_addresses = [addr.strip() for addr in cc.split(',')]
+        for addr in cc_addresses:
+            safe_addr = escape_applescript(addr)
+            cc_script += f'''
+            make new cc recipient at end of cc recipients of forwardMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    # Build BCC recipients if provided
+    bcc_script = ''
+    if bcc:
+        bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+        for addr in bcc_addresses:
+            safe_addr = escape_applescript(addr)
+            bcc_script += f'''
+            make new bcc recipient at end of bcc recipients of forwardMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    safe_cc = escape_applescript(cc) if cc else ""
+    safe_bcc = escape_applescript(bcc) if bcc else ""
+
+    # Build TO recipients (split comma-separated)
+    to_script = ''
+    to_addresses = [addr.strip() for addr in to.split(',')]
+    for addr in to_addresses:
+        safe_addr = escape_applescript(addr)
+        to_script += f'''
+                make new to recipient at end of to recipients of forwardMessage with properties {{address:"{safe_addr}"}}
+        '''
 
     script = f'''
     tell application "Mail"
         set outputText to "FORWARDING EMAIL" & return & return
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{safe_account}"
             -- Try to get mailbox
             try
-                set targetMailbox to mailbox "{mailbox}" of targetAccount
+                set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
             on error
-                if "{mailbox}" is "INBOX" then
+                if "{safe_mailbox}" is "INBOX" then
                     set targetMailbox to mailbox "Inbox" of targetAccount
                 else
-                    error "Mailbox not found: {mailbox}"
+                    error "Mailbox not found: {safe_mailbox}"
                 end if
             end try
 
@@ -2306,7 +2478,7 @@ def forward_email(
                 try
                     set messageSubject to subject of aMessage
 
-                    if messageSubject contains "{subject_keyword}" then
+                    if messageSubject contains "{safe_subject_keyword}" then
                         set foundMessage to aMessage
                         exit repeat
                     end if
@@ -2322,10 +2494,16 @@ def forward_email(
                 set forwardMessage to forward foundMessage with opening window
 
                 -- Set sender account
-                set sender of forwardMessage to targetAccount
+                set emailAddrs to email addresses of targetAccount
+                set senderAddress to item 1 of emailAddrs
+                set sender of forwardMessage to senderAddress
 
                 -- Add recipients
-                make new to recipient at end of to recipients of forwardMessage with properties {{address:"{to}"}}
+                {to_script}
+
+                -- Add CC/BCC recipients
+                {cc_script}
+                {bcc_script}
 
                 -- Add optional message
                 if "{escaped_message}" is not "" then
@@ -2340,10 +2518,22 @@ def forward_email(
                 set outputText to outputText & "  Subject: " & messageSubject & return
                 set outputText to outputText & "  From: " & messageSender & return
                 set outputText to outputText & "  Date: " & (messageDate as string) & return & return
-                set outputText to outputText & "Forwarded to: {to}" & return
+                set outputText to outputText & "Forwarded to: {safe_to}" & return
+    '''
 
+    if cc:
+        script += f'''
+                set outputText to outputText & "CC: {safe_cc}" & return
+    '''
+
+    if bcc:
+        script += f'''
+                set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    script += f'''
             else
-                set outputText to outputText & "⚠ No email found matching: {subject_keyword}" & return
+                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
             end if
 
         on error errMsg
@@ -2379,27 +2569,32 @@ def get_email_thread(
         Formatted thread view with all related messages sorted by date
     """
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_mailbox = mailbox.replace('\\', '\\\\').replace('"', '\\"')
+
     # For thread detection, we'll strip common prefixes
     thread_keywords = ['Re:', 'Fwd:', 'FW:', 'RE:', 'Fw:']
     cleaned_keyword = subject_keyword
     for prefix in thread_keywords:
         cleaned_keyword = cleaned_keyword.replace(prefix, '').strip()
+    escaped_keyword = cleaned_keyword.replace('\\', '\\\\').replace('"', '\\"')
 
     mailbox_script = f'''
         try
-            set searchMailbox to mailbox "{mailbox}" of targetAccount
+            set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
         on error
-            if "{mailbox}" is "INBOX" then
+            if "{escaped_mailbox}" is "INBOX" then
                 set searchMailbox to mailbox "Inbox" of targetAccount
-            else if "{mailbox}" is "All" then
+            else if "{escaped_mailbox}" is "All" then
                 set searchMailboxes to every mailbox of targetAccount
                 set useAllMailboxes to true
             else
-                error "Mailbox not found: {mailbox}"
+                error "Mailbox not found: {escaped_mailbox}"
             end if
         end try
 
-        if "{mailbox}" is not "All" then
+        if "{escaped_mailbox}" is not "All" then
             set searchMailboxes to {{searchMailbox}}
             set useAllMailboxes to false
         end if
@@ -2408,12 +2603,12 @@ def get_email_thread(
     script = f'''
     tell application "Mail"
         set outputText to "EMAIL THREAD VIEW" & return & return
-        set outputText to outputText & "Thread topic: {cleaned_keyword}" & return
-        set outputText to outputText & "Account: {account}" & return & return
+        set outputText to outputText & "Thread topic: {escaped_keyword}" & return
+        set outputText to outputText & "Account: {escaped_account}" & return & return
         set threadMessages to {{}}
 
         try
-            set targetAccount to account "{account}"
+            set targetAccount to account "{escaped_account}"
             {mailbox_script}
 
             -- Collect all matching messages from all mailboxes
@@ -2436,7 +2631,7 @@ def get_email_thread(
                         end if
 
                         -- Check if this message is part of the thread
-                        if cleanSubject contains "{cleaned_keyword}" or messageSubject contains "{cleaned_keyword}" then
+                        if cleanSubject contains "{escaped_keyword}" or messageSubject contains "{escaped_keyword}" then
                             set end of threadMessages to aMessage
                         end if
                     end try
@@ -2529,13 +2724,16 @@ def manage_drafts(
         Formatted output based on action
     """
 
+    # Escape account for all paths
+    safe_account = escape_applescript(account)
+
     if action == "list":
         script = f'''
         tell application "Mail"
-            set outputText to "DRAFT EMAILS - {account}" & return & return
+            set outputText to "DRAFT EMAILS - {safe_account}" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
                 set draftMessages to every message of draftsMailbox
                 set draftCount to count of draftMessages
@@ -2564,16 +2762,27 @@ def manage_drafts(
         if not subject or not to or not body:
             return "Error: 'subject', 'to', and 'body' are required for creating drafts"
 
-        escaped_subject = subject.replace('"', '\\"')
-        escaped_body = body.replace('"', '\\"')
+        escaped_subject = escape_applescript(subject)
+        escaped_body = escape_applescript(body)
+        safe_to = escape_applescript(to)
+
+        # Build TO recipients (split comma-separated)
+        to_script = ''
+        to_addresses = [addr.strip() for addr in to.split(',')]
+        for addr in to_addresses:
+            safe_addr = escape_applescript(addr)
+            to_script += f'''
+                    make new to recipient at end of to recipients with properties {{address:"{safe_addr}"}}
+            '''
 
         # Build CC recipients if provided
         cc_script = ''
         if cc:
             cc_addresses = [addr.strip() for addr in cc.split(',')]
             for addr in cc_addresses:
+                safe_addr = escape_applescript(addr)
                 cc_script += f'''
-                make new cc recipient at end of cc recipients of newDraft with properties {{address:"{addr}"}}
+                    make new cc recipient at end of cc recipients with properties {{address:"{safe_addr}"}}
                 '''
 
         # Build BCC recipients if provided
@@ -2581,8 +2790,9 @@ def manage_drafts(
         if bcc:
             bcc_addresses = [addr.strip() for addr in bcc.split(',')]
             for addr in bcc_addresses:
+                safe_addr = escape_applescript(addr)
                 bcc_script += f'''
-                make new bcc recipient at end of bcc recipients of newDraft with properties {{address:"{addr}"}}
+                    make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
                 '''
 
         script = f'''
@@ -2590,17 +2800,19 @@ def manage_drafts(
             set outputText to "CREATING DRAFT" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
 
                 -- Create new outgoing message (draft)
                 set newDraft to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:false}}
 
                 -- Set the sender account
-                set sender of newDraft to targetAccount
+                set emailAddrs to email addresses of targetAccount
+                set senderAddress to item 1 of emailAddrs
+                set sender of newDraft to senderAddress
 
                 -- Add recipients
                 tell newDraft
-                    make new to recipient at end of to recipients with properties {{address:"{to}"}}
+                    {to_script}
                     {cc_script}
                     {bcc_script}
                 end tell
@@ -2610,7 +2822,7 @@ def manage_drafts(
 
                 set outputText to outputText & "✓ Draft created successfully!" & return & return
                 set outputText to outputText & "Subject: {escaped_subject}" & return
-                set outputText to outputText & "To: {to}" & return
+                set outputText to outputText & "To: {safe_to}" & return
 
             on error errMsg
                 return "Error: " & errMsg
@@ -2624,12 +2836,14 @@ def manage_drafts(
         if not draft_subject:
             return "Error: 'draft_subject' is required for sending drafts"
 
+        safe_draft_subject = escape_applescript(draft_subject)
+
         script = f'''
         tell application "Mail"
             set outputText to "SENDING DRAFT" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
                 set draftMessages to every message of draftsMailbox
                 set foundDraft to missing value
@@ -2639,7 +2853,7 @@ def manage_drafts(
                     try
                         set draftSubject to subject of aDraft
 
-                        if draftSubject contains "{draft_subject}" then
+                        if draftSubject contains "{safe_draft_subject}" then
                             set foundDraft to aDraft
                             exit repeat
                         end if
@@ -2656,7 +2870,7 @@ def manage_drafts(
                     set outputText to outputText & "Subject: " & draftSubject & return
 
                 else
-                    set outputText to outputText & "⚠ No draft found matching: {draft_subject}" & return
+                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
                 end if
 
             on error errMsg
@@ -2671,12 +2885,14 @@ def manage_drafts(
         if not draft_subject:
             return "Error: 'draft_subject' is required for deleting drafts"
 
+        safe_draft_subject = escape_applescript(draft_subject)
+
         script = f'''
         tell application "Mail"
             set outputText to "DELETING DRAFT" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
                 set draftMessages to every message of draftsMailbox
                 set foundDraft to missing value
@@ -2686,7 +2902,7 @@ def manage_drafts(
                     try
                         set draftSubject to subject of aDraft
 
-                        if draftSubject contains "{draft_subject}" then
+                        if draftSubject contains "{safe_draft_subject}" then
                             set foundDraft to aDraft
                             exit repeat
                         end if
@@ -2703,7 +2919,7 @@ def manage_drafts(
                     set outputText to outputText & "Subject: " & draftSubject & return
 
                 else
-                    set outputText to outputText & "⚠ No draft found matching: {draft_subject}" & return
+                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
                 end if
 
             on error errMsg
@@ -2744,6 +2960,11 @@ def get_statistics(
         Formatted statistics report with metrics and insights
     """
 
+    # Escape user inputs for AppleScript
+    escaped_account = account.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_sender = sender.replace('\\', '\\\\').replace('"', '\\"') if sender else None
+    escaped_mailbox = mailbox.replace('\\', '\\\\').replace('"', '\\"') if mailbox else None
+
     # Calculate date threshold if days_back > 0
     date_filter = ""
     if days_back > 0:
@@ -2759,13 +2980,13 @@ def get_statistics(
         script = f'''
         tell application "Mail"
             set outputText to "╔══════════════════════════════════════════╗" & return
-            set outputText to outputText & "║      EMAIL STATISTICS - {account}       ║" & return
+            set outputText to outputText & "║      EMAIL STATISTICS - {escaped_account}       ║" & return
             set outputText to outputText & "╚══════════════════════════════════════════╝" & return & return
 
             {date_filter}
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{escaped_account}"
                 set allMailboxes to every mailbox of targetAccount
 
                 -- Initialize counters
@@ -2839,10 +3060,17 @@ def get_statistics(
                 set outputText to outputText & "📊 VOLUME METRICS" & return
                 set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return
                 set outputText to outputText & "Total Emails: " & totalEmails & return
-                set outputText to outputText & "Unread: " & totalUnread & " (" & (round ((totalUnread / totalEmails) * 100)) & "%)" & return
-                set outputText to outputText & "Read: " & totalRead & " (" & (round ((totalRead / totalEmails) * 100)) & "%)" & return
-                set outputText to outputText & "Flagged: " & totalFlagged & return
-                set outputText to outputText & "With Attachments: " & totalWithAttachments & " (" & (round ((totalWithAttachments / totalEmails) * 100)) & "%)" & return
+                if totalEmails > 0 then
+                    set outputText to outputText & "Unread: " & totalUnread & " (" & (round ((totalUnread / totalEmails) * 100)) & "%)" & return
+                    set outputText to outputText & "Read: " & totalRead & " (" & (round ((totalRead / totalEmails) * 100)) & "%)" & return
+                    set outputText to outputText & "Flagged: " & totalFlagged & return
+                    set outputText to outputText & "With Attachments: " & totalWithAttachments & " (" & (round ((totalWithAttachments / totalEmails) * 100)) & "%)" & return
+                else
+                    set outputText to outputText & "Unread: 0" & return
+                    set outputText to outputText & "Read: 0" & return
+                    set outputText to outputText & "Flagged: 0" & return
+                    set outputText to outputText & "With Attachments: 0" & return
+                end if
                 set outputText to outputText & return
 
                 -- Top senders (show top 5)
@@ -2863,8 +3091,12 @@ def get_statistics(
                 repeat with mailboxPair in mailboxCounts
                     set topCount to topCount + 1
                     if topCount > 5 then exit repeat
-                    set mailboxPercent to round ((item 2 of mailboxPair / totalEmails) * 100)
-                    set outputText to outputText & item 1 of mailboxPair & ": " & item 2 of mailboxPair & " (" & mailboxPercent & "%)" & return
+                    if totalEmails > 0 then
+                        set mailboxPercent to round ((item 2 of mailboxPair / totalEmails) * 100)
+                        set outputText to outputText & item 1 of mailboxPair & ": " & item 2 of mailboxPair & " (" & mailboxPercent & "%)" & return
+                    else
+                        set outputText to outputText & item 1 of mailboxPair & ": " & item 2 of mailboxPair & return
+                    end if
                 end repeat
 
             on error errMsg
@@ -2882,13 +3114,13 @@ def get_statistics(
         script = f'''
         tell application "Mail"
             set outputText to "SENDER STATISTICS" & return & return
-            set outputText to outputText & "Sender: {sender}" & return
-            set outputText to outputText & "Account: {account}" & return & return
+            set outputText to outputText & "Sender: {escaped_sender}" & return
+            set outputText to outputText & "Account: {escaped_account}" & return & return
 
             {date_filter}
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{escaped_account}"
                 set allMailboxes to every mailbox of targetAccount
 
                 set totalFromSender to 0
@@ -2903,7 +3135,7 @@ def get_statistics(
                             set messageSender to sender of aMessage
                             set messageDate to date received of aMessage
 
-                            if messageSender contains "{sender}" {date_check} then
+                            if messageSender contains "{escaped_sender}" {date_check} then
                                 set totalFromSender to totalFromSender + 1
 
                                 if not (read status of aMessage) then
@@ -2931,16 +3163,16 @@ def get_statistics(
         '''
 
     elif scope == "mailbox_breakdown":
-        mailbox_param = mailbox if mailbox else "INBOX"
+        mailbox_param = escaped_mailbox if mailbox else "INBOX"
 
         script = f'''
         tell application "Mail"
             set outputText to "MAILBOX STATISTICS" & return & return
             set outputText to outputText & "Mailbox: {mailbox_param}" & return
-            set outputText to outputText & "Account: {account}" & return & return
+            set outputText to outputText & "Account: {escaped_account}" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{escaped_account}"
                 try
                     set targetMailbox to mailbox "{mailbox_param}" of targetAccount
                 on error
@@ -3003,24 +3235,32 @@ def export_emails(
     import os
     save_dir = os.path.expanduser(save_directory)
 
+    # Escape all user inputs for AppleScript
+    safe_account = escape_applescript(account)
+    safe_mailbox = escape_applescript(mailbox)
+    safe_format = escape_applescript(format)
+    safe_save_dir = escape_applescript(save_dir)
+
     if scope == "single_email":
         if not subject_keyword:
             return "Error: 'subject_keyword' required for single_email scope"
+
+        safe_subject_keyword = escape_applescript(subject_keyword)
 
         script = f'''
         tell application "Mail"
             set outputText to "EXPORTING EMAIL" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 -- Try to get mailbox
                 try
-                    set targetMailbox to mailbox "{mailbox}" of targetAccount
+                    set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
                 on error
-                    if "{mailbox}" is "INBOX" then
+                    if "{safe_mailbox}" is "INBOX" then
                         set targetMailbox to mailbox "Inbox" of targetAccount
                     else
-                        error "Mailbox not found: {mailbox}"
+                        error "Mailbox not found: {safe_mailbox}"
                     end if
                 end try
 
@@ -3032,7 +3272,7 @@ def export_emails(
                     try
                         set messageSubject to subject of aMessage
 
-                        if messageSubject contains "{subject_keyword}" then
+                        if messageSubject contains "{safe_subject_keyword}" then
                             set foundMessage to aMessage
                             exit repeat
                         end if
@@ -3053,16 +3293,16 @@ def export_emails(
                     set safeSubject to safeSubjectParts as string
                     set AppleScript's text item delimiters to ""
 
-                    set fileName to safeSubject & ".{format}"
-                    set filePath to "{save_dir}/" & fileName
+                    set fileName to safeSubject & ".{safe_format}"
+                    set filePath to "{safe_save_dir}/" & fileName
 
                     -- Prepare export content
-                    if "{format}" is "txt" then
+                    if "{safe_format}" is "txt" then
                         set exportContent to "Subject: " & messageSubject & return
                         set exportContent to exportContent & "From: " & messageSender & return
                         set exportContent to exportContent & "Date: " & (messageDate as string) & return & return
                         set exportContent to exportContent & messageContent
-                    else if "{format}" is "html" then
+                    else if "{safe_format}" is "html" then
                         set exportContent to "<html><body>"
                         set exportContent to exportContent & "<h2>" & messageSubject & "</h2>"
                         set exportContent to exportContent & "<p><strong>From:</strong> " & messageSender & "</p>"
@@ -3082,7 +3322,7 @@ def export_emails(
                     set outputText to outputText & "Saved to: " & filePath & return
 
                 else
-                    set outputText to outputText & "⚠ No email found matching: {subject_keyword}" & return
+                    set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
                 end if
 
             on error errMsg
@@ -3102,15 +3342,15 @@ def export_emails(
             set outputText to "EXPORTING MAILBOX" & return & return
 
             try
-                set targetAccount to account "{account}"
+                set targetAccount to account "{safe_account}"
                 -- Try to get mailbox
                 try
-                    set targetMailbox to mailbox "{mailbox}" of targetAccount
+                    set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
                 on error
-                    if "{mailbox}" is "INBOX" then
+                    if "{safe_mailbox}" is "INBOX" then
                         set targetMailbox to mailbox "Inbox" of targetAccount
                     else
-                        error "Mailbox not found: {mailbox}"
+                        error "Mailbox not found: {safe_mailbox}"
                     end if
                 end try
 
@@ -3119,7 +3359,7 @@ def export_emails(
                 set exportCount to 0
 
                 -- Create export directory
-                set exportDir to "{save_dir}/{mailbox}_export"
+                set exportDir to "{safe_save_dir}/{safe_mailbox}_export"
                 do shell script "mkdir -p " & quoted form of exportDir
 
                 repeat with aMessage in mailboxMessages
@@ -3131,7 +3371,7 @@ def export_emails(
 
                         -- Create safe filename with index
                         set exportCount to exportCount + 1
-                        set fileName to exportCount & "_" & messageSubject & ".{format}"
+                        set fileName to exportCount & "_" & messageSubject & ".{safe_format}"
 
                         -- Remove unsafe characters
                         set AppleScript's text item delimiters to "/"
@@ -3143,12 +3383,12 @@ def export_emails(
                         set filePath to exportDir & "/" & fileName
 
                         -- Prepare export content
-                        if "{format}" is "txt" then
+                        if "{safe_format}" is "txt" then
                             set exportContent to "Subject: " & messageSubject & return
                             set exportContent to exportContent & "From: " & messageSender & return
                             set exportContent to exportContent & "Date: " & (messageDate as string) & return & return
                             set exportContent to exportContent & messageContent
-                        else if "{format}" is "html" then
+                        else if "{safe_format}" is "html" then
                             set exportContent to "<html><body>"
                             set exportContent to exportContent & "<h2>" & messageSubject & "</h2>"
                             set exportContent to exportContent & "<p><strong>From:</strong> " & messageSender & "</p>"
@@ -3169,7 +3409,7 @@ def export_emails(
                 end repeat
 
                 set outputText to outputText & "✓ Mailbox exported successfully!" & return & return
-                set outputText to outputText & "Mailbox: {mailbox}" & return
+                set outputText to outputText & "Mailbox: {safe_mailbox}" & return
                 set outputText to outputText & "Total emails: " & messageCount & return
                 set outputText to outputText & "Exported: " & exportCount & return
                 set outputText to outputText & "Location: " & exportDir & return
@@ -3231,7 +3471,7 @@ def search_all_accounts(
     # Build subject filter
     subject_filter = ""
     if subject_keyword:
-        escaped_keyword = subject_keyword.replace('"', '\\"').replace("'", "'\\''")
+        escaped_keyword = escape_applescript(subject_keyword)
         subject_filter = f'''
             set lowerSubject to my lowercase(messageSubject)
             set lowerKeyword to my lowercase("{escaped_keyword}")
@@ -3243,7 +3483,7 @@ def search_all_accounts(
     # Build sender filter
     sender_filter = ""
     if sender:
-        escaped_sender = sender.replace('"', '\\"').replace("'", "'\\''")
+        escaped_sender = escape_applescript(sender)
         sender_filter = f'''
             set lowerSender to my lowercase(messageSender)
             set lowerSenderFilter to my lowercase("{escaped_sender}")
@@ -3499,7 +3739,8 @@ def _get_recent_emails_structured(
     if result:
         for line in result.split('\n'):
             if '|||' in line:
-                parts = line.split('|||')
+                # Use maxsplit=5 so preview field (last) can contain '|||'
+                parts = line.split('|||', 5)
                 if len(parts) >= 5:
                     emails.append({
                         'subject': parts[0].strip(),
@@ -3510,7 +3751,7 @@ def _get_recent_emails_structured(
                         'preview': parts[5].strip() if len(parts) > 5 else ''
                     })
 
-    # Sort by date (newest first) - simple string sort works for most date formats
+    # Emails arrive in inbox order (newest first per account)
     # Limit to max_total
     return emails[:max_total]
 
