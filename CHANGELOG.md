@@ -5,6 +5,23 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-02-07
+
+### Changed
+- **search_emails**: Replaced per-message iteration with AppleScript `whose` clause for app-level filtering
+- **search_by_sender**: Replaced per-message iteration and `lowercase()` shell handler with `whose` clause
+- **get_recent_from_sender**: Replaced per-message iteration and `lowercase()` shell handler with `whose` clause
+
+### Performance
+- Eliminated `do shell script` subprocess spawning per message for case-insensitive sender matching (`lowercase()` via `tr`) — AppleScript's `contains` is already case-insensitive
+- Search filtering now happens at the Mail.app level instead of iterating every message in Python/AppleScript loops
+- Date filtering in `search_emails` uses programmatic date construction (locale-independent) instead of string-based date parsing
+
+### Technical
+- Added per-mailbox `try/on error` blocks to gracefully skip smart mailboxes and missing-value errors
+- `has_attachments` filter retained as post-filter (not supported in `whose` clauses)
+- No tool signature changes — fully backward compatible
+
 ## [1.5.0] - 2026-02-01
 
 ### Added
@@ -172,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History Summary
 
+- **v1.5.1** - Search performance: whose clause filtering replaces per-message iteration
 - **v1.5.0** - Advanced search tools (4 new tools: search_by_sender, search_all_accounts, search_email_content, get_newsletters)
 - **v1.4.0** - User preferences configuration
 - **v1.3.0** - Major feature expansion (8 new tools: search, status, trash, forward, threads, drafts, statistics, export)

@@ -1289,28 +1289,61 @@ def search_emails(
         Formatted list of matching emails with all requested details
     """
 
-    # Build AppleScript search conditions
-    conditions = []
+    # Build 'whose' clause conditions for fast app-level filtering
+    whose_conditions = []
 
     if subject_keyword:
-        conditions.append(f'messageSubject contains "{subject_keyword}"')
+        escaped_subject = subject_keyword.replace('"', '\\"')
+        whose_conditions.append(f'subject contains "{escaped_subject}"')
 
     if sender:
-        conditions.append(f'messageSender contains "{sender}"')
-
-    if has_attachments is not None:
-        if has_attachments:
-            conditions.append('(count of mail attachments of aMessage) > 0')
-        else:
-            conditions.append('(count of mail attachments of aMessage) = 0')
+        escaped_sender = sender.replace('"', '\\"')
+        whose_conditions.append(f'sender contains "{escaped_sender}"')
 
     if read_status == "read":
-        conditions.append('messageRead is true')
+        whose_conditions.append('read status is true')
     elif read_status == "unread":
-        conditions.append('messageRead is false')
+        whose_conditions.append('read status is false')
 
-    # Combine conditions with AND logic
-    condition_str = ' and '.join(conditions) if conditions else 'true'
+    # Build date objects programmatically (AppleScript's date "string" is locale-dependent)
+    date_setup_script = ""
+    if date_from:
+        y, m, d = date_from.split('-')
+        date_setup_script += f'''
+            set dateFrom to current date
+            set year of dateFrom to {int(y)}
+            set month of dateFrom to {int(m)}
+            set day of dateFrom to {int(d)}
+            set time of dateFrom to 0
+        '''
+        whose_conditions.append('date received >= dateFrom')
+    if date_to:
+        y, m, d = date_to.split('-')
+        date_setup_script += f'''
+            set dateTo to current date
+            set year of dateTo to {int(y)}
+            set month of dateTo to {int(m)}
+            set day of dateTo to {int(d)}
+            set time of dateTo to 86399
+        '''
+        whose_conditions.append('date received <= dateTo')
+
+    # Build the whose clause
+    if whose_conditions:
+        whose_clause = ' and '.join(whose_conditions)
+        fetch_script = f'set matchedMessages to (every message of currentMailbox whose {whose_clause})'
+    else:
+        fetch_script = 'set matchedMessages to every message of currentMailbox'
+
+    # has_attachments requires post-filter (can't use in whose clause)
+    attachment_check_start = ""
+    attachment_check_end = ""
+    if has_attachments is not None:
+        if has_attachments:
+            attachment_check_start = "if (count of mail attachments of aMessage) > 0 then"
+        else:
+            attachment_check_start = "if (count of mail attachments of aMessage) = 0 then"
+        attachment_check_end = "end if"
 
     # Handle content preview
     content_script = '''
@@ -1363,14 +1396,14 @@ def search_emails(
 
         try
             set targetAccount to account "{account}"
+            {date_setup_script}
             {mailbox_script}
 
             repeat with currentMailbox in searchMailboxes
-                -- Wrap in try block to handle mailboxes that throw errors (smart mailboxes, etc.)
                 try
                     set mailboxName to name of currentMailbox
 
-                    -- Skip system folders when searching to reduce noise and avoid errors
+                    -- Skip system folders
                     set skipFolders to {{"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}}
                     set shouldSkip to false
                     repeat with skipFolder in skipFolders
@@ -1381,19 +1414,19 @@ def search_emails(
                     end repeat
 
                     if not shouldSkip then
-                        set mailboxMessages to every message of currentMailbox
+                        -- Use whose clause for fast app-level filtering
+                        {fetch_script}
 
-                        repeat with aMessage in mailboxMessages
+                        repeat with aMessage in matchedMessages
                             if resultCount >= {max_results} then exit repeat
 
                             try
-                                set messageSubject to subject of aMessage
-                                set messageSender to sender of aMessage
-                                set messageDate to date received of aMessage
-                                set messageRead to read status of aMessage
+                                {attachment_check_start}
+                                    set messageSubject to subject of aMessage
+                                    set messageSender to sender of aMessage
+                                    set messageDate to date received of aMessage
+                                    set messageRead to read status of aMessage
 
-                                -- Apply search conditions
-                                if {condition_str} then
                                     set readIndicator to "✉"
                                     if messageRead then
                                         set readIndicator to "✓"
@@ -1408,7 +1441,7 @@ def search_emails(
 
                                     set outputText to outputText & return
                                     set resultCount to resultCount + 1
-                                end if
+                                {attachment_check_end}
                             end try
                         end repeat
                     end if
@@ -1459,14 +1492,18 @@ def search_by_sender(
         Formatted list of emails from the sender, sorted by date (newest first)
     """
 
-    # Build date filter if days_back > 0
-    date_filter_script = ""
-    date_check = ""
+    # Escape the sender parameter for AppleScript
+    escaped_sender = sender.replace('"', '\\"')
+
+    # Build 'whose' clause for fast app-level filtering
+    whose_parts = [f'sender contains "{escaped_sender}"']
     if days_back > 0:
-        date_filter_script = f'''
-            set targetDate to (current date) - ({days_back} * days)
-        '''
-        date_check = "and messageDate > targetDate"
+        date_setup = f'set targetDate to (current date) - ({days_back} * days)'
+        whose_parts.append('date received > targetDate')
+    else:
+        date_setup = ""
+
+    whose_clause = ' and '.join(whose_parts)
 
     # Build content preview script
     content_script = ""
@@ -1500,21 +1537,13 @@ def search_by_sender(
         account_filter_start = ""
         account_filter_end = ""
 
-    # Escape the sender parameter for AppleScript
-    escaped_sender = sender.replace('"', '\\"')
-
     script = f'''
-    on lowercase(str)
-        set lowerStr to do shell script "echo " & quoted form of str & " | tr '[:upper:]' '[:lower:]'"
-        return lowerStr
-    end lowercase
-
     tell application "Mail"
         set outputText to "EMAILS FROM SENDER: {escaped_sender}" & return
         set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
         set resultCount to 0
 
-        {date_filter_script}
+        {date_setup}
 
         set allAccounts to every account
 
@@ -1524,30 +1553,29 @@ def search_by_sender(
             {account_filter_start}
 
             try
-                -- Get all mailboxes except Trash, Junk, Deleted
                 set accountMailboxes to every mailbox of anAccount
+            on error errMsg
+                set outputText to outputText & "⚠ Error listing mailboxes for " & accountName & ": " & errMsg & return
+                set accountMailboxes to {{}}
+            end try
 
                 repeat with aMailbox in accountMailboxes
-                    set mailboxName to name of aMailbox
+                    try
+                        set mailboxName to name of aMailbox
 
-                    -- Skip Trash, Junk, Deleted, Spam folders
-                    if mailboxName is not "Trash" and mailboxName is not "Junk" and mailboxName is not "Deleted Messages" and mailboxName is not "Deleted Items" and mailboxName is not "Spam" then
+                        -- Skip Trash, Junk, Deleted, Spam folders
+                        if mailboxName is not "Trash" and mailboxName is not "Junk" and mailboxName is not "Deleted Messages" and mailboxName is not "Deleted Items" and mailboxName is not "Spam" then
 
-                        set mailboxMessages to every message of aMailbox
+                            -- Use whose clause for fast app-level filtering
+                            set matchedMessages to (every message of aMailbox whose {whose_clause})
 
-                        repeat with aMessage in mailboxMessages
-                            if resultCount >= {max_results} then exit repeat
+                            repeat with aMessage in matchedMessages
+                                if resultCount >= {max_results} then exit repeat
 
-                            try
-                                set messageSender to sender of aMessage
-                                set messageDate to date received of aMessage
-
-                                -- Case-insensitive sender match
-                                set lowerSender to my lowercase(messageSender)
-                                set lowerSearch to my lowercase("{escaped_sender}")
-
-                                if lowerSender contains lowerSearch {date_check} then
+                                try
                                     set messageSubject to subject of aMessage
+                                    set messageSender to sender of aMessage
+                                    set messageDate to date received of aMessage
                                     set messageRead to read status of aMessage
 
                                     if messageRead then
@@ -1566,17 +1594,15 @@ def search_by_sender(
 
                                     set outputText to outputText & return
                                     set resultCount to resultCount + 1
-                                end if
-                            end try
-                        end repeat
+                                end try
+                            end repeat
 
-                        if resultCount >= {max_results} then exit repeat
-                    end if
+                            if resultCount >= {max_results} then exit repeat
+                        end if
+                    on error
+                        -- Skip individual mailboxes that throw errors (smart mailboxes, missing values, etc.)
+                    end try
                 end repeat
-
-            on error errMsg
-                set outputText to outputText & "⚠ Error accessing mailboxes for " & accountName & ": " & errMsg & return
-            end try
 
             {account_filter_end}
 
@@ -1872,6 +1898,27 @@ def get_recent_from_sender(
     days_back = time_ranges.get(time_range.lower(), 7)
     is_yesterday = time_range.lower() == "yesterday"
 
+    # Escape the sender parameter for AppleScript
+    escaped_sender = sender.replace('"', '\\"')
+
+    # Build 'whose' clause for fast app-level filtering
+    whose_parts = [f'sender contains "{escaped_sender}"']
+    if days_back > 0:
+        if is_yesterday:
+            date_setup = '''
+            set todayStart to (current date) - (time of (current date))
+            set yesterdayStart to todayStart - (1 * days)
+            '''
+            whose_parts.append('date received >= yesterdayStart')
+            whose_parts.append('date received < todayStart')
+        else:
+            date_setup = f'set cutoffDate to (current date) - ({days_back} * days)'
+            whose_parts.append('date received > cutoffDate')
+    else:
+        date_setup = ""
+
+    whose_clause = ' and '.join(whose_parts)
+
     content_script = ""
     if include_content:
         content_script = f'''
@@ -1899,74 +1946,66 @@ def get_recent_from_sender(
         account_filter_start = f'if accountName is "{account}" then'
         account_filter_end = "end if"
 
-    date_filter = ""
-    date_check = ""
-    if days_back > 0:
-        date_filter = f'set cutoffDate to (current date) - ({days_back} * days)'
-        if is_yesterday:
-            date_filter += '''
-            set todayStart to (current date) - (time of (current date))
-            set yesterdayStart to todayStart - (1 * days)
-            '''
-            date_check = " and messageDate >= yesterdayStart and messageDate < todayStart"
-        else:
-            date_check = " and messageDate > cutoffDate"
-
-    escaped_sender = sender.replace('"', '\\"')
-
     script = f'''
-    on lowercase(str)
-        set lowerStr to do shell script "echo " & quoted form of str & " | tr '[:upper:]' '[:lower:]'"
-        return lowerStr
-    end lowercase
-
     tell application "Mail"
         set outputText to "📧 EMAILS FROM: {escaped_sender}" & return
         set outputText to outputText & "⏰ Time range: {time_range}" & return
         set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
         set resultCount to 0
-        {date_filter}
+        {date_setup}
         set allAccounts to every account
         repeat with anAccount in allAccounts
             set accountName to name of anAccount
             {account_filter_start}
+
             try
                 set accountMailboxes to every mailbox of anAccount
+            on error errMsg
+                set outputText to outputText & "⚠ Error listing mailboxes for " & accountName & ": " & errMsg & return
+                set accountMailboxes to {{}}
+            end try
+
                 repeat with aMailbox in accountMailboxes
                     try
                         set mailboxName to name of aMailbox
-                        if mailboxName is not in {{"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}} then
-                            set mailboxMessages to every message of aMailbox
-                            repeat with aMessage in mailboxMessages
+
+                        -- Skip Trash, Junk, Deleted, Spam folders
+                        if mailboxName is not "Trash" and mailboxName is not "Junk" and mailboxName is not "Junk Email" and mailboxName is not "Deleted Messages" and mailboxName is not "Deleted Items" and mailboxName is not "Sent" and mailboxName is not "Sent Items" and mailboxName is not "Sent Messages" and mailboxName is not "Drafts" and mailboxName is not "Spam" then
+
+                            -- Use whose clause for fast app-level filtering
+                            set matchedMessages to (every message of aMailbox whose {whose_clause})
+
+                            repeat with aMessage in matchedMessages
                                 if resultCount >= {max_results} then exit repeat
+
                                 try
+                                    set messageSubject to subject of aMessage
                                     set messageSender to sender of aMessage
                                     set messageDate to date received of aMessage
-                                    set lowerSender to my lowercase(messageSender)
-                                    set lowerSearch to my lowercase("{escaped_sender}")
-                                    if lowerSender contains lowerSearch{date_check} then
-                                        set messageSubject to subject of aMessage
-                                        set messageRead to read status of aMessage
-                                        if messageRead then
-                                            set readIndicator to "✓"
-                                        else
-                                            set readIndicator to "✉"
-                                        end if
-                                        set outputText to outputText & readIndicator & " " & messageSubject & return
-                                        set outputText to outputText & "   From: " & messageSender & return
-                                        set outputText to outputText & "   Date: " & (messageDate as string) & return
-                                        set outputText to outputText & "   Account: " & accountName & return
-                                        {content_script}
-                                        set outputText to outputText & return
-                                        set resultCount to resultCount + 1
+                                    set messageRead to read status of aMessage
+
+                                    if messageRead then
+                                        set readIndicator to "✓"
+                                    else
+                                        set readIndicator to "✉"
                                     end if
+                                    set outputText to outputText & readIndicator & " " & messageSubject & return
+                                    set outputText to outputText & "   From: " & messageSender & return
+                                    set outputText to outputText & "   Date: " & (messageDate as string) & return
+                                    set outputText to outputText & "   Account: " & accountName & return
+                                    {content_script}
+                                    set outputText to outputText & return
+                                    set resultCount to resultCount + 1
                                 end try
                             end repeat
+
+                            if resultCount >= {max_results} then exit repeat
                         end if
+                    on error
+                        -- Skip individual mailboxes that throw errors (smart mailboxes, missing values, etc.)
                     end try
-                    if resultCount >= {max_results} then exit repeat
                 end repeat
-            end try
+
             {account_filter_end}
             if resultCount >= {max_results} then exit repeat
         end repeat
