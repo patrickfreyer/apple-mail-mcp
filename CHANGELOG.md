@@ -11,15 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **search_emails**: Replaced per-message iteration with AppleScript `whose` clause for app-level filtering
 - **search_by_sender**: Replaced per-message iteration and `lowercase()` shell handler with `whose` clause
 - **get_recent_from_sender**: Replaced per-message iteration and `lowercase()` shell handler with `whose` clause
+- **get_newsletters**: Replaced per-message iteration and `lowercase()` shell handler with `whose date received` pre-filter
+- **get_statistics**: Added `whose` clause pre-filtering for `account_overview` and `sender_stats` scopes
+
+### Fixed
+- **get_newsletters**: Fixed timeout on large mailboxes by adding `whose date received > cutoffDate` pre-filter instead of iterating all messages
+- **get_statistics**: Fixed "missing value" error by adding per-mailbox `try/on error` and skipping system folders (Trash, Junk, Sent, Drafts, etc.)
+- **get_statistics**: Added division-by-zero guard for percentage calculations when no emails match
 
 ### Performance
 - Eliminated `do shell script` subprocess spawning per message for case-insensitive sender matching (`lowercase()` via `tr`) — AppleScript's `contains` is already case-insensitive
 - Search filtering now happens at the Mail.app level instead of iterating every message in Python/AppleScript loops
 - Date filtering in `search_emails` uses programmatic date construction (locale-independent) instead of string-based date parsing
+- `get_newsletters` now pre-filters by date at the Mail.app level, reducing iteration from ~25K messages to ~200 (last 7 days)
+- `get_statistics` scopes skip system folders and use `whose` clause date/sender pre-filtering
 
 ### Technical
 - Added per-mailbox `try/on error` blocks to gracefully skip smart mailboxes and missing-value errors
 - `has_attachments` filter retained as post-filter (not supported in `whose` clauses)
+- Newsletter sender pattern matching (17 OR conditions) retained as post-filter — too complex for a single `whose` clause
 - No tool signature changes — fully backward compatible
 
 ## [1.5.0] - 2026-02-01
