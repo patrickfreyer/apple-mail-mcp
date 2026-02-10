@@ -73,6 +73,29 @@ else
     echo -e "  ${YELLOW}⚠${NC} Skill directory not found (optional, skipping)"
 fi
 
+# Copy MCP Package Directory
+echo -e "\n${YELLOW}Step 5b: Copying MCP package directory...${NC}"
+if [ -d "${SOURCE_DIR}/apple_mail_mcp" ]; then
+    cp -r "${SOURCE_DIR}/apple_mail_mcp" "${BUILD_DIR}/"
+    # Remove __pycache__ directories
+    find "${BUILD_DIR}/apple_mail_mcp" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} MCP package directory included"
+else
+    echo -e "  ${RED}✗${NC} MCP package directory not found: ${SOURCE_DIR}/apple_mail_mcp"
+    exit 1
+fi
+
+# Copy UI Module
+echo -e "\n${YELLOW}Step 5c: Copying UI Module...${NC}"
+if [ -d "${SOURCE_DIR}/ui" ]; then
+    cp -r "${SOURCE_DIR}/ui" "${BUILD_DIR}/"
+    # Remove __pycache__ if exists
+    rm -rf "${BUILD_DIR}/ui/__pycache__"
+    echo -e "  ${GREEN}✓${NC} UI Module included (MCP Apps dashboard support)"
+else
+    echo -e "  ${YELLOW}⚠${NC} UI directory not found (optional, skipping)"
+fi
+
 # Note: Virtual environment will be created on user's machine during first run
 echo -e "\n${YELLOW}Step 6: Skipping venv creation (will be created on user's machine)...${NC}"
 echo -e "  ${GREEN}✓${NC} Venv will be initialized automatically on first run using user's Python installation"
