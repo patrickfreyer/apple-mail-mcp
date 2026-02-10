@@ -1,8 +1,8 @@
 {
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
-  "version": "1.5.0",
-  "description": "Natural language interface for Apple Mail with Email Management Expert Skill - comprehensive email management including advanced search, intelligent workflows, productivity strategies, status updates, thread views, draft management, statistics, and export capabilities",
+  "version": "1.6.0",
+  "description": "Natural language interface for Apple Mail with Email Management Expert Skill and Interactive UI Dashboard - comprehensive email management including advanced search, intelligent workflows, productivity strategies, status updates, thread views, draft management, statistics, export capabilities, and MCP Apps UI support",
   "author": {
     "name": "Patrick Freyer"
   },
@@ -115,6 +115,10 @@
     {
       "name": "export_emails",
       "description": "Export emails to txt or html files. Two scopes: single_email (export one email by subject keyword) or entire_mailbox (export all emails from a mailbox to a directory). Configurable save location and format (txt/html)."
+    },
+    {
+      "name": "inbox_dashboard",
+      "description": "Get an interactive UI dashboard view of your email inbox. Returns a UIResource that renders in MCP Apps-compatible clients (like Claude Desktop). Shows account cards with unread counts, recent emails list with action buttons (Mark Read, Archive, Delete), and search functionality. Requires mcp-ui-server package."
     }
   ],
   "prompts": []
