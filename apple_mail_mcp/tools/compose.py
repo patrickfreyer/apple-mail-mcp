@@ -14,7 +14,8 @@ def reply_to_email(
     reply_body: str,
     reply_to_all: bool = False,
     cc: Optional[str] = None,
-    bcc: Optional[str] = None
+    bcc: Optional[str] = None,
+    attachments: Optional[str] = None
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -26,6 +27,7 @@ def reply_to_email(
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
+        attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
 
     Returns:
         Confirmation message with details of the reply sent
@@ -62,8 +64,25 @@ def reply_to_email(
             make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
             '''
 
+    # Build attachment script if provided
+    attachment_script = ''
+    attachment_info = ''
+    if attachments:
+        attachment_paths = [p.strip() for p in attachments.split(',')]
+        for path in attachment_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to "{safe_path}" as POSIX file
+                tell replyMessage
+                    make new attachment with properties {{file name:theFile}} at after the last paragraph
+                end tell
+                delay 1
+            '''
+            attachment_info += f'  📎 {path}\n'
+
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
+    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
     script = f'''
     tell application "Mail"
@@ -107,6 +126,9 @@ def reply_to_email(
                 {cc_script}
                 {bcc_script}
 
+                -- Add attachments
+                {attachment_script}
+
                 -- Send the reply
                 send replyMessage
 
@@ -127,6 +149,11 @@ def reply_to_email(
     if bcc:
         script += f'''
                 set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    if attachments:
+        script += f'''
+                set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
     '''
 
     script += f'''
@@ -154,7 +181,8 @@ def compose_email(
     subject: str,
     body: str,
     cc: Optional[str] = None,
-    bcc: Optional[str] = None
+    bcc: Optional[str] = None,
+    attachments: Optional[str] = None
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -166,6 +194,7 @@ def compose_email(
         body: Email body text
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
+        attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
 
     Returns:
         Confirmation message with details of the sent email
@@ -205,9 +234,25 @@ def compose_email(
                 make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
             '''
 
+    # Build attachment script if provided
+    attachment_script = ''
+    attachment_info = ''
+    if attachments:
+        attachment_paths = [p.strip() for p in attachments.split(',')]
+        for path in attachment_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                tell content of newMessage
+                    make new attachment at after last paragraph with properties {{file name:theFile}}
+                end tell
+            '''
+            attachment_info += f'  📎 {path}\n'
+
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
+    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
     script = f'''
     tell application "Mail"
@@ -231,6 +276,9 @@ def compose_email(
                 {bcc_script}
             end tell
 
+            -- Add attachments
+            {attachment_script}
+
             -- Send the message
             send newMessage
 
@@ -247,6 +295,11 @@ def compose_email(
     if bcc:
         script += f'''
             set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    if attachments:
+        script += f'''
+            set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
     '''
 
     script += f'''
