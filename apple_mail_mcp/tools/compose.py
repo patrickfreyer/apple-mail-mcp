@@ -14,7 +14,8 @@ def reply_to_email(
     reply_body: str,
     reply_to_all: bool = False,
     cc: Optional[str] = None,
-    bcc: Optional[str] = None
+    bcc: Optional[str] = None,
+    send: bool = True
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -26,9 +27,10 @@ def reply_to_email(
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
+        send: If True (default), send immediately; if False, save as draft for review
 
     Returns:
-        Confirmation message with details of the reply sent
+        Confirmation message with details of the reply sent or saved draft
     """
 
     # Escape all user inputs for AppleScript
@@ -65,9 +67,19 @@ def reply_to_email(
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
 
+    # Determine send vs draft behavior
+    if send:
+        header_text = "SENDING REPLY"
+        send_or_draft_command = "send replyMessage"
+        success_text = "✓ Reply sent successfully!"
+    else:
+        header_text = "SAVING REPLY AS DRAFT"
+        send_or_draft_command = "close window 1 saving yes"
+        success_text = "✓ Reply saved as draft!"
+
     script = f'''
     tell application "Mail"
-        set outputText to "SENDING REPLY" & return & return
+        set outputText to "{header_text}" & return & return
 
         try
             set targetAccount to account "{safe_account}"
@@ -107,10 +119,10 @@ def reply_to_email(
                 {cc_script}
                 {bcc_script}
 
-                -- Send the reply
-                send replyMessage
+                -- Send or save as draft
+                {send_or_draft_command}
 
-                set outputText to outputText & "✓ Reply sent successfully!" & return & return
+                set outputText to outputText & "{success_text}" & return & return
                 set outputText to outputText & "Original email:" & return
                 set outputText to outputText & "  Subject: " & messageSubject & return
                 set outputText to outputText & "  From: " & messageSender & return
