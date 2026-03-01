@@ -24,19 +24,38 @@ def escape_applescript(value: str) -> str:
     return value.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _sanitize_for_json(text: str) -> str:
+    """Sanitize text for safe JSON serialization over MCP stdio transport.
+
+    Forces ASCII-safe output to avoid encoding issues in the
+    Desktop <-> CLI <-> MCP communication chain.
+    """
+    # Normalize line endings first (AppleScript uses \r)
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Force ASCII: replaces non-ASCII chars with their Unicode escape or drops them
+    text = text.encode('ascii', 'replace').decode('ascii')
+    # Strip remaining control characters (keep \n and \t)
+    return ''.join(
+        ch for ch in text
+        if ch in ('\n', '\t') or (' ' <= ch <= '~')
+    )
+
+
 def run_applescript(script: str) -> str:
     """Execute AppleScript via stdin pipe for reliable multi-line handling"""
     try:
         result = subprocess.run(
             ['osascript', '-'],
-            input=script,
+            input=script.encode('utf-8'),
             capture_output=True,
-            text=True,
             timeout=120
         )
-        if result.returncode != 0 and result.stderr.strip():
-            raise Exception(f"AppleScript error: {result.stderr.strip()}")
-        return result.stdout.strip()
+        if result.returncode != 0:
+            stderr = result.stderr.decode('utf-8', errors='replace').strip()
+            if stderr:
+                raise Exception(f"AppleScript error: {stderr}")
+        output = result.stdout.decode('utf-8', errors='replace').strip()
+        return _sanitize_for_json(output)
     except subprocess.TimeoutExpired:
         raise Exception("AppleScript execution timed out")
     except Exception as e:
