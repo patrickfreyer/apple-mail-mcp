@@ -1,0 +1,11 @@
+[project]
+name = "apple-mail-mcp"
+version = "1.6.0"
+description = "MCP server for managing Apple Mail"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=0.1.0",
+    "mcp-ui-server>=0.1.0",
+]
