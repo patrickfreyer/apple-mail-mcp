@@ -14,6 +14,7 @@ venv/
 env/
 ENV/
 .venv
+create/
 
 # IDE
 .vscode/
@@ -44,3 +45,7 @@ archive/
 
 # Personal configuration examples (keep templates only)
 claude_desktop_config.json
+
+# Personal scripts with hardcoded data
+sort_inbox.py
+setup_claude_config.sh

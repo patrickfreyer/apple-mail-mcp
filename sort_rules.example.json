@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"match": "@amazon.de", "folder": "Shopping/Amazon"},
+    {"match": "@amazon.com", "folder": "Shopping/Amazon"},
+    {"match": "@ebay.com", "folder": "Shopping/eBay"},
+    {"match": "@github.com", "folder": "IT/Github"},
+    {"match": "@cloudflare.com", "folder": "IT/Cloudflare"},
+    {"match": "@postbank.de", "folder": "Finanzen/Postbank"},
+    {"match": "@klarna.de", "folder": "Finanzen/Klarna"},
+    {"match": "@support.facebook.com", "folder": "Trash"}
+  ]
+}

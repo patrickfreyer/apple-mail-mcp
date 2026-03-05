@@ -1,14 +1,13 @@
 #!/bin/bash
 
 # Startup wrapper for Apple Mail MCP
-# This script ensures the virtual environment is created on the user's machine
-# to avoid Python version/path conflicts
+# Uses uv for fast, reproducible virtual environment and dependency management
 
 set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-VENV_DIR="${SCRIPT_DIR}/venv"
+VENV_DIR="${SCRIPT_DIR}/.venv"
 REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
 PYTHON_SCRIPT="${SCRIPT_DIR}/apple_mail_mcp.py"
 
@@ -17,25 +16,24 @@ log_error() {
     echo "[Apple Mail MCP] $1" >&2
 }
 
-# Check if venv exists and is valid
+# Resolve uv binary
+if command -v uv &> /dev/null; then
+    UV_BIN="$(command -v uv)"
+elif [ -x "${HOME}/.cargo/bin/uv" ]; then
+    UV_BIN="${HOME}/.cargo/bin/uv"
+elif [ -x "${HOME}/.local/bin/uv" ]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+else
+    log_error "ERROR: uv not found. Install it with: curl -Ls https://astral.sh/uv/install.sh | sh"
+    exit 1
+fi
+
+# Create venv and sync dependencies if needed
 if [ ! -d "${VENV_DIR}" ] || [ ! -f "${VENV_DIR}/bin/python3" ]; then
-    log_error "Virtual environment not found. Creating on first run..."
-
-    # Check if python3 is available
-    if ! command -v python3 &> /dev/null; then
-        log_error "ERROR: python3 not found. Please install Python 3.7 or later."
-        exit 1
-    fi
-
-    # Create venv
-    log_error "Creating virtual environment..."
-    python3 -m venv "${VENV_DIR}" 2>&1 | while read line; do log_error "$line"; done
-
-    # Upgrade pip and install dependencies
+    log_error "Virtual environment not found. Creating with uv..."
+    "${UV_BIN}" venv "${VENV_DIR}" 2>&1 | while read line; do log_error "$line"; done
     log_error "Installing dependencies..."
-    "${VENV_DIR}/bin/pip" install --quiet --upgrade pip 2>&1 | while read line; do log_error "$line"; done
-    "${VENV_DIR}/bin/pip" install --quiet -r "${REQUIREMENTS}" 2>&1 | while read line; do log_error "$line"; done
-
+    "${UV_BIN}" pip install --quiet -r "${REQUIREMENTS}" --python "${VENV_DIR}/bin/python3" 2>&1 | while read line; do log_error "$line"; done
     log_error "Setup complete. Starting MCP server..."
 fi
 

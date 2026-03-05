@@ -138,23 +138,57 @@ def bulk_move_emails(
     """
 
     safe_account = escape_applescript(account)
-
-    def build_mailbox_ref(path: str, account_var: str) -> str:
-        parts = path.split('/')
-        if len(parts) > 1:
-            ref = f'mailbox "{escape_applescript(parts[-1])}" of '
-            for i in range(len(parts) - 2, -1, -1):
-                ref += f'mailbox "{escape_applescript(parts[i])}" of '
-            ref += account_var
-        else:
-            ref = f'mailbox "{escape_applescript(path)}" of {account_var}'
-        return ref
-
-    source_ref = build_mailbox_ref(from_mailbox, 'targetAccount')
-    dest_ref = build_mailbox_ref(to_mailbox, 'targetAccount')
-
     safe_from = escape_applescript(from_mailbox)
     safe_to = escape_applescript(to_mailbox)
+
+    # Build AppleScript to find a mailbox by iterating (works with Proton Bridge)
+    def build_find_mailbox_script(path: str, result_var: str) -> str:
+        parts = path.split('/')
+        escaped_parts = [escape_applescript(p) for p in parts]
+        # First level: iterate top-level mailboxes of account
+        script_lines = [f'set {result_var} to missing value']
+        script_lines.append(f'repeat with aBox in (every mailbox of targetAccount)')
+        script_lines.append(f'    if name of aBox is "{escaped_parts[0]}" then')
+        if len(parts) == 1:
+            script_lines.append(f'        set {result_var} to aBox')
+        else:
+            # Walk nested levels
+            for depth, part in enumerate(escaped_parts[1:], 1):
+                indent = '        ' + '    ' * (depth - 1)
+                script_lines.append(f'{indent}repeat with subBox{depth} in (every mailbox of {"aBox" if depth == 1 else f"subBox{depth-1}"})')
+                script_lines.append(f'{indent}    if name of subBox{depth} is "{part}" then')
+                if depth == len(parts) - 1:
+                    script_lines.append(f'{indent}        set {result_var} to subBox{depth}')
+                # Close inner levels (will be closed below)
+            # Close all nested levels in reverse
+            for depth in range(len(parts) - 1, 0, -1):
+                indent = '        ' + '    ' * (depth - 1)
+                script_lines.append(f'{indent}    end if')
+                script_lines.append(f'{indent}end repeat')
+        script_lines.append('        exit repeat')
+        script_lines.append('    end if')
+        script_lines.append('end repeat')
+        script_lines.append(f'if {result_var} is missing value then error "Mailbox not found: {escape_applescript(path)}"')
+        return '\n            '.join(script_lines)
+
+    # Handle INBOX specially (direct reference always works)
+    if from_mailbox.upper() == "INBOX":
+        find_source = '''try
+                set sourceMailbox to mailbox "INBOX" of targetAccount
+            on error
+                set sourceMailbox to mailbox "Inbox" of targetAccount
+            end try'''
+    else:
+        find_source = build_find_mailbox_script(from_mailbox, 'sourceMailbox')
+
+    if to_mailbox.upper() == "INBOX":
+        find_dest = '''try
+                set destMailbox to mailbox "INBOX" of targetAccount
+            on error
+                set destMailbox to mailbox "Inbox" of targetAccount
+            end try'''
+    else:
+        find_dest = build_find_mailbox_script(to_mailbox, 'destMailbox')
 
     # Build sender filter condition
     if sender:
@@ -171,19 +205,11 @@ def bulk_move_emails(
         try
             set targetAccount to account "{safe_account}"
 
-            -- Get source mailbox (handle INBOX variations)
-            try
-                set sourceMailbox to {source_ref}
-            on error
-                if "{safe_from}" is "INBOX" then
-                    set sourceMailbox to mailbox "Inbox" of targetAccount
-                else
-                    error "Source mailbox not found: {safe_from}"
-                end if
-            end try
+            -- Find source mailbox by iterating (compatible with Proton Bridge)
+            {find_source}
 
-            -- Get destination mailbox
-            set destMailbox to {dest_ref}
+            -- Find destination mailbox by iterating
+            {find_dest}
 
             -- Collect messages to move (iterate in reverse to avoid index shifting)
             set sourceMessages to every message of sourceMailbox
