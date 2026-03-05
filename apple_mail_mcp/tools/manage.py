@@ -113,6 +113,116 @@ def move_email(
 
 @mcp.tool()
 @inject_preferences
+def bulk_move_emails(
+    account: str,
+    from_mailbox: str,
+    to_mailbox: str,
+    sender: Optional[str] = None,
+    max_moves: int = 100
+) -> str:
+    """
+    Move all emails (or emails matching a sender) from one mailbox to another.
+
+    Useful for merging duplicate folders, reorganizing folder structures,
+    or triaging inbox emails by sender into category folders.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Proton")
+        from_mailbox: Source mailbox. For nested mailboxes, use "/" separator (e.g., "IT/Netflix")
+        to_mailbox: Destination mailbox. For nested mailboxes, use "/" separator (e.g., "Finanzen/Rechnungen")
+        sender: Optional sender email/name to filter by (case-insensitive contains match)
+        max_moves: Maximum number of emails to move (safety limit, default: 100)
+
+    Returns:
+        Confirmation message with count of moved emails
+    """
+
+    safe_account = escape_applescript(account)
+
+    def build_mailbox_ref(path: str, account_var: str) -> str:
+        parts = path.split('/')
+        if len(parts) > 1:
+            ref = f'mailbox "{escape_applescript(parts[-1])}" of '
+            for i in range(len(parts) - 2, -1, -1):
+                ref += f'mailbox "{escape_applescript(parts[i])}" of '
+            ref += account_var
+        else:
+            ref = f'mailbox "{escape_applescript(path)}" of {account_var}'
+        return ref
+
+    source_ref = build_mailbox_ref(from_mailbox, 'targetAccount')
+    dest_ref = build_mailbox_ref(to_mailbox, 'targetAccount')
+
+    safe_from = escape_applescript(from_mailbox)
+    safe_to = escape_applescript(to_mailbox)
+
+    # Build sender filter condition
+    if sender:
+        condition = f'messageSender contains "{escape_applescript(sender)}"'
+    else:
+        condition = 'true'
+
+    script = f'''
+    tell application "Mail"
+        set outputText to "BULK MOVING EMAILS" & return
+        set outputText to outputText & "{safe_from} → {safe_to}" & return
+        set movedCount to 0
+
+        try
+            set targetAccount to account "{safe_account}"
+
+            -- Get source mailbox (handle INBOX variations)
+            try
+                set sourceMailbox to {source_ref}
+            on error
+                if "{safe_from}" is "INBOX" then
+                    set sourceMailbox to mailbox "Inbox" of targetAccount
+                else
+                    error "Source mailbox not found: {safe_from}"
+                end if
+            end try
+
+            -- Get destination mailbox
+            set destMailbox to {dest_ref}
+
+            -- Collect messages to move (iterate in reverse to avoid index shifting)
+            set sourceMessages to every message of sourceMailbox
+            set msgCount to count of sourceMessages
+
+            set outputText to outputText & "Found " & msgCount & " message(s) in source" & return & return
+
+            repeat with i from msgCount to 1 by -1
+                if movedCount >= {max_moves} then exit repeat
+
+                try
+                    set aMessage to item i of sourceMessages
+                    set messageSender to sender of aMessage
+
+                    if {condition} then
+                        move aMessage to destMailbox
+                        set movedCount to movedCount + 1
+                    end if
+                end try
+            end repeat
+
+            set outputText to outputText & "========================================" & return
+            set outputText to outputText & "TOTAL MOVED: " & movedCount & " email(s)" & return
+            set outputText to outputText & "========================================" & return
+
+        on error errMsg
+            return "Error: " & errMsg & return & "Check that account and mailbox names are correct. Use '/' for nested mailboxes."
+        end try
+
+        return outputText
+    end tell
+    '''
+
+    result = run_applescript(script)
+    return result
+
+
+@mcp.tool()
+@inject_preferences
 def save_email_attachment(
     account: str,
     subject_keyword: str,
