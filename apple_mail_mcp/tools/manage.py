@@ -135,6 +135,31 @@ def save_email_attachment(
     # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
     expanded_path = os.path.expanduser(save_path)
 
+    # Path validation: resolve to absolute path and enforce safety constraints
+    resolved_path = os.path.realpath(expanded_path)
+    home_dir = os.path.expanduser('~')
+
+    # Must be under the user's home directory
+    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
+        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
+
+    # Block sensitive directories
+    sensitive_dirs = [
+        os.path.join(home_dir, '.ssh'),
+        os.path.join(home_dir, '.gnupg'),
+        os.path.join(home_dir, '.config'),
+        os.path.join(home_dir, '.aws'),
+        os.path.join(home_dir, '.claude'),
+        os.path.join(home_dir, 'Library', 'LaunchAgents'),
+        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
+        os.path.join(home_dir, 'Library', 'Keychains'),
+    ]
+    for sensitive_dir in sensitive_dirs:
+        if resolved_path.startswith(sensitive_dir + os.sep) or resolved_path == sensitive_dir:
+            return f"Error: Cannot save attachments to sensitive directory: {sensitive_dir}"
+
+    expanded_path = resolved_path
+
     # Escape for AppleScript
     escaped_account = escape_applescript(account)
     escaped_keyword = escape_applescript(subject_keyword)
@@ -207,7 +232,8 @@ def update_email_status(
     subject_keyword: Optional[str] = None,
     sender: Optional[str] = None,
     mailbox: str = "INBOX",
-    max_updates: int = 10
+    max_updates: int = 10,
+    apply_to_all: bool = False
 ) -> str:
     """
     Update email status - mark as read/unread or flag/unflag emails.
@@ -219,10 +245,18 @@ def update_email_status(
         sender: Optional sender to filter emails by
         mailbox: Mailbox to search in (default: "INBOX")
         max_updates: Maximum number of emails to update (safety limit, default: 10)
+        apply_to_all: Must be True to allow updates without subject_keyword or sender filter
 
     Returns:
         Confirmation message with details of updated emails
     """
+
+    # Safety check: require at least one filter or explicit apply_to_all
+    if not subject_keyword and not sender and not apply_to_all:
+        return (
+            "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
+            "or set apply_to_all=True to update all messages in the mailbox."
+        )
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -318,7 +352,9 @@ def manage_trash(
     subject_keyword: Optional[str] = None,
     sender: Optional[str] = None,
     mailbox: str = "INBOX",
-    max_deletes: int = 5
+    max_deletes: int = 5,
+    confirm_empty: bool = False,
+    apply_to_all: bool = False
 ) -> str:
     """
     Manage trash operations - delete emails or empty trash.
@@ -330,6 +366,8 @@ def manage_trash(
         sender: Optional sender to filter emails (not used for empty_trash)
         mailbox: Source mailbox (default: "INBOX", not used for empty_trash or delete_permanent)
         max_deletes: Maximum number of emails to delete (safety limit, default: 5)
+        confirm_empty: Must be True to execute "empty_trash" action (safety confirmation)
+        apply_to_all: Must be True to allow operations without subject_keyword or sender filter
 
     Returns:
         Confirmation message with details of deleted emails
@@ -340,6 +378,11 @@ def manage_trash(
     safe_mailbox = escape_applescript(mailbox)
 
     if action == "empty_trash":
+        if not confirm_empty:
+            return (
+                "Error: empty_trash permanently deletes ALL messages in the trash. "
+                "Set confirm_empty=True to proceed."
+            )
         script = f'''
         tell application "Mail"
             set outputText to "EMPTYING TRASH" & return & return
@@ -349,14 +392,20 @@ def manage_trash(
                 set trashMailbox to mailbox "Trash" of targetAccount
                 set trashMessages to every message of trashMailbox
                 set messageCount to count of trashMessages
+                set deleteCount to 0
 
-                -- Delete all messages in trash
+                -- Delete messages in trash, respecting max_deletes
                 repeat with aMessage in trashMessages
+                    if deleteCount >= {max_deletes} then exit repeat
                     delete aMessage
+                    set deleteCount to deleteCount + 1
                 end repeat
 
                 set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
-                set outputText to outputText & "   Deleted " & messageCount & " message(s)" & return
+                set outputText to outputText & "   Deleted " & deleteCount & " of " & messageCount & " message(s)" & return
+                if deleteCount < messageCount then
+                    set outputText to outputText & "   (limited by max_deletes=" & {max_deletes} & ")" & return
+                end if
 
             on error errMsg
                 return "Error: " & errMsg
@@ -366,6 +415,13 @@ def manage_trash(
         end tell
         '''
     elif action == "delete_permanent":
+        # Safety check: require at least one filter or explicit apply_to_all
+        if not subject_keyword and not sender and not apply_to_all:
+            return (
+                "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
+                "or set apply_to_all=True to delete all matching messages."
+            )
+
         # Build search condition with escaped inputs
         conditions = []
         if subject_keyword:
@@ -415,6 +471,13 @@ def manage_trash(
         end tell
         '''
     else:  # move_to_trash
+        # Safety check: require at least one filter or explicit apply_to_all
+        if not subject_keyword and not sender and not apply_to_all:
+            return (
+                "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
+                "or set apply_to_all=True to move all messages to trash."
+            )
+
         # Build search condition with escaped inputs
         conditions = []
         if subject_keyword:
