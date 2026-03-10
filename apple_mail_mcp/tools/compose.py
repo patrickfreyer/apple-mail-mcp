@@ -1,9 +1,65 @@
 """Composition tools: sending, replying, forwarding, and drafts."""
 
-from typing import Optional
+import os
+from typing import Optional, List, Tuple
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+
+
+def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[str]]:
+    """Validate and resolve attachment file paths.
+
+    Splits comma-separated paths, expands tildes, resolves symlinks,
+    and enforces security constraints (home-dir-only, no sensitive dirs,
+    file must exist).
+
+    Returns:
+        A tuple of (resolved_paths, error_message).
+        If error_message is not None, resolved_paths should be ignored.
+    """
+    home_dir = os.path.expanduser('~')
+    sensitive_dirs = [
+        os.path.join(home_dir, '.ssh'),
+        os.path.join(home_dir, '.gnupg'),
+        os.path.join(home_dir, '.config'),
+        os.path.join(home_dir, '.aws'),
+        os.path.join(home_dir, '.claude'),
+        os.path.join(home_dir, 'Library', 'LaunchAgents'),
+        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
+        os.path.join(home_dir, 'Library', 'Keychains'),
+    ]
+
+    resolved_paths: List[str] = []
+    raw_paths = [p.strip() for p in attachments.split(',')]
+
+    for raw_path in raw_paths:
+        if not raw_path:
+            continue
+
+        # Expand tilde and resolve symlinks
+        expanded = os.path.expanduser(raw_path)
+        resolved = os.path.realpath(expanded)
+
+        # Must be under the user's home directory
+        if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
+            return [], f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}"
+
+        # Block sensitive directories
+        for sensitive_dir in sensitive_dirs:
+            if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
+                return [], f"Error: Cannot attach files from sensitive directory: {sensitive_dir}"
+
+        # File must exist
+        if not os.path.isfile(resolved):
+            return [], f"Error: Attachment file does not exist: {resolved}"
+
+        resolved_paths.append(resolved)
+
+    if not resolved_paths:
+        return [], "Error: No valid attachment paths provided."
+
+    return resolved_paths, None
 
 
 @mcp.tool()
@@ -15,7 +71,8 @@ def reply_to_email(
     reply_to_all: bool = False,
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
-    send: bool = True
+    send: bool = True,
+    attachments: Optional[str] = None
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -28,6 +85,7 @@ def reply_to_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         send: If True (default), send immediately; if False, save as draft for review
+        attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
 
     Returns:
         Confirmation message with details of the reply sent or saved draft
@@ -64,8 +122,25 @@ def reply_to_email(
             make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
             '''
 
+    # Build attachment script if provided
+    attachment_script = ''
+    attachment_info = ''
+    if attachments:
+        validated_paths, error = _validate_attachment_paths(attachments)
+        if error:
+            return error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f'  {path}\n'
+
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
+    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
     # Determine send vs draft behavior
     if send:
@@ -131,6 +206,9 @@ def reply_to_email(
                 {cc_script}
                 {bcc_script}
 
+                -- Add attachments
+                {attachment_script}
+
                 -- Send or save as draft
                 {send_or_draft_command}
 
@@ -151,6 +229,11 @@ def reply_to_email(
     if bcc:
         script += f'''
                 set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    if attachments:
+        script += f'''
+                set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
     '''
 
     script += f'''
@@ -178,7 +261,8 @@ def compose_email(
     subject: str,
     body: str,
     cc: Optional[str] = None,
-    bcc: Optional[str] = None
+    bcc: Optional[str] = None,
+    attachments: Optional[str] = None
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -190,6 +274,7 @@ def compose_email(
         body: Email body text
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
+        attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
 
     Returns:
         Confirmation message with details of the sent email
@@ -229,9 +314,26 @@ def compose_email(
                 make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
             '''
 
+    # Build attachment script if provided
+    attachment_script = ''
+    attachment_info = ''
+    if attachments:
+        validated_paths, error = _validate_attachment_paths(attachments)
+        if error:
+            return error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f'  {path}\n'
+
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
+    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
     script = f'''
     tell application "Mail"
@@ -255,6 +357,11 @@ def compose_email(
                 {bcc_script}
             end tell
 
+            -- Add attachments
+            tell newMessage
+                {attachment_script}
+            end tell
+
             -- Send the message
             send newMessage
 
@@ -271,6 +378,11 @@ def compose_email(
     if bcc:
         script += f'''
             set outputText to outputText & "BCC: {safe_bcc}" & return
+    '''
+
+    if attachments:
+        script += f'''
+            set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
     '''
 
     script += f'''
