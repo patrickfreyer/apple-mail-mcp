@@ -19,9 +19,18 @@ def inject_preferences(func):
 def escape_applescript(value: str) -> str:
     """Escape a string for safe injection into AppleScript double-quoted strings.
 
-    Handles backslashes first, then double quotes, to prevent injection.
+    Handles backslashes first, then double quotes, then newlines/returns/tabs
+    to prevent injection and AppleScript syntax errors.
     """
-    return value.replace('\\', '\\\\').replace('"', '\\"')
+    return (
+        value
+        .replace('\\', '\\\\')
+        .replace('"', '\\"')
+        .replace('\r\n', '\\n')
+        .replace('\r', '\\n')
+        .replace('\n', '\\n')
+        .replace('\t', '\\t')
+    )
 
 
 def _sanitize_for_json(text: str) -> str:
