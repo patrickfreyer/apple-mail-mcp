@@ -89,6 +89,21 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 
 ## Configuration
 
+### Read-Only Mode
+
+Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_email`, `forward_email`). Draft management remains available (list, create, delete) but sending a draft via `manage_drafts` is blocked.
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/venv/bin/python3",
+      "args": ["/path/to/apple_mail_mcp.py", "--read-only"]
+    }
+  }
+}
+```
+
 ### User Preferences (Optional)
 
 Set the `USER_EMAIL_PREFERENCES` environment variable to give the assistant context about your workflow:
