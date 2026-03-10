@@ -5,6 +5,17 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-03-10
+
+### Security
+
+- **`escape_applescript` now escapes newlines and tabs** -- prevents AppleScript syntax errors when user input contains `\n`, `\r`, or `\t` characters
+- **`empty_trash` now enforces `max_deletes` limit** -- added `confirm_empty` boolean parameter; action is rejected unless explicitly confirmed
+- **Bulk operations require filters** -- `manage_trash` (move_to_trash, delete_permanent) and `update_email_status` now require at least one filter (`subject_keyword` or `sender`), or explicit `apply_to_all=True`, to prevent accidental bulk modifications
+- **`save_email_attachment` path validation** -- save path must resolve under the user's home directory; writes to `~/.ssh`, `~/.aws`, `~/Library/LaunchAgents`, and other sensitive directories are blocked
+- **`export_emails` entire mailbox cap** -- added `max_emails` parameter (default: 1000) to prevent unbounded exports when `scope="entire_mailbox"`
+- **Pinned dependency versions** -- `requirements.txt` now uses exact versions (`fastmcp==3.1.0`, `mcp-ui-server==1.0.0`) instead of open-ended `>=` ranges
+
 ## [1.6.0] - 2026-02-06
 
 ### Added
@@ -190,6 +201,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History Summary
 
+- **v1.6.1** - Security hardening: input escaping, path validation, bulk operation safeguards, export caps, dependency pinning
 - **v1.6.0** - CC/BCC on reply/forward, stdin-based AppleScript execution, interactive dashboard, README rewrite
 - **v1.5.0** - Advanced search tools (4 new tools: search_by_sender, search_all_accounts, search_email_content, get_newsletters)
 - **v1.4.0** - User preferences configuration
