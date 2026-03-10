@@ -375,7 +375,8 @@ def export_emails(
     subject_keyword: Optional[str] = None,
     mailbox: str = "INBOX",
     save_directory: str = "~/Desktop",
-    format: str = "txt"
+    format: str = "txt",
+    max_emails: int = 1000
 ) -> str:
     """
     Export emails to files for backup or analysis.
@@ -387,6 +388,7 @@ def export_emails(
         mailbox: Mailbox to export from (default: "INBOX")
         save_directory: Directory to save exports (default: "~/Desktop")
         format: Export format: "txt", "html" (default: "txt")
+        max_emails: Maximum number of emails to export for entire_mailbox (default: 1000, safety cap)
 
     Returns:
         Confirmation message with export location
@@ -523,6 +525,8 @@ def export_emails(
                 do shell script "mkdir -p " & quoted form of exportDir
 
                 repeat with aMessage in mailboxMessages
+                    if exportCount >= {max_emails} then exit repeat
+
                     try
                         set messageSubject to subject of aMessage
                         set messageSender to sender of aMessage
@@ -570,8 +574,11 @@ def export_emails(
 
                 set outputText to outputText & "✓ Mailbox exported successfully!" & return & return
                 set outputText to outputText & "Mailbox: {safe_mailbox}" & return
-                set outputText to outputText & "Total emails: " & messageCount & return
+                set outputText to outputText & "Total emails in mailbox: " & messageCount & return
                 set outputText to outputText & "Exported: " & exportCount & return
+                if exportCount < messageCount then
+                    set outputText to outputText & "(capped at max_emails={max_emails})" & return
+                end if
                 set outputText to outputText & "Location: " & exportDir & return
 
             on error errMsg
