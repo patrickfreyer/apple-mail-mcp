@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+from apple_mail_mcp.constants import SKIP_FOLDERS
 
 
 @mcp.tool()
@@ -132,10 +133,11 @@ def get_statistics(
         date_filter = f'''
             set targetDate to (current date) - ({days_back} * days)
         '''
-        date_check = 'and messageDate > targetDate'
-    else:
-        date_filter = ""
-        date_check = ""
+
+    # Build skip folders condition from constants
+    skip_folder_checks = ' and '.join(
+        f'mailboxName is not "{f}"' for f in SKIP_FOLDERS
+    )
 
     if scope == "account_overview":
         script = f'''
@@ -161,60 +163,70 @@ def get_statistics(
 
                 -- Analyze all mailboxes
                 repeat with aMailbox in allMailboxes
-                    set mailboxName to name of aMailbox
-                    set mailboxMessages to every message of aMailbox
-                    set mailboxTotal to 0
+                    try
+                        set mailboxName to name of aMailbox
 
-                    repeat with aMessage in mailboxMessages
-                        try
-                            set messageDate to date received of aMessage
+                        -- Skip system folders
+                        if {skip_folder_checks} then
 
-                            -- Apply date filter if specified
-                            if true {date_check} then
-                                set totalEmails to totalEmails + 1
-                                set mailboxTotal to mailboxTotal + 1
+                            -- Use whose clause for date pre-filtering when days_back > 0
+                            if {days_back} > 0 then
+                                set mailboxMessages to (every message of aMailbox whose date received > targetDate)
+                            else
+                                set mailboxMessages to every message of aMailbox
+                            end if
+                            set mailboxTotal to 0
 
-                                -- Count read/unread
-                                if read status of aMessage then
-                                    set totalRead to totalRead + 1
-                                else
-                                    set totalUnread to totalUnread + 1
-                                end if
-
-                                -- Count flagged
+                            repeat with aMessage in mailboxMessages
                                 try
-                                    if flagged status of aMessage then
-                                        set totalFlagged to totalFlagged + 1
+                                    set totalEmails to totalEmails + 1
+                                    set mailboxTotal to mailboxTotal + 1
+
+                                    -- Count read/unread
+                                    if read status of aMessage then
+                                        set totalRead to totalRead + 1
+                                    else
+                                        set totalUnread to totalUnread + 1
+                                    end if
+
+                                    -- Count flagged
+                                    try
+                                        if flagged status of aMessage then
+                                            set totalFlagged to totalFlagged + 1
+                                        end if
+                                    end try
+
+                                    -- Count attachments
+                                    set attachmentCount to count of mail attachments of aMessage
+                                    if attachmentCount > 0 then
+                                        set totalWithAttachments to totalWithAttachments + 1
+                                    end if
+
+                                    -- Track senders (top 10)
+                                    set messageSender to sender of aMessage
+                                    set senderFound to false
+                                    repeat with senderPair in senderCounts
+                                        if item 1 of senderPair is messageSender then
+                                            set item 2 of senderPair to (item 2 of senderPair) + 1
+                                            set senderFound to true
+                                            exit repeat
+                                        end if
+                                    end repeat
+                                    if not senderFound then
+                                        set end of senderCounts to {{messageSender, 1}}
                                     end if
                                 end try
+                            end repeat
 
-                                -- Count attachments
-                                set attachmentCount to count of mail attachments of aMessage
-                                if attachmentCount > 0 then
-                                    set totalWithAttachments to totalWithAttachments + 1
-                                end if
-
-                                -- Track senders (top 10)
-                                set messageSender to sender of aMessage
-                                set senderFound to false
-                                repeat with senderPair in senderCounts
-                                    if item 1 of senderPair is messageSender then
-                                        set item 2 of senderPair to (item 2 of senderPair) + 1
-                                        set senderFound to true
-                                        exit repeat
-                                    end if
-                                end repeat
-                                if not senderFound then
-                                    set end of senderCounts to {{messageSender, 1}}
-                                end if
+                            -- Store mailbox counts
+                            if mailboxTotal > 0 then
+                                set end of mailboxCounts to {{mailboxName, mailboxTotal}}
                             end if
-                        end try
-                    end repeat
 
-                    -- Store mailbox counts
-                    if mailboxTotal > 0 then
-                        set end of mailboxCounts to {{mailboxName, mailboxTotal}}
-                    end if
+                        end if
+                    on error
+                        -- Skip mailboxes that throw errors (smart mailboxes, etc.)
+                    end try
                 end repeat
 
                 -- Format output
@@ -272,6 +284,12 @@ def get_statistics(
         if not sender:
             return "Error: 'sender' parameter required for sender_stats scope"
 
+        # Build whose clause for fast app-level filtering
+        whose_parts = [f'sender contains "{escaped_sender}"']
+        if days_back > 0:
+            whose_parts.append('date received > targetDate')
+        whose_clause = ' and '.join(whose_parts)
+
         script = f'''
         tell application "Mail"
             set outputText to "SENDER STATISTICS" & return & return
@@ -289,26 +307,33 @@ def get_statistics(
                 set withAttachments to 0
 
                 repeat with aMailbox in allMailboxes
-                    set mailboxMessages to every message of aMailbox
+                    try
+                        set mailboxName to name of aMailbox
 
-                    repeat with aMessage in mailboxMessages
-                        try
-                            set messageSender to sender of aMessage
-                            set messageDate to date received of aMessage
+                        -- Skip system folders
+                        if {skip_folder_checks} then
 
-                            if messageSender contains "{escaped_sender}" {date_check} then
-                                set totalFromSender to totalFromSender + 1
+                            -- Use whose clause for fast app-level filtering
+                            set matchedMessages to (every message of aMailbox whose {whose_clause})
 
-                                if not (read status of aMessage) then
-                                    set unreadFromSender to unreadFromSender + 1
-                                end if
+                            repeat with aMessage in matchedMessages
+                                try
+                                    set totalFromSender to totalFromSender + 1
 
-                                if (count of mail attachments of aMessage) > 0 then
-                                    set withAttachments to withAttachments + 1
-                                end if
-                            end if
-                        end try
-                    end repeat
+                                    if not (read status of aMessage) then
+                                        set unreadFromSender to unreadFromSender + 1
+                                    end if
+
+                                    if (count of mail attachments of aMessage) > 0 then
+                                        set withAttachments to withAttachments + 1
+                                    end if
+                                end try
+                            end repeat
+
+                        end if
+                    on error
+                        -- Skip mailboxes that throw errors (smart mailboxes, etc.)
+                    end try
                 end repeat
 
                 set outputText to outputText & "Total emails: " & totalFromSender & return
