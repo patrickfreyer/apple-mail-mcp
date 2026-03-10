@@ -169,3 +169,116 @@ def skip_folders_condition(var_name: str = "mailboxName") -> str:
     from apple_mail_mcp.constants import SKIP_FOLDERS
     folder_list = ', '.join(f'"{f}"' for f in SKIP_FOLDERS)
     return f'{var_name} is not in {{{folder_list}}}'
+
+
+def build_mailbox_ref(
+    mailbox: str,
+    account_var: str = "targetAccount",
+    var_name: str = "targetMailbox",
+) -> str:
+    """Return AppleScript snippet to resolve a mailbox by name with INBOX fallback.
+
+    Handles:
+    - Normal mailbox names (e.g. "Archive")
+    - INBOX / Inbox case variation
+    - Nested mailbox paths using "/" separator (e.g. "Projects/2024")
+
+    The resulting variable *var_name* will hold the resolved mailbox reference.
+    """
+    escaped = escape_applescript(mailbox)
+    parts = mailbox.split("/")
+
+    if len(parts) > 1:
+        # Build nested mailbox reference: mailbox "Child" of mailbox "Parent" of account
+        ref = f'mailbox "{escape_applescript(parts[-1])}" of '
+        for i in range(len(parts) - 2, -1, -1):
+            ref += f'mailbox "{escape_applescript(parts[i])}" of '
+        ref += account_var
+        return f'set {var_name} to {ref}'
+
+    return f'''try
+                set {var_name} to mailbox "{escaped}" of {account_var}
+            on error
+                if "{escaped}" is "INBOX" then
+                    set {var_name} to mailbox "Inbox" of {account_var}
+                else
+                    error "Mailbox not found: {escaped}"
+                end if
+            end try'''
+
+
+def build_filter_condition(
+    subject: str | None = None,
+    sender: str | None = None,
+    subject_var: str = "messageSubject",
+    sender_var: str = "messageSender",
+) -> str:
+    """Return an AppleScript boolean expression combining subject/sender filters.
+
+    When both are provided they are ANDed together.
+    Returns ``"true"`` when neither filter is given.
+    """
+    conditions: list[str] = []
+    if subject:
+        conditions.append(f'{subject_var} contains "{escape_applescript(subject)}"')
+    if sender:
+        conditions.append(f'{sender_var} contains "{escape_applescript(sender)}"')
+    return " and ".join(conditions) if conditions else "true"
+
+
+def build_date_filter(
+    days_back: int,
+    var_name: str = "cutoffDate",
+) -> tuple[str, str]:
+    """Return (setup_script, condition_fragment) for a date-based cutoff.
+
+    *setup_script* should be placed before the message loop.
+    *condition_fragment* is an AppleScript fragment like
+    ``"and messageDate > cutoffDate"`` suitable for appending to an ``if``
+    clause.  When *days_back* is 0 both strings are empty.
+    """
+    if days_back <= 0:
+        return ("", "")
+    setup = f'set {var_name} to (current date) - ({days_back} * days)'
+    condition = f"and messageDate > {var_name}"
+    return (setup, condition)
+
+
+def build_email_fields_script(
+    message_var: str = "aMessage",
+    include_content: bool = False,
+    max_content_length: int = 300,
+    output_var: str = "outputText",
+) -> str:
+    """Return AppleScript snippet that extracts common fields from an email.
+
+    Sets local variables: messageSubject, messageSender, messageDate,
+    messageRead.  Optionally appends a cleaned content preview to
+    *output_var*.
+    """
+    fields = f'''set messageSubject to subject of {message_var}
+                                set messageSender to sender of {message_var}
+                                set messageDate to date received of {message_var}
+                                set messageRead to read status of {message_var}'''
+
+    if not include_content:
+        return fields
+
+    content = f'''
+                                try
+                                    set msgContent to content of {message_var}
+                                    set AppleScript's text item delimiters to {{return, linefeed}}
+                                    set contentParts to text items of msgContent
+                                    set AppleScript's text item delimiters to " "
+                                    set cleanText to contentParts as string
+                                    set AppleScript's text item delimiters to ""
+                                    if length of cleanText > {max_content_length} then
+                                        set contentPreview to text 1 thru {max_content_length} of cleanText & "..."
+                                    else
+                                        set contentPreview to cleanText
+                                    end if
+                                    set {output_var} to {output_var} & "   Content: " & contentPreview & return
+                                on error
+                                    set {output_var} to {output_var} & "   Content: [Not available]" & return
+                                end try'''
+    return fields + content

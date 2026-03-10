@@ -4,7 +4,14 @@ import os
 from typing import Optional
 
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+from apple_mail_mcp.core import (
+    inject_preferences,
+    escape_applescript,
+    run_applescript,
+    inbox_mailbox_script,
+    build_mailbox_ref,
+    build_filter_condition,
+)
 
 
 @mcp.tool()
@@ -260,16 +267,9 @@ def update_email_status(
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
-    safe_mailbox = escape_applescript(mailbox)
 
-    # Build search condition
-    conditions = []
-    if subject_keyword:
-        conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
-    if sender:
-        conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
-
-    condition_str = ' and '.join(conditions) if conditions else 'true'
+    # Build search condition using helper
+    condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
 
     # Build action script
     if action == "mark_read":
@@ -294,16 +294,7 @@ def update_email_status(
 
         try
             set targetAccount to account "{safe_account}"
-            -- Try to get mailbox
-            try
-                set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
-            on error
-                if "{safe_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
-                else
-                    error "Mailbox not found: {safe_mailbox}"
-                end if
-            end try
+            {build_mailbox_ref(mailbox, var_name="targetMailbox")}
 
             set mailboxMessages to every message of targetMailbox
 
@@ -375,7 +366,6 @@ def manage_trash(
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
-    safe_mailbox = escape_applescript(mailbox)
 
     if action == "empty_trash":
         if not confirm_empty:
@@ -422,14 +412,7 @@ def manage_trash(
                 "or set apply_to_all=True to delete all matching messages."
             )
 
-        # Build search condition with escaped inputs
-        conditions = []
-        if subject_keyword:
-            conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
-        if sender:
-            conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
-
-        condition_str = ' and '.join(conditions) if conditions else 'true'
+        condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
 
         script = f'''
         tell application "Mail"
@@ -478,14 +461,8 @@ def manage_trash(
                 "or set apply_to_all=True to move all messages to trash."
             )
 
-        # Build search condition with escaped inputs
-        conditions = []
-        if subject_keyword:
-            conditions.append(f'messageSubject contains "{escape_applescript(subject_keyword)}"')
-        if sender:
-            conditions.append(f'messageSender contains "{escape_applescript(sender)}"')
-
-        condition_str = ' and '.join(conditions) if conditions else 'true'
+        condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
+        safe_mailbox = escape_applescript(mailbox)
 
         script = f'''
         tell application "Mail"
@@ -544,3 +521,232 @@ def manage_trash(
 
     result = run_applescript(script)
     return result
+
+
+import re
+
+# Characters that could break AppleScript strings or mailbox names
+_INVALID_MAILBOX_CHARS = re.compile(r'[\\\"<>|?*:\x00-\x1f]')
+
+
+@mcp.tool()
+@inject_preferences
+def create_mailbox(
+    account: str,
+    name: str,
+    parent_mailbox: Optional[str] = None,
+) -> str:
+    """
+    Create a new mailbox (folder) in the specified account.
+
+    Supports nested paths via the parent_mailbox parameter (e.g.,
+    parent_mailbox="Projects" + name="2024" creates Projects/2024).
+    You can also pass a full slash-separated path as *name*
+    (e.g., "Projects/2024/ClientName") and omit parent_mailbox.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work")
+        name: Name for the new mailbox. May contain "/" to create a
+              nested path in one call (each segment is created if needed).
+        parent_mailbox: Optional existing parent folder for nesting.
+
+    Returns:
+        Confirmation with the new mailbox path.
+    """
+    # Validate name
+    if not name or not name.strip():
+        return "Error: Mailbox name cannot be empty."
+
+    # Split name into segments (support "A/B/C" shorthand)
+    segments = [s.strip() for s in name.split("/") if s.strip()]
+    if not segments:
+        return "Error: Mailbox name cannot be empty."
+
+    for seg in segments:
+        if _INVALID_MAILBOX_CHARS.search(seg):
+            return (
+                f"Error: Invalid characters in mailbox name segment '{seg}'. "
+                "Avoid \\ \" < > | ? * : and control characters."
+            )
+
+    safe_account = escape_applescript(account)
+
+    # If parent_mailbox is given, prepend its segments
+    if parent_mailbox:
+        parent_segments = [s.strip() for s in parent_mailbox.split("/") if s.strip()]
+        segments = parent_segments + segments
+
+    # Build AppleScript to create each level one at a time
+    create_blocks = ""
+    for depth in range(len(segments)):
+        seg = escape_applescript(segments[depth])
+        if depth == 0:
+            create_blocks += f'''
+            try
+                set parentRef to mailbox "{seg}" of targetAccount
+            on error
+                make new mailbox at targetAccount with properties {{name:"{seg}"}}
+                set parentRef to mailbox "{seg}" of targetAccount
+            end try
+'''
+        else:
+            create_blocks += f'''
+            try
+                set parentRef to mailbox "{seg}" of parentRef
+            on error
+                make new mailbox at parentRef with properties {{name:"{seg}"}}
+                set parentRef to mailbox "{seg}" of parentRef
+            end try
+'''
+
+    full_path = "/".join(segments)
+    safe_path = escape_applescript(full_path)
+
+    script = f'''
+    tell application "Mail"
+        set outputText to "CREATING MAILBOX" & return & return
+
+        try
+            set targetAccount to account "{safe_account}"
+
+            {create_blocks}
+
+            set outputText to outputText & "OK Mailbox created successfully!" & return & return
+            set outputText to outputText & "Account: {safe_account}" & return
+            set outputText to outputText & "Path: {safe_path}" & return
+
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+
+        return outputText
+    end tell
+    '''
+
+    return run_applescript(script)
+
+
+@mcp.tool()
+@inject_preferences
+def archive_emails(
+    account: str,
+    subject_keyword: Optional[str] = None,
+    sender: Optional[str] = None,
+    older_than_days: Optional[int] = None,
+    only_read: bool = True,
+    from_mailbox: str = "INBOX",
+    archive_mailbox: str = "Archive",
+    max_archive: int = 50,
+    dry_run: bool = True,
+) -> str:
+    """
+    Archive emails matching criteria by moving them to an Archive mailbox.
+
+    Safety features:
+    - At least one filter (subject_keyword, sender, or older_than_days) is required.
+    - dry_run=True (default) previews what would be archived without moving.
+    - only_read=True (default) skips unread emails.
+    - max_archive caps the number of emails moved in one call.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work")
+        subject_keyword: Optional keyword to filter by subject
+        sender: Optional sender to filter by
+        older_than_days: Optional age filter - only archive emails older than N days
+        only_read: If True (default), only archive emails that have been read
+        from_mailbox: Source mailbox (default "INBOX")
+        archive_mailbox: Destination mailbox (default "Archive")
+        max_archive: Maximum emails to archive per call (default 50)
+        dry_run: If True (default), only preview - do not actually move emails
+
+    Returns:
+        Summary of archived (or previewed) emails
+    """
+    # Safety: require at least one filter
+    if not subject_keyword and not sender and not older_than_days:
+        return (
+            "Error: At least one filter is required (subject_keyword, sender, "
+            "or older_than_days). This prevents accidentally archiving everything."
+        )
+
+    safe_account = escape_applescript(account)
+
+    # Build conditions
+    condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
+    if only_read:
+        read_cond = "messageRead is true"
+        condition_str = f"{condition_str} and {read_cond}" if condition_str != "true" else read_cond
+
+    # Date filter
+    date_setup = ""
+    date_cond = ""
+    if older_than_days and older_than_days > 0:
+        date_setup = f'set cutoffDate to (current date) - ({older_than_days} * days)'
+        date_cond = " and messageDate < cutoffDate"
+
+    if dry_run:
+        action_label = "DRY RUN - PREVIEW ARCHIVE"
+        move_script = ""
+        result_prefix = "Would archive"
+    else:
+        action_label = "ARCHIVING EMAILS"
+        move_script = "move aMessage to destMailbox"
+        result_prefix = "Archived"
+
+    script = f'''
+    tell application "Mail"
+        set outputText to "{action_label}" & return & return
+        set archiveCount to 0
+
+        try
+            set targetAccount to account "{safe_account}"
+
+            -- Resolve source mailbox
+            {build_mailbox_ref(from_mailbox, var_name="sourceMailbox")}
+
+            -- Resolve or create archive mailbox
+            try
+                set destMailbox to mailbox "{escape_applescript(archive_mailbox)}" of targetAccount
+            on error
+                make new mailbox at targetAccount with properties {{name:"{escape_applescript(archive_mailbox)}"}}
+                set destMailbox to mailbox "{escape_applescript(archive_mailbox)}" of targetAccount
+            end try
+
+            {date_setup}
+
+            set sourceMessages to every message of sourceMailbox
+
+            repeat with aMessage in sourceMessages
+                if archiveCount >= {max_archive} then exit repeat
+
+                try
+                    set messageSubject to subject of aMessage
+                    set messageSender to sender of aMessage
+                    set messageDate to date received of aMessage
+                    set messageRead to read status of aMessage
+
+                    if {condition_str}{date_cond} then
+                        {move_script}
+
+                        set outputText to outputText & "{result_prefix}: " & messageSubject & return
+                        set outputText to outputText & "   From: " & messageSender & return
+                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+
+                        set archiveCount to archiveCount + 1
+                    end if
+                end try
+            end repeat
+
+            set outputText to outputText & "========================================" & return
+            set outputText to outputText & "TOTAL: " & archiveCount & " email(s) {result_prefix.lower()}" & return
+            set outputText to outputText & "========================================" & return
+
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+
+        return outputText
+    end tell
+    '''
+
+    return run_applescript(script)
