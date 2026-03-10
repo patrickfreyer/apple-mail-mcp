@@ -1,5 +1,6 @@
 """Search tools: finding and filtering emails."""
 
+import json
 from typing import Optional, List, Dict, Any
 
 from apple_mail_mcp.server import mcp
@@ -155,7 +156,8 @@ def search_emails(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     include_content: bool = False,
-    max_results: int = 20
+    max_results: int = 20,
+    output_format: str = "text",
 ) -> str:
     """
     Unified search tool - search emails with advanced filtering across any mailbox.
@@ -171,6 +173,7 @@ def search_emails(
         date_to: Optional end date filter (format: "YYYY-MM-DD")
         include_content: Whether to include email content preview (slower)
         max_results: Maximum number of results to return (default: 20)
+        output_format: "text" (default, human-readable) or "json" (structured list of email dicts)
 
     Returns:
         Formatted list of matching emails with all requested details
@@ -323,7 +326,127 @@ def search_emails(
     '''
 
     result = run_applescript(script)
+
+    if output_format == "json":
+        # Re-run with pipe-delimited output for structured parsing
+        return _search_emails_json(
+            account, mailbox, subject_keyword, sender,
+            has_attachments, read_status, max_results,
+        )
+
     return result
+
+
+def _search_emails_json(
+    account: str,
+    mailbox: str,
+    subject_keyword: Optional[str],
+    sender: Optional[str],
+    has_attachments: Optional[bool],
+    read_status: str,
+    max_results: int,
+) -> str:
+    """Return search results as JSON."""
+    escaped_account = escape_applescript(account)
+    escaped_mailbox = escape_applescript(mailbox)
+    escaped_subject = escape_applescript(subject_keyword) if subject_keyword else None
+    escaped_sender = escape_applescript(sender) if sender else None
+
+    conditions = []
+    if subject_keyword:
+        conditions.append(f'messageSubject contains "{escaped_subject}"')
+    if sender:
+        conditions.append(f'messageSender contains "{escaped_sender}"')
+    if has_attachments is not None:
+        if has_attachments:
+            conditions.append('(count of mail attachments of aMessage) > 0')
+        else:
+            conditions.append('(count of mail attachments of aMessage) = 0')
+    if read_status == "read":
+        conditions.append('messageRead is true')
+    elif read_status == "unread":
+        conditions.append('messageRead is false')
+    condition_str = ' and '.join(conditions) if conditions else 'true'
+
+    if mailbox == "All":
+        mailbox_script = '''
+            set allMailboxes to every mailbox of targetAccount
+            set searchMailboxes to allMailboxes
+        '''
+    else:
+        mailbox_script = f'''
+            try
+                set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
+            on error
+                if "{escaped_mailbox}" is "INBOX" then
+                    set searchMailbox to mailbox "Inbox" of targetAccount
+                else
+                    error "Mailbox not found: {escaped_mailbox}"
+                end if
+            end try
+            set searchMailboxes to {{searchMailbox}}
+        '''
+
+    script = f'''
+    tell application "Mail"
+        set resultLines to {{}}
+        set resultCount to 0
+        try
+            set targetAccount to account "{escaped_account}"
+            {mailbox_script}
+            repeat with currentMailbox in searchMailboxes
+                try
+                    set mailboxName to name of currentMailbox
+                    set skipFolders to {{"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}}
+                    set shouldSkip to false
+                    repeat with skipFolder in skipFolders
+                        if mailboxName is skipFolder then
+                            set shouldSkip to true
+                            exit repeat
+                        end if
+                    end repeat
+                    if not shouldSkip then
+                        set mailboxMessages to every message of currentMailbox
+                        repeat with aMessage in mailboxMessages
+                            if resultCount >= {max_results} then exit repeat
+                            try
+                                set messageSubject to subject of aMessage
+                                set messageSender to sender of aMessage
+                                set messageDate to date received of aMessage
+                                set messageRead to read status of aMessage
+                                if {condition_str} then
+                                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & "{escaped_account}" & "|||" & mailboxName
+                                    set resultCount to resultCount + 1
+                                end if
+                            end try
+                        end repeat
+                    end if
+                end try
+            end repeat
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+        set AppleScript's text item delimiters to linefeed
+        return resultLines as string
+    end tell
+    '''
+    raw = run_applescript(script)
+    emails = []
+    if raw:
+        for line in raw.split('\n'):
+            if '|||' not in line:
+                continue
+            parts = line.split('|||')
+            if len(parts) >= 5:
+                emails.append({
+                    'subject': parts[0].strip(),
+                    'sender': parts[1].strip(),
+                    'date': parts[2].strip(),
+                    'is_read': parts[3].strip().lower() == 'true',
+                    'account': parts[4].strip(),
+                    'mailbox': parts[5].strip() if len(parts) > 5 else '',
+                })
+    return json.dumps(emails, indent=2)
 
 
 @mcp.tool()
@@ -1312,3 +1435,265 @@ def search_all_accounts(
 
     result = run_applescript(script)
     return result
+
+
+@mcp.tool()
+@inject_preferences
+def search_emails_advanced(
+    account: Optional[str] = None,
+    mailbox: str = "INBOX",
+    subject_contains: Optional[str] = None,
+    body_contains: Optional[str] = None,
+    sender_contains: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    is_read: Optional[bool] = None,
+    has_attachments: Optional[bool] = None,
+    is_flagged: Optional[bool] = None,
+    max_results: int = 50,
+    output_format: str = "text",
+) -> str:
+    """
+    Powerful unified search across accounts and mailboxes with flexible filters.
+
+    Combines the capabilities of search_emails, search_by_sender,
+    search_email_content, and search_all_accounts into one tool.
+    When *account* is None, all accounts are searched.
+
+    Args:
+        account: Account to search (None = all accounts)
+        mailbox: Mailbox name (default "INBOX", "All" for all mailboxes)
+        subject_contains: Filter by subject keyword (case-insensitive)
+        body_contains: Filter by body text (slower, case-insensitive)
+        sender_contains: Filter by sender name/email (case-insensitive)
+        date_from: Start date "YYYY-MM-DD" (inclusive)
+        date_to: End date "YYYY-MM-DD" (inclusive)
+        is_read: Filter by read status (True/False/None for any)
+        has_attachments: Filter by attachment presence (True/False/None)
+        is_flagged: Filter by flagged status (True/False/None)
+        max_results: Maximum results (default 50)
+        output_format: "text" (human-readable) or "json" (structured)
+
+    Returns:
+        Matching emails across the specified scope
+    """
+    from apple_mail_mcp.core import build_mailbox_ref, skip_folders_condition
+
+    # Escape inputs
+    escaped_account = escape_applescript(account) if account else None
+    escaped_mailbox = escape_applescript(mailbox)
+
+    # --- Build filter conditions applied inside the message loop ---
+    filter_lines: list[str] = []
+    if subject_contains:
+        esc = escape_applescript(subject_contains)
+        filter_lines.append(
+            f'if lowerSubject does not contain my lowercase("{esc}") then set skipMsg to true'
+        )
+    if sender_contains:
+        esc = escape_applescript(sender_contains)
+        filter_lines.append(
+            f'if lowerSender does not contain my lowercase("{esc}") then set skipMsg to true'
+        )
+    if body_contains:
+        esc = escape_applescript(body_contains)
+        filter_lines.append(
+            f'if lowerBody does not contain my lowercase("{esc}") then set skipMsg to true'
+        )
+    if is_read is True:
+        filter_lines.append('if not messageRead then set skipMsg to true')
+    elif is_read is False:
+        filter_lines.append('if messageRead then set skipMsg to true')
+    if has_attachments is True:
+        filter_lines.append('if (count of mail attachments of aMessage) = 0 then set skipMsg to true')
+    elif has_attachments is False:
+        filter_lines.append('if (count of mail attachments of aMessage) > 0 then set skipMsg to true')
+    if is_flagged is True:
+        filter_lines.append('if not (flagged status of aMessage) then set skipMsg to true')
+    elif is_flagged is False:
+        filter_lines.append('if (flagged status of aMessage) then set skipMsg to true')
+
+    filter_block = '\n                                    '.join(filter_lines)
+
+    # Date filters
+    date_setup = ""
+    date_checks = ""
+    if date_from:
+        esc_from = escape_applescript(date_from)
+        date_setup += f'''
+        set fromDateStr to "{esc_from}"
+        set fromDate to date fromDateStr
+'''
+        date_checks += '''
+                                    if messageDate < fromDate then set skipMsg to true
+'''
+    if date_to:
+        esc_to = escape_applescript(date_to)
+        date_setup += f'''
+        set toDateStr to "{esc_to}"
+        set toDate to (date toDateStr) + (1 * days)
+'''
+        date_checks += '''
+                                    if messageDate > toDate then set skipMsg to true
+'''
+
+    # Body retrieval (only if needed)
+    if body_contains:
+        body_script = '''
+                                    set msgBody to ""
+                                    try
+                                        set msgBody to content of aMessage
+                                    end try
+                                    set lowerBody to my lowercase(msgBody)
+'''
+    else:
+        body_script = '                                    set lowerBody to ""'
+
+    # Account loop
+    if account:
+        acct_start = f'''
+        set anAccount to account "{escaped_account}"
+        set accountName to name of anAccount
+        repeat 1 times
+'''
+        acct_end = '''
+        end repeat
+'''
+    else:
+        acct_start = f'''
+        set allAccounts to every account
+        repeat with anAccount in allAccounts
+            set accountName to name of anAccount
+'''
+        acct_end = f'''
+            if resultCount >= {max_results} then exit repeat
+        end repeat
+'''
+
+    # Mailbox loop
+    skip_cond = skip_folders_condition("mailboxName")
+    if mailbox == "All":
+        mbox_start = f'''
+                set accountMailboxes to every mailbox of anAccount
+                repeat with aMailbox in accountMailboxes
+                    try
+                        set mailboxName to name of aMailbox
+                        if {skip_cond} then
+'''
+        mbox_end = f'''
+                        end if
+                    end try
+                    if resultCount >= {max_results} then exit repeat
+                end repeat
+'''
+    else:
+        mbox_start = f'''
+                {build_mailbox_ref(mailbox, account_var="anAccount", var_name="aMailbox")}
+                set mailboxName to name of aMailbox
+                if true then
+'''
+        mbox_end = '''
+                end if
+'''
+
+    # Output format
+    if output_format == "json":
+        record_script = '''
+                                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & mailboxName
+'''
+        output_setup = 'set resultLines to {}'
+        output_return = '''
+        set AppleScript's text item delimiters to linefeed
+        return resultLines as string
+'''
+    else:
+        record_script = '''
+                                    if messageRead then
+                                        set ri to "\\u2713"
+                                    else
+                                        set ri to "\\u2709"
+                                    end if
+                                    set outputText to outputText & ri & " " & messageSubject & return
+                                    set outputText to outputText & "   From: " & messageSender & return
+                                    set outputText to outputText & "   Date: " & (messageDate as string) & return
+                                    set outputText to outputText & "   Account: " & accountName & return
+                                    set outputText to outputText & "   Mailbox: " & mailboxName & return
+                                    set outputText to outputText & return
+'''
+        output_setup = 'set outputText to "ADVANCED SEARCH RESULTS" & return & return'
+        output_return = '''
+        set outputText to outputText & "========================================" & return
+        set outputText to outputText & "FOUND: " & resultCount & " email(s)" & return
+        set outputText to outputText & "========================================" & return
+        return outputText
+'''
+
+    script = f'''
+    {LOWERCASE_HANDLER}
+
+    tell application "Mail"
+        {output_setup}
+        set resultCount to 0
+        {date_setup}
+
+        {acct_start}
+
+            try
+                {mbox_start}
+
+                        set mailboxMessages to every message of aMailbox
+                        repeat with aMessage in mailboxMessages
+                            if resultCount >= {max_results} then exit repeat
+                            try
+                                set messageSubject to subject of aMessage
+                                set messageSender to sender of aMessage
+                                set messageDate to date received of aMessage
+                                set messageRead to read status of aMessage
+
+                                set lowerSubject to my lowercase(messageSubject)
+                                set lowerSender to my lowercase(messageSender)
+                                {body_script}
+
+                                set skipMsg to false
+                                    {filter_block}
+                                    {date_checks}
+                                if not skipMsg then
+                                    {record_script}
+                                    set resultCount to resultCount + 1
+                                end if
+                            end try
+                        end repeat
+
+                {mbox_end}
+
+            on error errMsg
+                -- Skip account on error
+            end try
+
+        {acct_end}
+
+        {output_return}
+    end tell
+    '''
+
+    raw = run_applescript(script)
+
+    if output_format == "json":
+        emails: list[dict[str, Any]] = []
+        if raw:
+            for line in raw.split('\n'):
+                if '|||' not in line:
+                    continue
+                parts = line.split('|||')
+                if len(parts) >= 5:
+                    emails.append({
+                        'subject': parts[0].strip(),
+                        'sender': parts[1].strip(),
+                        'date': parts[2].strip(),
+                        'is_read': parts[3].strip().lower() == 'true',
+                        'account': parts[4].strip(),
+                        'mailbox': parts[5].strip() if len(parts) > 5 else '',
+                    })
+        return json.dumps(emails, indent=2)
+
+    return raw
