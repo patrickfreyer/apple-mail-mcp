@@ -165,9 +165,9 @@ def reply_to_email(
                 set visible of replyMessage to true
                 activate'''
         success_text = "✓ Reply opened in Mail for review. Edit and send when ready."
-        # For open, just set the body text — Mail.app preserves the native
-        # quoted original in the HTML layer (same approach as send mode)
-        set_content_script = f'set content of replyMessage to "{escaped_body}"'
+        # For open, prepend reply body to existing content (which contains
+        # the native quoted original). This preserves Mail.app's formatting.
+        set_content_script = f'set content of replyMessage to "{escaped_body}" & return & return & content of replyMessage'
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         send_or_draft_command = "close window 1 saving yes"
