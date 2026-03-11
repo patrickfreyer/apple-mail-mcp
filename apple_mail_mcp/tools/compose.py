@@ -72,6 +72,7 @@ def reply_to_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     send: bool = True,
+    mode: Optional[str] = None,
     attachments: Optional[str] = None
 ) -> str:
     """
@@ -84,11 +85,12 @@ def reply_to_email(
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
-        send: If True (default), send immediately; if False, save as draft for review
+        send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
+        mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
 
     Returns:
-        Confirmation message with details of the reply sent or saved draft
+        Confirmation message with details of the reply sent, saved draft, or opened draft
     """
 
     # Escape all user inputs for AppleScript
@@ -142,14 +144,34 @@ def reply_to_email(
     safe_bcc = escape_applescript(bcc) if bcc else ""
     safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
-    # Determine send vs draft behavior
-    if send:
+    # Resolve delivery mode: mode parameter takes precedence over send boolean
+    if mode is not None:
+        if mode not in ("send", "draft", "open"):
+            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+        effective_mode = mode
+    else:
+        effective_mode = "send" if send else "draft"
+
+    # Determine behavior per mode
+    if effective_mode == "send":
         header_text = "SENDING REPLY"
         send_or_draft_command = "send replyMessage"
         success_text = "✓ Reply sent successfully!"
         # For send, Mail handles the quoted original via the HTML layer
         set_content_script = f'set content of replyMessage to "{escaped_body}"'
-    else:
+    elif effective_mode == "open":
+        header_text = "OPENING REPLY FOR REVIEW"
+        send_or_draft_command = '''
+                set visible of replyMessage to true
+                activate'''
+        success_text = "✓ Reply opened in Mail for review. Edit and send when ready."
+        # For open, set content and leave the window visible
+        set_content_script = f'''set origContent to content of foundMessage
+                set origSender to sender of foundMessage
+                set origDate to date received of foundMessage
+                set quotedText to "On " & (origDate as string) & ", " & origSender & " wrote:" & return & return & origContent
+                set content of replyMessage to "{escaped_body}" & return & return & quotedText'''
+    else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         send_or_draft_command = "close window 1 saving yes"
         success_text = "✓ Reply saved as draft!"
@@ -262,7 +284,8 @@ def compose_email(
     body: str,
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
-    attachments: Optional[str] = None
+    attachments: Optional[str] = None,
+    mode: str = "send"
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -275,9 +298,10 @@ def compose_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
+        mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
 
     Returns:
-        Confirmation message with details of the sent email
+        Confirmation message with details of the email
     """
 
     # Escape all user inputs for AppleScript
@@ -330,20 +354,41 @@ def compose_email(
             '''
             attachment_info += f'  {path}\n'
 
+    # Validate mode
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
     safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
 
+    # Determine behavior per mode
+    if mode == "send":
+        header_text = "COMPOSING EMAIL"
+        visible = "false"
+        send_command = "send newMessage"
+        success_text = "✓ Email sent successfully!"
+    elif mode == "open":
+        header_text = "OPENING EMAIL FOR REVIEW"
+        visible = "true"
+        send_command = "activate"
+        success_text = "✓ Email opened in Mail for review. Edit and send when ready."
+    else:  # draft
+        header_text = "SAVING EMAIL AS DRAFT"
+        visible = "false"
+        send_command = "close window 1 saving yes"
+        success_text = "✓ Email saved as draft!"
+
     script = f'''
     tell application "Mail"
-        set outputText to "COMPOSING EMAIL" & return & return
+        set outputText to "{header_text}" & return & return
 
         try
             set targetAccount to account "{safe_account}"
 
             -- Create new outgoing message
-            set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:false}}
+            set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:{visible}}}
 
             -- Set the sender account
             set emailAddrs to email addresses of targetAccount
@@ -362,10 +407,10 @@ def compose_email(
                 {attachment_script}
             end tell
 
-            -- Send the message
-            send newMessage
+            -- Send, save as draft, or leave open for review
+            {send_command}
 
-            set outputText to outputText & "✓ Email sent successfully!" & return & return
+            set outputText to outputText & "{success_text}" & return & return
             set outputText to outputText & "From: " & name of targetAccount & return
             set outputText to outputText & "To: {safe_to}" & return
     '''
@@ -575,17 +620,17 @@ def manage_drafts(
     draft_subject: Optional[str] = None
 ) -> str:
     """
-    Manage draft emails - list, create, send, or delete drafts.
+    Manage draft emails - list, create, send, open, or delete drafts.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        action: Action to perform: "list", "create", "send", "delete"
+        action: Action to perform: "list", "create", "send", "open", "delete". Use "open" to open a draft in a visible compose window for review before sending.
         subject: Email subject (required for create)
         to: Recipient email(s) for create (comma-separated)
         body: Email body (required for create)
         cc: Optional CC recipients for create
         bcc: Optional BCC recipients for create
-        draft_subject: Subject keyword to find draft (required for send/delete)
+        draft_subject: Subject keyword to find draft (required for send/open/delete)
 
     Returns:
         Formatted output based on action
@@ -748,6 +793,57 @@ def manage_drafts(
         end tell
         '''
 
+    elif action == "open":
+        if not draft_subject:
+            return "Error: 'draft_subject' is required for opening drafts"
+
+        safe_draft_subject = escape_applescript(draft_subject)
+
+        script = f'''
+        tell application "Mail"
+            set outputText to "OPENING DRAFT FOR REVIEW" & return & return
+
+            try
+                set targetAccount to account "{safe_account}"
+                set draftsMailbox to mailbox "Drafts" of targetAccount
+                set draftMessages to every message of draftsMailbox
+                set foundDraft to missing value
+
+                -- Find the draft
+                repeat with aDraft in draftMessages
+                    try
+                        set draftSubject to subject of aDraft
+
+                        if draftSubject contains "{safe_draft_subject}" then
+                            set foundDraft to aDraft
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+
+                if foundDraft is not missing value then
+                    set draftSubject to subject of foundDraft
+
+                    -- Open the draft in a visible compose window
+                    set draftWindow to open foundDraft
+                    activate
+
+                    set outputText to outputText & "✓ Draft opened in Mail for review!" & return
+                    set outputText to outputText & "Subject: " & draftSubject & return
+                    set outputText to outputText & return & "Edit and send when ready." & return
+
+                else
+                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
+                end if
+
+            on error errMsg
+                return "Error: " & errMsg
+            end try
+
+            return outputText
+        end tell
+        '''
+
     elif action == "delete":
         if not draft_subject:
             return "Error: 'draft_subject' is required for deleting drafts"
@@ -798,7 +894,7 @@ def manage_drafts(
         '''
 
     else:
-        return f"Error: Invalid action '{action}'. Use: list, create, send, delete"
+        return f"Error: Invalid action '{action}'. Use: list, create, send, open, delete"
 
     result = run_applescript(script)
     return result
