@@ -161,13 +161,27 @@ def reply_to_email(
         set_content_script = f'set content of replyMessage to "{escaped_body}"'
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
-        send_or_draft_command = '''
+        # For open, we make the window visible and use System Events keystroke
+        # to type the reply. This preserves Mail.app's native quoted original
+        # (setting content via AppleScript overwrites the async HTML layer).
+        _keystroke_lines = reply_body.split('\n')
+        _keystroke_script = ''
+        for i, line in enumerate(_keystroke_lines):
+            safe_line = escape_applescript(line)
+            _keystroke_script += f'keystroke "{safe_line}"\n                        '
+            if i < len(_keystroke_lines) - 1:
+                _keystroke_script += 'keystroke return\n                        '
+        send_or_draft_command = f'''
                 set visible of replyMessage to true
-                activate'''
+                activate
+                delay 1.5
+                tell application "System Events"
+                    tell process "Mail"
+                        {_keystroke_script}
+                    end tell
+                end tell'''
         success_text = "✓ Reply opened in Mail for review. Edit and send when ready."
-        # For open, prepend reply body to existing content (which contains
-        # the native quoted original). This preserves Mail.app's formatting.
-        set_content_script = f'set content of replyMessage to "{escaped_body}" & return & return & content of replyMessage'
+        set_content_script = '-- content set via keystroke'
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         send_or_draft_command = "close window 1 saving yes"
