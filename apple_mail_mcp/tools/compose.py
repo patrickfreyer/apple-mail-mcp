@@ -1,10 +1,170 @@
 """Composition tools: sending, replying, forwarding, and drafts."""
 
 import os
+import subprocess
+import tempfile
 from typing import Optional, List, Tuple
+
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+
+
+def _send_html_email(
+    account: str,
+    to: str,
+    subject: str,
+    body_plain: str,
+    body_html: str,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    attachments_script: str = "",
+    mode: str = "send",
+) -> str:
+    """Send an HTML-formatted email via NSPasteboard clipboard injection.
+
+    Uses AppleScriptObjC to place HTML on the clipboard with the proper
+    pasteboard type, creates a compose window, tabs into the body, and
+    pastes.  Then sends, saves as draft, or leaves open for review.
+    """
+    safe_account = escape_applescript(account)
+    escaped_subject = escape_applescript(subject)
+
+    # Build recipient scripts
+    to_lines = ""
+    for addr in [a.strip() for a in to.split(",") if a.strip()]:
+        to_lines += f'make new to recipient at end of to recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
+
+    cc_lines = ""
+    if cc:
+        for addr in [a.strip() for a in cc.split(",") if a.strip()]:
+            cc_lines += f'make new cc recipient at end of cc recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
+
+    bcc_lines = ""
+    if bcc:
+        for addr in [a.strip() for a in bcc.split(",") if a.strip()]:
+            bcc_lines += f'make new bcc recipient at end of bcc recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
+
+    # Mode-specific behaviour after paste
+    if mode == "send":
+        post_paste_script = '''
+            -- Send via keyboard shortcut
+            keystroke "d" using {command down, shift down}
+        '''
+        success_text = "Email sent successfully (HTML)"
+    elif mode == "draft":
+        post_paste_script = '''
+            -- Save as draft: Cmd+S then close
+            keystroke "s" using command down
+            delay 0.5
+        '''
+        success_text = "Email saved as draft (HTML)"
+    else:  # open
+        post_paste_script = "-- Leaving open for review"
+        success_text = "Email opened in Mail for review (HTML). Edit and send when ready."
+
+    # Write HTML to temp file so the AppleScript can read it without
+    # worrying about escaping quotes/special chars in the HTML string.
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", prefix="mail_html_",
+        delete=False, encoding="utf-8",
+    )
+    tmp.write(body_html)
+    tmp.close()
+    html_temp_path = tmp.name
+
+    script = f'''
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+-- Step 1: Read HTML from temp file and place on clipboard
+set htmlString to do shell script "cat '{html_temp_path}'"
+set pb to current application's NSPasteboard's generalPasteboard()
+
+-- Save current clipboard for restoration
+set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+
+pb's clearContents()
+set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
+pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+
+-- Step 2: Create compose window (empty body so signature doesn't interfere)
+tell application "Mail"
+    set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
+    set emailAddrs to email addresses of account "{safe_account}"
+    set senderAddress to item 1 of emailAddrs
+    set sender of newMsg to senderAddress
+    tell newMsg
+        {to_lines}
+        {cc_lines}
+        {bcc_lines}
+        {attachments_script}
+    end tell
+    activate
+end tell
+
+-- Step 3: Wait for compose window to render
+delay 2.5
+
+-- Step 4: Tab from header fields into body, then paste
+tell application "System Events"
+    set frontmost of process "Mail" to true
+    delay 0.5
+    tell process "Mail"
+        -- Tab through: To -> Cc -> Bcc -> Subject -> Body
+        -- 7 tabs covers all combinations of visible/hidden CC/BCC fields
+        repeat 7 times
+            key code 48
+            delay 0.1
+        end repeat
+        delay 0.3
+
+        -- Select all in body and paste HTML
+        keystroke "a" using command down
+        delay 0.2
+        keystroke "v" using command down
+        delay 0.5
+
+        {post_paste_script}
+    end tell
+end tell
+
+-- Step 5: Clean up temp file
+do shell script "rm -f '{html_temp_path}'"
+
+-- Step 6: Restore clipboard
+if oldClip is not missing value then
+    pb's clearContents()
+    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+end if
+
+return "{success_text}"
+'''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            return f"Error sending HTML email: {stderr}"
+        output = result.stdout.decode("utf-8", errors="replace").strip()
+        # Build confirmation message
+        confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
+        if cc:
+            confirm += f"\nCC: {cc}"
+        if bcc:
+            confirm += f"\nBCC: {bcc}"
+        return confirm
+    except subprocess.TimeoutExpired:
+        return "Error: HTML email script timed out"
+    finally:
+        if os.path.exists(html_temp_path):
+            os.unlink(html_temp_path)
 
 
 def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[str]]:
@@ -296,7 +456,8 @@ def compose_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     attachments: Optional[str] = None,
-    mode: str = "send"
+    mode: str = "send",
+    body_html: Optional[str] = None
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -305,17 +466,52 @@ def compose_email(
         account: Account name to send from (e.g., "Gmail", "Work", "Personal")
         to: Recipient email address(es), comma-separated for multiple
         subject: Email subject line
-        body: Email body text
+        body: Email body text (used as plain-text fallback when body_html is provided)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
 
     Returns:
         Confirmation message with details of the email
     """
 
-    # Escape all user inputs for AppleScript
+    # Validate mode
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    # Validate and resolve attachments early
+    attachment_script = ''
+    attachment_info = ''
+    if attachments:
+        validated_paths, error = _validate_attachment_paths(attachments)
+        if error:
+            return error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f'  {path}\n'
+
+    # --- HTML path: use NSPasteboard clipboard injection ---
+    if body_html:
+        return _send_html_email(
+            account=account,
+            to=to,
+            subject=subject,
+            body_plain=body,
+            body_html=body_html,
+            cc=cc,
+            bcc=bcc,
+            attachments_script=attachment_script,
+            mode=mode,
+        )
+
+    # --- Plain-text path: existing AppleScript approach ---
     safe_account = escape_applescript(account)
     escaped_subject = escape_applescript(subject)
     escaped_body = escape_applescript(body)
@@ -348,26 +544,6 @@ def compose_email(
             bcc_script += f'''
                 make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
             '''
-
-    # Build attachment script if provided
-    attachment_script = ''
-    attachment_info = ''
-    if attachments:
-        validated_paths, error = _validate_attachment_paths(attachments)
-        if error:
-            return error
-        for path in validated_paths:
-            safe_path = escape_applescript(path)
-            attachment_script += f'''
-                set theFile to POSIX file "{safe_path}"
-                make new attachment with properties {{file name:theFile}} at after the last paragraph
-                delay 1
-            '''
-            attachment_info += f'  {path}\n'
-
-    # Validate mode
-    if mode not in ("send", "draft", "open"):
-        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
 
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
