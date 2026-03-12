@@ -19,8 +19,9 @@ def inject_preferences(func):
 def escape_applescript(value: str) -> str:
     """Escape a string for safe injection into AppleScript double-quoted strings.
 
-    Handles backslashes first, then double quotes, then newlines/returns/tabs
-    to prevent injection and AppleScript syntax errors.
+    Handles backslashes first, then double quotes, then newlines/returns/tabs,
+    and Unicode line/paragraph separators to prevent injection and AppleScript
+    syntax errors.
     """
     return (
         value
@@ -30,6 +31,9 @@ def escape_applescript(value: str) -> str:
         .replace('\r', '\\n')
         .replace('\n', '\\n')
         .replace('\t', '\\t')
+        # Unicode line/paragraph separators can break AppleScript string parsing
+        .replace('\u2028', '\\n')
+        .replace('\u2029', '\\n')
     )
 
 

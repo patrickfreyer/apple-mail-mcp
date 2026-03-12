@@ -256,7 +256,16 @@ def reply_to_email(
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
     safe_subject_keyword = escape_applescript(subject_keyword)
-    escaped_body = escape_applescript(reply_body)
+
+    # Write reply body to a temp file to avoid AppleScript string escaping
+    # issues with special characters (em dashes, curly quotes, colons, etc.)
+    body_tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="mail_reply_",
+        delete=False, encoding="utf-8",
+    )
+    body_tmp.write(reply_body)
+    body_tmp.close()
+    body_temp_path = body_tmp.name
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
@@ -312,54 +321,58 @@ def reply_to_email(
     else:
         effective_mode = "send" if send else "draft"
 
+    # Read body from temp file in AppleScript (avoids all string escaping issues)
+    read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
+
     # Determine behavior per mode
     if effective_mode == "send":
         header_text = "SENDING REPLY"
         send_or_draft_command = "send replyMessage"
-        success_text = "✓ Reply sent successfully!"
+        success_text = "Reply sent successfully!"
         # For send, Mail handles the quoted original via the HTML layer
-        set_content_script = f'set content of replyMessage to "{escaped_body}"'
+        set_content_script = 'set content of replyMessage to replyBodyText'
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
-        # For open, we make the window visible and use System Events keystroke
-        # to type the reply. This preserves Mail.app's native quoted original
+        # For open, we use the clipboard to paste the reply body.
+        # This preserves Mail.app's native quoted original
         # (setting content via AppleScript overwrites the async HTML layer).
-        _keystroke_lines = reply_body.split('\n')
-        _keystroke_script = ''
-        for i, line in enumerate(_keystroke_lines):
-            safe_line = escape_applescript(line)
-            _keystroke_script += f'keystroke "{safe_line}"\n                        '
-            if i < len(_keystroke_lines) - 1:
-                _keystroke_script += 'keystroke return\n                        '
         send_or_draft_command = f'''
                 set visible of replyMessage to true
                 activate
                 delay 1.5
+                -- Use clipboard to paste reply body (preserves quoted original)
+                set the clipboard to replyBodyText
                 tell application "System Events"
                     tell process "Mail"
-                        {_keystroke_script}
+                        keystroke "v" using command down
                     end tell
-                end tell'''
-        success_text = "✓ Reply opened in Mail for review. Edit and send when ready."
-        set_content_script = '-- content set via keystroke'
+                end tell
+                delay 0.5'''
+        success_text = "Reply opened in Mail for review. Edit and send when ready."
+        set_content_script = '-- content set via clipboard paste'
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         send_or_draft_command = "close window 1 saving yes"
-        success_text = "✓ Reply saved as draft!"
+        success_text = "Reply saved as draft!"
         # For draft, we must manually build the quoted original because
         # close-window-saving-yes saves the content property literally
         # and the reply message's content property is initially empty
-        set_content_script = f'''set origContent to content of foundMessage
+        set_content_script = '''set origContent to content of foundMessage
                 set origSender to sender of foundMessage
                 set origDate to date received of foundMessage
                 set quotedText to "On " & (origDate as string) & ", " & origSender & " wrote:" & return & return & origContent
-                set content of replyMessage to "{escaped_body}" & return & return & quotedText'''
+                set content of replyMessage to replyBodyText & return & return & quotedText'''
+
+    cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
 
     script = f'''
     tell application "Mail"
         set outputText to "{header_text}" & return & return
 
         try
+            -- Read reply body from temp file (avoids AppleScript escaping issues)
+            {read_body_script}
+
             set targetAccount to account "{safe_account}"
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
             set inboxMessages to every message of inboxMailbox
@@ -411,7 +424,7 @@ def reply_to_email(
                 set outputText to outputText & "  From: " & messageSender & return
                 set outputText to outputText & "  Date: " & (messageDate as string) & return & return
                 set outputText to outputText & "Reply body:" & return
-                set outputText to outputText & "  " & "{escaped_body}" & return
+                set outputText to outputText & "  " & replyBodyText & return
     '''
 
     if cc:
@@ -431,10 +444,17 @@ def reply_to_email(
 
     script += f'''
             else
-                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
             end if
 
+            -- Clean up temp file
+            {cleanup_script}
+
         on error errMsg
+            -- Clean up temp file even on error
+            try
+                {cleanup_script}
+            end try
             return "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
         end try
 
@@ -442,8 +462,13 @@ def reply_to_email(
     end tell
     '''
 
-    result = run_applescript(script)
-    return result
+    try:
+        result = run_applescript(script)
+        return result
+    finally:
+        # Belt-and-suspenders cleanup in case AppleScript didn't run
+        if os.path.exists(body_temp_path):
+            os.unlink(body_temp_path)
 
 
 @mcp.tool()
