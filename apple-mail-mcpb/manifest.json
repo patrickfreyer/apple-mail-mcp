@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
   "version": "2.0.0",
-  "description": "Natural language interface for Apple Mail with 35 tools — email search, composition, bulk operations, smart inbox analytics, folder management, and security-hardened destructive operations. Includes Email Management Expert Skill and Interactive UI Dashboard.",
+  "description": "Natural language interface for Apple Mail with 27 tools — email search, composition, bulk operations, smart inbox analytics, folder management, and security-hardened destructive operations. Includes Email Management Expert Skill and Interactive UI Dashboard.",
   "author": {
     "name": "Patrick Freyer"
   },
@@ -43,10 +43,6 @@
     {
       "name": "list_inbox_emails",
       "description": "List all emails from inbox across all accounts or a specific account. Filter by account name, limit number of emails, and filter read/unread status. Supports JSON output format."
-    },
-    {
-      "name": "get_email_with_content",
-      "description": "Search for emails by subject keyword and return with full content preview. Search within specific account with configurable content length."
     },
     {
       "name": "get_unread_count",
@@ -90,35 +86,7 @@
     },
     {
       "name": "search_emails",
-      "description": "Advanced unified email search with multiple filter options. Search by subject keyword, sender, attachment presence, read status, and date ranges. Supports JSON output format."
-    },
-    {
-      "name": "search_emails_advanced",
-      "description": "Unified search with 12 filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged status. Supports multi-account search and JSON output."
-    },
-    {
-      "name": "search_by_sender",
-      "description": "Find emails from a specific sender across mailboxes. Search by sender email address or name."
-    },
-    {
-      "name": "search_all_accounts",
-      "description": "Cross-account search with advanced filtering. Search across all configured email accounts with date range and sorting."
-    },
-    {
-      "name": "search_email_content",
-      "description": "Full-text search in email bodies. Find emails containing specific text or phrases in plain text and HTML content."
-    },
-    {
-      "name": "get_newsletters",
-      "description": "Find newsletter and subscription emails. Identifies newsletter patterns and filters promotional mail."
-    },
-    {
-      "name": "get_recent_from_sender",
-      "description": "Retrieve recent emails from a specific sender with human-friendly time filters (today, week, month, all)."
-    },
-    {
-      "name": "get_email_thread",
-      "description": "View email conversation threads by finding all related messages. Groups messages with matching subjects across all mailboxes."
+      "description": "Unified email search with 16 filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged, newsletter detection, thread view. Supports cross-account search, JSON output, and uses fast native Mail.app filtering."
     },
     {
       "name": "update_email_status",
