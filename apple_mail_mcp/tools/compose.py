@@ -269,7 +269,7 @@ def reply_to_email(
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
-        reply_command = 'set replyMessage to reply foundMessage with opening window reply to all'
+        reply_command = 'set replyMessage to reply foundMessage with opening window and reply to all'
     else:
         reply_command = 'set replyMessage to reply foundMessage with opening window'
 
