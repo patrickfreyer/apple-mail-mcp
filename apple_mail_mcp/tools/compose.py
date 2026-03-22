@@ -3,11 +3,242 @@
 import os
 import subprocess
 import tempfile
+import re
+import time
+from email.message import EmailMessage
+from html import escape as html_escape
+from pathlib import Path
 from typing import Optional, List, Tuple
 
-
 from apple_mail_mcp.server import mcp, READ_ONLY
-from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+from apple_mail_mcp.core import (
+    inject_preferences,
+    escape_applescript,
+    run_applescript,
+    inbox_mailbox_script,
+)
+
+
+def _split_addresses(value):
+    """Return trimmed recipient addresses preserving order."""
+    if not value:
+        return []
+    return [addr.strip() for addr in value.split(",") if addr and addr.strip()]
+
+
+def _safe_eml_name(subject):
+    """Return a filesystem-safe filename stem for draft exports."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (subject or "rich-email-draft").strip())
+    cleaned = cleaned.strip("-._") or "rich-email-draft"
+    return cleaned[:80]
+
+
+def _default_rich_draft_path(subject):
+    """Return default output path for generated rich draft EML files."""
+    drafts_dir = Path.home() / "Library" / "Caches" / "apple-mail-mcp" / "rich-drafts"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    return drafts_dir / (_safe_eml_name(subject) + ".eml")
+
+
+def _resolve_sender_address(account):
+    """Return the primary sender address for a Mail account, if available."""
+    safe_account = escape_applescript(account)
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{safe_account}"
+            set emailAddrs to email addresses of targetAccount
+            if (count of emailAddrs) > 0 then
+                return item 1 of emailAddrs
+            end if
+            return ""
+        on error
+            return ""
+        end try
+    end tell
+    '''
+    sender_address = run_applescript(script)
+    sender_address = sender_address.strip()
+    return sender_address or None
+
+
+def _build_html_from_text(text_body):
+    """Return a simple HTML wrapper for plain text content."""
+    safe_body = html_escape(text_body or "")
+    return (
+        '<html><body style="font-family: -apple-system, BlinkMacSystemFont, '
+        "'Segoe UI', Arial, sans-serif; line-height: 1.45; color: #111111;\">"
+        '<pre style="white-space: pre-wrap; font: inherit; margin: 0;">'
+        + safe_body
+        + "</pre></body></html>"
+    )
+
+
+def _prepare_rich_bodies(subject, text_body, html_body):
+    """Return plain-text and HTML bodies, filling sensible placeholders."""
+    plain_body = text_body or ""
+    rich_body = html_body or ""
+
+    if not plain_body and not rich_body:
+        plain_body = (
+            "Draft outline\n\n"
+            "- Add recipients\n"
+            "- Add the final rich-text content\n"
+            "- Review before sending"
+        )
+        rich_body = _build_html_from_text(plain_body)
+        return plain_body, rich_body, ["body"]
+
+    if rich_body and not plain_body:
+        plain_body = (
+            (subject.strip() + "\n\n" if subject and subject.strip() else "")
+            + "This message contains rich HTML content. Open it in Mail for the rendered version."
+        )
+
+    if plain_body and not rich_body:
+        rich_body = _build_html_from_text(plain_body)
+
+    return plain_body, rich_body, []
+
+
+def _save_open_message_as_draft(subject, retries=10, delay_seconds=0.5):
+    """Ask Mail to save the matching open outgoing message as a draft."""
+    if not subject:
+        return False
+
+    safe_subject = escape_applescript(subject)
+    script = f'''
+    tell application "Mail"
+        try
+            set matchingMessages to every outgoing message whose subject is "{safe_subject}"
+            if (count of matchingMessages) is 0 then
+                return "not-found"
+            end if
+            save item 1 of matchingMessages
+            return "saved"
+        on error errMsg
+            return "error: " & errMsg
+        end try
+    end tell
+    '''
+
+    for _ in range(retries):
+        result = run_applescript(script).strip().lower()
+        if result == "saved":
+            return True
+        if result.startswith("error:"):
+            break
+        time.sleep(delay_seconds)
+    return False
+
+
+@mcp.tool()
+@inject_preferences
+def create_rich_email_draft(
+    account: str,
+    subject: str = "",
+    to: Optional[str] = None,
+    text_body: Optional[str] = None,
+    html_body: Optional[str] = None,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    output_path: Optional[str] = None,
+    open_in_mail: bool = True,
+    save_as_draft: bool = False,
+) -> str:
+    """
+    Create a rich-text email draft by generating an unsent `.eml` message and optionally opening it in Mail.
+
+    This is the preferred path for HTML or richly formatted emails because Mail reliably renders `.eml`
+    content, while setting raw HTML through AppleScript often stores the literal markup instead.
+
+    Args:
+        account: Account name to use for the sender identity (e.g., "Work", "Oracle")
+        subject: Subject line for the draft (optional; defaults to empty)
+        to: Optional recipient email address(es), comma-separated for multiple
+        text_body: Optional plain-text body. If omitted but html_body is provided, a fallback plain body is generated.
+        html_body: Optional HTML body. If omitted but text_body is provided, a basic HTML wrapper is generated.
+        cc: Optional CC recipients, comma-separated for multiple
+        bcc: Optional BCC recipients, comma-separated for multiple
+        output_path: Optional path for the generated `.eml` file
+        open_in_mail: If True, open the generated `.eml` in Mail (default: True)
+        save_as_draft: If True, ask Mail to save the opened compose window into Drafts (default: False)
+
+    Returns:
+        Confirmation with the generated `.eml` path, missing details, and Mail-open/save status
+    """
+    if not account or not account.strip():
+        return "Error: 'account' is required"
+
+    recipients_to = _split_addresses(to)
+    recipients_cc = _split_addresses(cc)
+    recipients_bcc = _split_addresses(bcc)
+    plain_body, rich_body, body_missing = _prepare_rich_bodies(
+        subject, text_body, html_body
+    )
+
+    missing_details = []
+    if not subject or not subject.strip():
+        missing_details.append("subject")
+    if not recipients_to:
+        missing_details.append("to")
+    missing_details.extend(body_missing)
+
+    sender_address = _resolve_sender_address(account)
+    message = EmailMessage()
+    if subject:
+        message["Subject"] = subject
+    if sender_address:
+        message["From"] = sender_address
+    if recipients_to:
+        message["To"] = ", ".join(recipients_to)
+    if recipients_cc:
+        message["Cc"] = ", ".join(recipients_cc)
+    if recipients_bcc:
+        message["Bcc"] = ", ".join(recipients_bcc)
+    message["X-Unsent"] = "1"
+    message.set_content(plain_body)
+    message.add_alternative(rich_body, subtype="html")
+
+    draft_path = (
+        Path(output_path).expanduser()
+        if output_path
+        else _default_rich_draft_path(subject)
+    )
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_path.write_bytes(bytes(message))
+
+    opened = False
+    saved = False
+    if open_in_mail:
+        subprocess.run(["open", "-a", "Mail", str(draft_path)], check=True)
+        opened = True
+        if save_as_draft:
+            saved = _save_open_message_as_draft(subject)
+
+    output_lines = ["RICH EMAIL DRAFT", "", "✓ Rich draft prepared successfully!", ""]
+    output_lines.append("Account: " + account)
+    output_lines.append("Subject: " + (subject if subject else "[empty]"))
+    output_lines.append("EML path: " + str(draft_path))
+    output_lines.append("Opened in Mail: " + ("yes" if opened else "no"))
+    if open_in_mail:
+        output_lines.append("Saved in Drafts: " + ("yes" if saved else "no"))
+    if sender_address:
+        output_lines.append("From: " + sender_address)
+    if recipients_to:
+        output_lines.append("To: " + ", ".join(recipients_to))
+    if recipients_cc:
+        output_lines.append("CC: " + ", ".join(recipients_cc))
+    if recipients_bcc:
+        output_lines.append("BCC: " + ", ".join(recipients_bcc))
+    output_lines.append(
+        "Missing details: "
+        + (", ".join(missing_details) if missing_details else "none")
+    )
+    output_lines.append(
+        "Note: Prefer this `.eml` workflow for HTML email drafts; Mail renders it more reliably than raw HTML injected via AppleScript content."
+    )
+    return "\n".join(output_lines)
 
 
 def _send_html_email(
@@ -47,27 +278,32 @@ def _send_html_email(
 
     # Mode-specific behaviour after paste
     if mode == "send":
-        post_paste_script = '''
+        post_paste_script = """
             -- Send via keyboard shortcut
             keystroke "d" using {command down, shift down}
-        '''
+        """
         success_text = "Email sent successfully (HTML)"
     elif mode == "draft":
-        post_paste_script = '''
+        post_paste_script = """
             -- Save as draft: Cmd+S then close
             keystroke "s" using command down
             delay 0.5
-        '''
+        """
         success_text = "Email saved as draft (HTML)"
     else:  # open
         post_paste_script = "-- Leaving open for review"
-        success_text = "Email opened in Mail for review (HTML). Edit and send when ready."
+        success_text = (
+            "Email opened in Mail for review (HTML). Edit and send when ready."
+        )
 
     # Write HTML to temp file so the AppleScript can read it without
     # worrying about escaping quotes/special chars in the HTML string.
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".html", prefix="mail_html_",
-        delete=False, encoding="utf-8",
+        mode="w",
+        suffix=".html",
+        prefix="mail_html_",
+        delete=False,
+        encoding="utf-8",
     )
     tmp.write(body_html)
     tmp.close()
@@ -178,20 +414,20 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
         A tuple of (resolved_paths, error_message).
         If error_message is not None, resolved_paths should be ignored.
     """
-    home_dir = os.path.expanduser('~')
+    home_dir = os.path.expanduser("~")
     sensitive_dirs = [
-        os.path.join(home_dir, '.ssh'),
-        os.path.join(home_dir, '.gnupg'),
-        os.path.join(home_dir, '.config'),
-        os.path.join(home_dir, '.aws'),
-        os.path.join(home_dir, '.claude'),
-        os.path.join(home_dir, 'Library', 'LaunchAgents'),
-        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
-        os.path.join(home_dir, 'Library', 'Keychains'),
+        os.path.join(home_dir, ".ssh"),
+        os.path.join(home_dir, ".gnupg"),
+        os.path.join(home_dir, ".config"),
+        os.path.join(home_dir, ".aws"),
+        os.path.join(home_dir, ".claude"),
+        os.path.join(home_dir, "Library", "LaunchAgents"),
+        os.path.join(home_dir, "Library", "LaunchDaemons"),
+        os.path.join(home_dir, "Library", "Keychains"),
     ]
 
     resolved_paths: List[str] = []
-    raw_paths = [p.strip() for p in attachments.split(',')]
+    raw_paths = [p.strip() for p in attachments.split(",")]
 
     for raw_path in raw_paths:
         if not raw_path:
@@ -203,12 +439,18 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
 
         # Must be under the user's home directory
         if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
-            return [], f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}"
+            return (
+                [],
+                f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}",
+            )
 
         # Block sensitive directories
         for sensitive_dir in sensitive_dirs:
             if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
-                return [], f"Error: Cannot attach files from sensitive directory: {sensitive_dir}"
+                return (
+                    [],
+                    f"Error: Cannot attach files from sensitive directory: {sensitive_dir}",
+                )
 
         # File must exist
         if not os.path.isfile(resolved):
@@ -233,7 +475,7 @@ def reply_to_email(
     bcc: Optional[str] = None,
     send: bool = True,
     mode: Optional[str] = None,
-    attachments: Optional[str] = None
+    attachments: Optional[str] = None,
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -260,8 +502,11 @@ def reply_to_email(
     # Write reply body to a temp file to avoid AppleScript string escaping
     # issues with special characters (em dashes, curly quotes, colons, etc.)
     body_tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", prefix="mail_reply_",
-        delete=False, encoding="utf-8",
+        mode="w",
+        suffix=".txt",
+        prefix="mail_reply_",
+        delete=False,
+        encoding="utf-8",
     )
     body_tmp.write(reply_body)
     body_tmp.close()
@@ -269,14 +514,14 @@ def reply_to_email(
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
-        reply_command = 'set replyMessage to reply foundMessage with opening window and reply to all'
+        reply_command = "set replyMessage to reply foundMessage with opening window and reply to all"
     else:
-        reply_command = 'set replyMessage to reply foundMessage with opening window'
+        reply_command = "set replyMessage to reply foundMessage with opening window"
 
     # Build CC recipients if provided
-    cc_script = ''
+    cc_script = ""
     if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(',')]
+        cc_addresses = [addr.strip() for addr in cc.split(",")]
         for addr in cc_addresses:
             safe_addr = escape_applescript(addr)
             cc_script += f'''
@@ -284,9 +529,9 @@ def reply_to_email(
             '''
 
     # Build BCC recipients if provided
-    bcc_script = ''
+    bcc_script = ""
     if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
         for addr in bcc_addresses:
             safe_addr = escape_applescript(addr)
             bcc_script += f'''
@@ -294,8 +539,8 @@ def reply_to_email(
             '''
 
     # Build attachment script if provided
-    attachment_script = ''
-    attachment_info = ''
+    attachment_script = ""
+    attachment_info = ""
     if attachments:
         validated_paths, error = _validate_attachment_paths(attachments)
         if error:
@@ -307,11 +552,13 @@ def reply_to_email(
                 make new attachment with properties {{file name:theFile}} at after the last paragraph
                 delay 1
             '''
-            attachment_info += f'  {path}\n'
+            attachment_info += f"  {path}\n"
 
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
-    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
+    safe_attachment_info = (
+        escape_applescript(attachment_info) if attachment_info else ""
+    )
 
     # Resolve delivery mode: mode parameter takes precedence over send boolean
     if mode is not None:
@@ -330,13 +577,13 @@ def reply_to_email(
         send_or_draft_command = "send replyMessage"
         success_text = "Reply sent successfully!"
         # For send, Mail handles the quoted original via the HTML layer
-        set_content_script = 'set content of replyMessage to replyBodyText'
+        set_content_script = "set content of replyMessage to replyBodyText"
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
         # For open, we use the clipboard to paste the reply body.
         # This preserves Mail.app's native quoted original
         # (setting content via AppleScript overwrites the async HTML layer).
-        send_or_draft_command = f'''
+        send_or_draft_command = f"""
                 set visible of replyMessage to true
                 activate
                 delay 1.5
@@ -347,9 +594,9 @@ def reply_to_email(
                         keystroke "v" using command down
                     end tell
                 end tell
-                delay 0.5'''
+                delay 0.5"""
         success_text = "Reply opened in Mail for review. Edit and send when ready."
-        set_content_script = '-- content set via clipboard paste'
+        set_content_script = "-- content set via clipboard paste"
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         send_or_draft_command = "close window 1 saving yes"
@@ -357,11 +604,11 @@ def reply_to_email(
         # For draft, we must manually build the quoted original because
         # close-window-saving-yes saves the content property literally
         # and the reply message's content property is initially empty
-        set_content_script = '''set origContent to content of foundMessage
+        set_content_script = """set origContent to content of foundMessage
                 set origSender to sender of foundMessage
                 set origDate to date received of foundMessage
                 set quotedText to "On " & (origDate as string) & ", " & origSender & " wrote:" & return & return & origContent
-                set content of replyMessage to replyBodyText & return & return & quotedText'''
+                set content of replyMessage to replyBodyText & return & return & quotedText"""
 
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
 
@@ -428,21 +675,21 @@ def reply_to_email(
     '''
 
     if cc:
-        script += f'''
+        script += f"""
                 set outputText to outputText & "CC: {safe_cc}" & return
-    '''
+    """
 
     if bcc:
-        script += f'''
+        script += f"""
                 set outputText to outputText & "BCC: {safe_bcc}" & return
-    '''
+    """
 
     if attachments:
         script += f'''
                 set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
     '''
 
-    script += f'''
+    script += f"""
             else
                 set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
             end if
@@ -460,7 +707,7 @@ def reply_to_email(
 
         return outputText
     end tell
-    '''
+    """
 
     try:
         result = run_applescript(script)
@@ -482,7 +729,7 @@ def compose_email(
     bcc: Optional[str] = None,
     attachments: Optional[str] = None,
     mode: str = "send",
-    body_html: Optional[str] = None
+    body_html: Optional[str] = None,
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -507,8 +754,8 @@ def compose_email(
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
 
     # Validate and resolve attachments early
-    attachment_script = ''
-    attachment_info = ''
+    attachment_script = ""
+    attachment_info = ""
     if attachments:
         validated_paths, error = _validate_attachment_paths(attachments)
         if error:
@@ -520,7 +767,7 @@ def compose_email(
                 make new attachment with properties {{file name:theFile}} at after the last paragraph
                 delay 1
             '''
-            attachment_info += f'  {path}\n'
+            attachment_info += f"  {path}\n"
 
     # --- HTML path: use NSPasteboard clipboard injection ---
     if body_html:
@@ -542,8 +789,8 @@ def compose_email(
     escaped_body = escape_applescript(body)
 
     # Build TO recipients (split comma-separated addresses)
-    to_script = ''
-    to_addresses = [addr.strip() for addr in to.split(',')]
+    to_script = ""
+    to_addresses = [addr.strip() for addr in to.split(",")]
     for addr in to_addresses:
         safe_addr = escape_applescript(addr)
         to_script += f'''
@@ -551,9 +798,9 @@ def compose_email(
         '''
 
     # Build CC recipients if provided
-    cc_script = ''
+    cc_script = ""
     if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(',')]
+        cc_addresses = [addr.strip() for addr in cc.split(",")]
         for addr in cc_addresses:
             safe_addr = escape_applescript(addr)
             cc_script += f'''
@@ -561,9 +808,9 @@ def compose_email(
             '''
 
     # Build BCC recipients if provided
-    bcc_script = ''
+    bcc_script = ""
     if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
         for addr in bcc_addresses:
             safe_addr = escape_applescript(addr)
             bcc_script += f'''
@@ -573,7 +820,9 @@ def compose_email(
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
-    safe_attachment_info = escape_applescript(attachment_info) if attachment_info else ""
+    safe_attachment_info = (
+        escape_applescript(attachment_info) if attachment_info else ""
+    )
 
     # Determine behavior per mode
     if mode == "send":
@@ -628,14 +877,14 @@ def compose_email(
     '''
 
     if cc:
-        script += f'''
+        script += f"""
             set outputText to outputText & "CC: {safe_cc}" & return
-    '''
+    """
 
     if bcc:
-        script += f'''
+        script += f"""
             set outputText to outputText & "BCC: {safe_bcc}" & return
-    '''
+    """
 
     if attachments:
         script += f'''
@@ -667,7 +916,7 @@ def forward_email(
     message: Optional[str] = None,
     mailbox: str = "INBOX",
     cc: Optional[str] = None,
-    bcc: Optional[str] = None
+    bcc: Optional[str] = None,
 ) -> str:
     """
     Forward an email to one or more recipients.
@@ -693,9 +942,9 @@ def forward_email(
     escaped_message = escape_applescript(message) if message else ""
 
     # Build CC recipients if provided
-    cc_script = ''
+    cc_script = ""
     if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(',')]
+        cc_addresses = [addr.strip() for addr in cc.split(",")]
         for addr in cc_addresses:
             safe_addr = escape_applescript(addr)
             cc_script += f'''
@@ -703,9 +952,9 @@ def forward_email(
             '''
 
     # Build BCC recipients if provided
-    bcc_script = ''
+    bcc_script = ""
     if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
         for addr in bcc_addresses:
             safe_addr = escape_applescript(addr)
             bcc_script += f'''
@@ -716,8 +965,8 @@ def forward_email(
     safe_bcc = escape_applescript(bcc) if bcc else ""
 
     # Build TO recipients (split comma-separated)
-    to_script = ''
-    to_addresses = [addr.strip() for addr in to.split(',')]
+    to_script = ""
+    to_addresses = [addr.strip() for addr in to.split(",")]
     for addr in to_addresses:
         safe_addr = escape_applescript(addr)
         to_script += f'''
@@ -793,16 +1042,16 @@ def forward_email(
     '''
 
     if cc:
-        script += f'''
+        script += f"""
                 set outputText to outputText & "CC: {safe_cc}" & return
-    '''
+    """
 
     if bcc:
-        script += f'''
+        script += f"""
                 set outputText to outputText & "BCC: {safe_bcc}" & return
-    '''
+    """
 
-    script += f'''
+    script += f"""
             else
                 set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
             end if
@@ -813,7 +1062,7 @@ def forward_email(
 
         return outputText
     end tell
-    '''
+    """
 
     result = run_applescript(script)
     return result
@@ -829,7 +1078,7 @@ def manage_drafts(
     body: Optional[str] = None,
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
-    draft_subject: Optional[str] = None
+    draft_subject: Optional[str] = None,
 ) -> str:
     """
     Manage draft emails - list, create, send, open, or delete drafts.
@@ -891,8 +1140,8 @@ def manage_drafts(
         safe_to = escape_applescript(to)
 
         # Build TO recipients (split comma-separated)
-        to_script = ''
-        to_addresses = [addr.strip() for addr in to.split(',')]
+        to_script = ""
+        to_addresses = [addr.strip() for addr in to.split(",")]
         for addr in to_addresses:
             safe_addr = escape_applescript(addr)
             to_script += f'''
@@ -900,9 +1149,9 @@ def manage_drafts(
             '''
 
         # Build CC recipients if provided
-        cc_script = ''
+        cc_script = ""
         if cc:
-            cc_addresses = [addr.strip() for addr in cc.split(',')]
+            cc_addresses = [addr.strip() for addr in cc.split(",")]
             for addr in cc_addresses:
                 safe_addr = escape_applescript(addr)
                 cc_script += f'''
@@ -910,9 +1159,9 @@ def manage_drafts(
                 '''
 
         # Build BCC recipients if provided
-        bcc_script = ''
+        bcc_script = ""
         if bcc:
-            bcc_addresses = [addr.strip() for addr in bcc.split(',')]
+            bcc_addresses = [addr.strip() for addr in bcc.split(",")]
             for addr in bcc_addresses:
                 safe_addr = escape_applescript(addr)
                 bcc_script += f'''
@@ -1108,7 +1357,9 @@ def manage_drafts(
         '''
 
     else:
-        return f"Error: Invalid action '{action}'. Use: list, create, send, open, delete"
+        return (
+            f"Error: Invalid action '{action}'. Use: list, create, send, open, delete"
+        )
 
     result = run_applescript(script)
     return result

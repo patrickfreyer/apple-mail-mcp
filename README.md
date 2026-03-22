@@ -39,7 +39,7 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 
 > **Tip:** An `.mcpb` bundle is also available on the [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases) page for one-click install in Claude Desktop.
 
-## Tools (26)
+## Tools (27)
 
 ### Reading & Search
 | Tool | Description |
@@ -73,6 +73,7 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 | `reply_to_email` | Reply or reply-all with optional CC/BCC |
 | `forward_email` | Forward with optional message, CC/BCC |
 | `manage_drafts` | Create, list, send, and delete drafts |
+| `create_rich_email_draft` | Build a rich HTML `.eml` draft, open it in Mail, and optionally save it to Drafts |
 
 ### Attachments
 | Tool | Description |
@@ -144,7 +145,19 @@ Search for emails about "project update" in my Gmail
 Reply to the email about "Domain name" with "Thanks for the update!"
 Move emails with "invoice" in the subject to my Archive folder
 Show me email statistics for the last 30 days
+Create a rich HTML draft for a weekly update and open it in Mail
 ```
+
+### Rich HTML Drafts
+
+Use `create_rich_email_draft` when you need a visually formatted email, newsletter, or leadership update.
+
+- It generates an unsent `.eml` file with multipart plain-text + HTML bodies
+- It can open the draft directly in Mail for editing
+- It can optionally ask Mail to save the opened compose window into Drafts
+- It accepts partial details, so you can start with just an account and subject and fill in the rest later
+
+This is more reliable than injecting raw HTML into AppleScript `content`, which Mail often stores as literal markup.
 
 ## Email Management Skill
 
@@ -172,12 +185,13 @@ See [skill-email-management/README.md](skill-email-management/README.md) for det
 | Slow searches | Set `include_content: false` and lower `max_results` |
 | Mailbox not found | Use exact folder names; nested folders use `/` separator (e.g., `Projects/Alpha`) |
 | Permission errors | Grant access in **System Settings > Privacy & Security > Automation** |
+| Rich draft shows raw HTML | Use `create_rich_email_draft` instead of pasting HTML into `manage_drafts` or AppleScript `content` |
 
 ## Project Structure
 
 ```
 apple-mail-mcp/
-├── apple_mail_mcp.py          # Main MCP server (26 tools)
+├── apple_mail_mcp.py          # Main MCP server (27 tools)
 ├── requirements.txt           # Python dependencies
 ├── apple-mail-mcpb/           # MCP Bundle build files
 ├── skill-email-management/    # Email Management Expert Skill

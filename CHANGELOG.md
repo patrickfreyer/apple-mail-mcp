@@ -5,6 +5,17 @@ All notable changes to the Apple Mail MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`create_rich_email_draft`**: Create multipart rich-text `.eml` drafts, open them in Mail, and optionally save them to Drafts
+
+### Changed
+- Documented `.eml`-based rich draft creation as the preferred workflow for HTML emails in README, skill docs, and agent guidance
+
+### Fixed
+- Clarified the recommended workaround for Mail drafts that show literal HTML instead of rendered rich content
+
 ## [1.6.1] - 2026-03-10
 
 ### Security

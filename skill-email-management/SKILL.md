@@ -21,7 +21,7 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 
 - **Overview & Discovery**: `get_inbox_overview`, `list_accounts`, `list_mailboxes`
 - **Reading & Searching**: `list_inbox_emails`, `get_recent_emails`, `get_email_with_content`, `search_emails`, `get_email_thread`, `search_by_sender`, `search_all_accounts`, `search_email_content`, `get_newsletters`
-- **Composing & Responding**: `compose_email`, `reply_to_email`, `forward_email`
+- **Composing & Responding**: `compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`
 - **Organization**: `move_email`, `update_email_status` (read/unread, flag/unflag)
 - **Drafts**: `manage_drafts` (list, create, send, delete)
 - **Attachments**: `list_email_attachments`, `save_email_attachment`
@@ -39,8 +39,9 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 1. **Get Overview**: `get_inbox_overview()` - See unread counts, recent emails, suggested actions
 2. **Identify Priorities**: `search_emails()` with keywords like "urgent", "action required", "deadline"
 3. **Quick Responses**:
-   - For immediate replies: `reply_to_email()`
-   - For considered responses: `manage_drafts(action="create")`
+    - For immediate replies: `reply_to_email()`
+    - For considered responses: `manage_drafts(action="create")`
+    - For rich newsletters, status updates, or HTML-heavy drafts: `create_rich_email_draft()`
 4. **Organize by Category**:
    - Move project emails: `move_email(to_mailbox="Projects/[ProjectName]")`
    - Archive processed: `move_email(to_mailbox="Archive")`
@@ -179,6 +180,25 @@ The Apple Mail MCP provides comprehensive email management capabilities:
 - Create drafts for emails needing careful wording
 - Review drafts weekly to avoid accumulation
 - Use descriptive subjects for easy draft identification
+
+### 7a. Rich Text / HTML Draft Workflow
+
+**Goal**: Create a rendered Mail compose window for rich email content without Mail showing literal HTML.
+
+**When to use it**:
+- Weekly updates and leadership emails
+- Newsletters or formatted announcements
+- Any case where the assistant only has partial details but should prepare a polished draft quickly
+
+**Preferred workflow**:
+1. Build the HTML content first
+2. Use `create_rich_email_draft()` instead of `manage_drafts(action="create")`
+3. Pass as many details as you have now; missing `to`, `subject`, or `body` can be filled in later
+4. Let the tool generate and open an unsent `.eml` draft in Mail
+5. Optionally save that compose window into Drafts
+
+**Important note**:
+- Do not inject raw HTML into the normal AppleScript `content` field for rich messages; Mail commonly stores that as visible markup rather than rendered formatting.
 
 ### 8. Thread Management
 
