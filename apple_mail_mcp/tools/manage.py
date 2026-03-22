@@ -1,12 +1,16 @@
 """Management tools: moving, status updates, trash, and attachments."""
 
 import os
-from typing import Optional
+from typing import Optional, List
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
+    contains_any_condition,
+    equals_any_numeric_condition,
     inject_preferences,
     escape_applescript,
+    normalize_message_ids,
+    normalize_search_terms,
     run_applescript,
     inbox_mailbox_script,
     build_mailbox_ref,
@@ -18,113 +22,121 @@ from apple_mail_mcp.core import (
 @inject_preferences
 def move_email(
     account: str,
-    subject_keyword: str,
+    subject_keyword: Optional[str],
     to_mailbox: str,
     from_mailbox: str = "INBOX",
-    max_moves: int = 1
+    max_moves: int = 1,
+    subject_keywords: Optional[List[str]] = None,
 ) -> str:
     """
     Move email(s) matching a subject keyword from one mailbox to another.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        subject_keyword: Keyword to search for in email subjects
+        subject_keyword: Optional keyword to search for in email subjects
         to_mailbox: Destination mailbox name. For nested mailboxes, use "/" separator (e.g., "Projects/Amplify Impact")
         from_mailbox: Source mailbox name (default: "INBOX")
         max_moves: Maximum number of emails to move (default: 1, safety limit)
+        subject_keywords: Optional list of keywords to match in subjects; matches any keyword
 
     Returns:
         Confirmation message with details of moved emails
     """
 
+    subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
+    if not subject_terms:
+        return "Error: 'subject_keyword' or 'subject_keywords' is required"
+
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
-    safe_subject_keyword = escape_applescript(subject_keyword)
     safe_from_mailbox = escape_applescript(from_mailbox)
     safe_to_mailbox = escape_applescript(to_mailbox)
+    subject_condition = contains_any_condition("subject", subject_terms)
 
     # Parse nested mailbox path
-    mailbox_parts = to_mailbox.split('/')
+    mailbox_parts = to_mailbox.split("/")
 
     # Build the nested mailbox reference
     if len(mailbox_parts) > 1:
         # Nested mailbox
         dest_mailbox_script = f'mailbox "{escape_applescript(mailbox_parts[-1])}" of '
         for i in range(len(mailbox_parts) - 2, -1, -1):
-            dest_mailbox_script += f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
-        dest_mailbox_script += 'targetAccount'
+            dest_mailbox_script += (
+                f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
+            )
+        dest_mailbox_script += "targetAccount"
     else:
         dest_mailbox_script = f'mailbox "{safe_to_mailbox}" of targetAccount'
 
     script = f'''
     tell application "Mail"
-        set outputText to "MOVING EMAILS" & return & return
-        set movedCount to 0
+        with timeout of 300 seconds
+            set outputText to "MOVING EMAILS" & return & return
+            set movedCount to 0
 
-        try
-            set targetAccount to account "{safe_account}"
-            -- Try to get source mailbox (handle both "INBOX"/"Inbox" variations)
             try
-                set sourceMailbox to mailbox "{safe_from_mailbox}" of targetAccount
-            on error
-                if "{safe_from_mailbox}" is "INBOX" then
-                    set sourceMailbox to mailbox "Inbox" of targetAccount
-                else
-                    error "Source mailbox not found"
-                end if
-            end try
-
-            -- Get destination mailbox (handles nested mailboxes)
-            set destMailbox to {dest_mailbox_script}
-            set sourceMessages to every message of sourceMailbox
-
-            repeat with aMessage in sourceMessages
-                if movedCount >= {max_moves} then exit repeat
-
+                set targetAccount to account "{safe_account}"
+                -- Try to get source mailbox (handle both "INBOX"/"Inbox" variations)
                 try
-                    set messageSubject to subject of aMessage
+                    set sourceMailbox to mailbox "{safe_from_mailbox}" of targetAccount
+                on error
+                    if "{safe_from_mailbox}" is "INBOX" then
+                        set sourceMailbox to mailbox "Inbox" of targetAccount
+                    else
+                        error "Source mailbox not found"
+                    end if
+                end try
 
-                    -- Check if subject contains keyword (case insensitive)
-                    if messageSubject contains "{safe_subject_keyword}" then
+                -- Get destination mailbox (handles nested mailboxes)
+                set destMailbox to {dest_mailbox_script}
+                set matchingMessages to every message of sourceMailbox whose {subject_condition}
+                set matchingCount to count of matchingMessages
+
+                if matchingCount is 0 then
+                    set targetMessages to {{}}
+                else if matchingCount > {max_moves} then
+                    set targetMessages to items 1 thru {max_moves} of matchingMessages
+                else
+                    set targetMessages to matchingMessages
+                end if
+
+                repeat with aMessage in targetMessages
+                    try
+                        set messageSubject to subject of aMessage
                         set messageSender to sender of aMessage
                         set messageDate to date received of aMessage
 
-                        -- Move the message
                         move aMessage to destMailbox
+                        set movedCount to movedCount + 1
 
                         set outputText to outputText & "✓ Moved: " & messageSubject & return
                         set outputText to outputText & "  From: " & messageSender & return
                         set outputText to outputText & "  Date: " & (messageDate as string) & return
                         set outputText to outputText & "  {safe_from_mailbox} → {safe_to_mailbox}" & return & return
+                    end try
+                end repeat
 
-                        set movedCount to movedCount + 1
-                    end if
-                end try
-            end repeat
+                set outputText to outputText & "========================================" & return
+                set outputText to outputText & "TOTAL MOVED: " & movedCount & " email(s)" & return
+                set outputText to outputText & "========================================" & return
 
-            set outputText to outputText & "========================================" & return
-            set outputText to outputText & "TOTAL MOVED: " & movedCount & " email(s)" & return
-            set outputText to outputText & "========================================" & return
+            on error errMsg
+                return "Error: " & errMsg & return & "Please check that account and mailbox names are correct. For nested mailboxes, use '/' separator (e.g., 'Projects/Amplify Impact')."
+            end try
 
-        on error errMsg
-            return "Error: " & errMsg & return & "Please check that account and mailbox names are correct. For nested mailboxes, use '/' separator (e.g., 'Projects/Amplify Impact')."
-        end try
-
-        return outputText
+            return outputText
+        end timeout
     end tell
     '''
 
-    result = run_applescript(script)
+    result = run_applescript(script, timeout=300)
     return result
 
 
 @mcp.tool()
 @inject_preferences
 def save_email_attachment(
-    account: str,
-    subject_keyword: str,
-    attachment_name: str,
-    save_path: str
+    account: str, subject_keyword: str, attachment_name: str, save_path: str
 ) -> str:
     """
     Save a specific attachment from an email to disk.
@@ -144,7 +156,7 @@ def save_email_attachment(
 
     # Path validation: resolve to absolute path and enforce safety constraints
     resolved_path = os.path.realpath(expanded_path)
-    home_dir = os.path.expanduser('~')
+    home_dir = os.path.expanduser("~")
 
     # Must be under the user's home directory
     if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
@@ -152,17 +164,20 @@ def save_email_attachment(
 
     # Block sensitive directories
     sensitive_dirs = [
-        os.path.join(home_dir, '.ssh'),
-        os.path.join(home_dir, '.gnupg'),
-        os.path.join(home_dir, '.config'),
-        os.path.join(home_dir, '.aws'),
-        os.path.join(home_dir, '.claude'),
-        os.path.join(home_dir, 'Library', 'LaunchAgents'),
-        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
-        os.path.join(home_dir, 'Library', 'Keychains'),
+        os.path.join(home_dir, ".ssh"),
+        os.path.join(home_dir, ".gnupg"),
+        os.path.join(home_dir, ".config"),
+        os.path.join(home_dir, ".aws"),
+        os.path.join(home_dir, ".claude"),
+        os.path.join(home_dir, "Library", "LaunchAgents"),
+        os.path.join(home_dir, "Library", "LaunchDaemons"),
+        os.path.join(home_dir, "Library", "Keychains"),
     ]
     for sensitive_dir in sensitive_dirs:
-        if resolved_path.startswith(sensitive_dir + os.sep) or resolved_path == sensitive_dir:
+        if (
+            resolved_path.startswith(sensitive_dir + os.sep)
+            or resolved_path == sensitive_dir
+        ):
             return f"Error: Cannot save attachments to sensitive directory: {sensitive_dir}"
 
     expanded_path = resolved_path
@@ -237,10 +252,11 @@ def update_email_status(
     account: str,
     action: str,
     subject_keyword: Optional[str] = None,
+    subject_keywords: Optional[List[str]] = None,
     sender: Optional[str] = None,
     mailbox: str = "INBOX",
     max_updates: int = 10,
-    apply_to_all: bool = False
+    apply_to_all: bool = False,
 ) -> str:
     """
     Update email status - mark as read/unread or flag/unflag emails.
@@ -249,6 +265,7 @@ def update_email_status(
         account: Account name (e.g., "Gmail", "Work")
         action: Action to perform: "mark_read", "mark_unread", "flag", "unflag"
         subject_keyword: Optional keyword to filter emails by subject
+        subject_keywords: Optional list of subject keywords; matches any keyword
         sender: Optional sender to filter emails by
         mailbox: Mailbox to search in (default: "INBOX")
         max_updates: Maximum number of emails to update (safety limit, default: 10)
@@ -258,8 +275,10 @@ def update_email_status(
         Confirmation message with details of updated emails
     """
 
+    subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
+
     # Safety check: require at least one filter or explicit apply_to_all
-    if not subject_keyword and not sender and not apply_to_all:
+    if not subject_terms and not sender and not apply_to_all:
         return (
             "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
             "or set apply_to_all=True to update all messages in the mailbox."
@@ -268,70 +287,206 @@ def update_email_status(
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
 
-    # Build search condition using helper
-    condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
-
-    # Build action script
+    # Build action and pre-filter so we skip no-op updates.
     if action == "mark_read":
-        action_script = 'set read status of aMessage to true'
+        bulk_action_script = "set read status of targetMessages to true"
+        single_action_script = "set read status of aMessage to true"
+        conditions = ["read status is false"]
         action_label = "Marked as read"
     elif action == "mark_unread":
-        action_script = 'set read status of aMessage to false'
+        bulk_action_script = "set read status of targetMessages to false"
+        single_action_script = "set read status of aMessage to false"
+        conditions = ["read status is true"]
         action_label = "Marked as unread"
     elif action == "flag":
-        action_script = 'set flagged status of aMessage to true'
+        bulk_action_script = "set flagged status of targetMessages to true"
+        single_action_script = "set flagged status of aMessage to true"
+        conditions = ["flagged status is false"]
         action_label = "Flagged"
     elif action == "unflag":
-        action_script = 'set flagged status of aMessage to false'
+        bulk_action_script = "set flagged status of targetMessages to false"
+        single_action_script = "set flagged status of aMessage to false"
+        conditions = ["flagged status is true"]
         action_label = "Unflagged"
     else:
         return f"Error: Invalid action '{action}'. Use: mark_read, mark_unread, flag, unflag"
 
+    if subject_terms:
+        conditions.append(contains_any_condition("subject", subject_terms))
+    if sender:
+        conditions.append(f'sender contains "{escape_applescript(sender)}"')
+
+    search_condition = " and ".join(conditions)
+
     script = f'''
     tell application "Mail"
-        set outputText to "UPDATING EMAIL STATUS: {action_label}" & return & return
-        set updateCount to 0
+        with timeout of 300 seconds
+            set outputText to "UPDATING EMAIL STATUS: {action_label}" & return & return
+            set updateCount to 0
 
-        try
-            set targetAccount to account "{safe_account}"
-            {build_mailbox_ref(mailbox, var_name="targetMailbox")}
+            try
+                set targetAccount to account "{safe_account}"
+                {build_mailbox_ref(mailbox, var_name="targetMailbox")}
 
-            set mailboxMessages to every message of targetMailbox
+                set matchingMessages to every message of targetMailbox whose {search_condition}
+                set matchingCount to count of matchingMessages
 
-            repeat with aMessage in mailboxMessages
-                if updateCount >= {max_updates} then exit repeat
+                if matchingCount is 0 then
+                    set targetMessages to {{}}
+                else if matchingCount > {max_updates} then
+                    set targetMessages to items 1 thru {max_updates} of matchingMessages
+                else
+                    set targetMessages to matchingMessages
+                end if
 
-                try
-                    set messageSubject to subject of aMessage
-                    set messageSender to sender of aMessage
-                    set messageDate to date received of aMessage
+                set updateCount to count of targetMessages
 
-                    -- Apply filter conditions
-                    if {condition_str} then
-                        {action_script}
+                if updateCount > 0 then
+                    try
+                        {bulk_action_script}
+                    on error
+                        repeat with aMessage in targetMessages
+                            {single_action_script}
+                        end repeat
+                    end try
 
-                        set outputText to outputText & "✓ {action_label}: " & messageSubject & return
-                        set outputText to outputText & "   From: " & messageSender & return
-                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                    repeat with aMessage in targetMessages
+                        try
+                            set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
 
-                        set updateCount to updateCount + 1
-                    end if
-                end try
-            end repeat
+                            set outputText to outputText & "✓ {action_label}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                        end try
+                    end repeat
+                end if
 
-            set outputText to outputText & "========================================" & return
-            set outputText to outputText & "TOTAL UPDATED: " & updateCount & " email(s)" & return
-            set outputText to outputText & "========================================" & return
+                set outputText to outputText & "========================================" & return
+                set outputText to outputText & "TOTAL UPDATED: " & updateCount & " email(s)" & return
+                set outputText to outputText & "========================================" & return
 
-        on error errMsg
-            return "Error: " & errMsg
-        end try
+            on error errMsg
+                return "Error: " & errMsg
+            end try
 
-        return outputText
+            return outputText
+        end timeout
     end tell
     '''
 
-    result = run_applescript(script)
+    result = run_applescript(script, timeout=300)
+    return result
+
+
+@mcp.tool()
+@inject_preferences
+def update_email_status_by_ids(
+    account: str,
+    mailbox: str,
+    message_ids: List[str],
+    action: str,
+) -> str:
+    """
+    Update email status using explicit Mail message ids.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work")
+        mailbox: Mailbox containing the target messages
+        message_ids: Exact Mail message ids returned by JSON search tools
+        action: Action to perform: "mark_read", "mark_unread", "flag", "unflag"
+
+    Returns:
+        Confirmation message with details of updated emails
+    """
+    normalized_ids = normalize_message_ids(message_ids)
+    if not normalized_ids:
+        return "Error: 'message_ids' must contain one or more numeric Mail ids"
+
+    safe_account = escape_applescript(account)
+    safe_mailbox = escape_applescript(mailbox)
+
+    if action == "mark_read":
+        bulk_action_script = "set read status of targetMessages to true"
+        single_action_script = "set read status of aMessage to true"
+        action_label = "Marked as read"
+    elif action == "mark_unread":
+        bulk_action_script = "set read status of targetMessages to false"
+        single_action_script = "set read status of aMessage to false"
+        action_label = "Marked as unread"
+    elif action == "flag":
+        bulk_action_script = "set flagged status of targetMessages to true"
+        single_action_script = "set flagged status of aMessage to true"
+        action_label = "Flagged"
+    elif action == "unflag":
+        bulk_action_script = "set flagged status of targetMessages to false"
+        single_action_script = "set flagged status of aMessage to false"
+        action_label = "Unflagged"
+    else:
+        return f"Error: Invalid action '{action}'. Use: mark_read, mark_unread, flag, unflag"
+
+    id_condition = equals_any_numeric_condition("id", normalized_ids)
+
+    script = f'''
+    tell application "Mail"
+        with timeout of 300 seconds
+            set outputText to "UPDATING EMAIL STATUS BY IDS: {action_label}" & return & return
+            set updateCount to 0
+
+            try
+                set targetAccount to account "{safe_account}"
+                try
+                    set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
+                on error
+                    if "{safe_mailbox}" is "INBOX" then
+                        set targetMailbox to mailbox "Inbox" of targetAccount
+                    else
+                        error "Mailbox not found: {safe_mailbox}"
+                    end if
+                end try
+
+                set targetMessages to every message of targetMailbox whose {id_condition}
+                set requestedCount to {len(normalized_ids)}
+
+                if (count of targetMessages) > 0 then
+                    try
+                        {bulk_action_script}
+                    on error
+                        repeat with aMessage in targetMessages
+                            {single_action_script}
+                        end repeat
+                    end try
+
+                    repeat with aMessage in targetMessages
+                        try
+                            set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
+
+                            set outputText to outputText & "✓ {action_label}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                            set updateCount to updateCount + 1
+                        end try
+                    end repeat
+                end if
+
+                set outputText to outputText & "========================================" & return
+                set outputText to outputText & "REQUESTED IDS: " & requestedCount & return
+                set outputText to outputText & "TOTAL UPDATED: " & updateCount & " email(s)" & return
+                set outputText to outputText & "========================================" & return
+
+            on error errMsg
+                return "Error: " & errMsg
+            end try
+
+            return outputText
+        end timeout
+    end tell
+    '''
+
+    result = run_applescript(script, timeout=300)
     return result
 
 
@@ -341,11 +496,12 @@ def manage_trash(
     account: str,
     action: str,
     subject_keyword: Optional[str] = None,
+    subject_keywords: Optional[List[str]] = None,
     sender: Optional[str] = None,
     mailbox: str = "INBOX",
     max_deletes: int = 5,
     confirm_empty: bool = False,
-    apply_to_all: bool = False
+    apply_to_all: bool = False,
 ) -> str:
     """
     Manage trash operations - delete emails or empty trash.
@@ -354,6 +510,7 @@ def manage_trash(
         account: Account name (e.g., "Gmail", "Work")
         action: Action to perform: "move_to_trash", "delete_permanent", "empty_trash"
         subject_keyword: Optional keyword to filter emails (not used for empty_trash)
+        subject_keywords: Optional list of subject keywords; matches any keyword
         sender: Optional sender to filter emails (not used for empty_trash)
         mailbox: Source mailbox (default: "INBOX", not used for empty_trash or delete_permanent)
         max_deletes: Maximum number of emails to delete (safety limit, default: 5)
@@ -366,6 +523,8 @@ def manage_trash(
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
+    safe_mailbox = escape_applescript(mailbox)
+    subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
 
     if action == "empty_trash":
         if not confirm_empty:
@@ -406,127 +565,161 @@ def manage_trash(
         '''
     elif action == "delete_permanent":
         # Safety check: require at least one filter or explicit apply_to_all
-        if not subject_keyword and not sender and not apply_to_all:
+        if not subject_terms and not sender and not apply_to_all:
             return (
                 "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
                 "or set apply_to_all=True to delete all matching messages."
             )
 
-        condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
+        # Build search condition with escaped inputs
+        conditions = []
+        if subject_terms:
+            conditions.append(contains_any_condition("subject", subject_terms))
+        if sender:
+            conditions.append(f'sender contains "{escape_applescript(sender)}"')
+
+        if conditions:
+            matching_messages_script = f"set matchingMessages to every message of trashMailbox whose {' and '.join(conditions)}"
+        else:
+            matching_messages_script = (
+                "set matchingMessages to every message of trashMailbox"
+            )
 
         script = f'''
         tell application "Mail"
-            set outputText to "PERMANENTLY DELETING EMAILS" & return & return
-            set deleteCount to 0
+            with timeout of 300 seconds
+                set outputText to "PERMANENTLY DELETING EMAILS" & return & return
+                set deleteCount to 0
 
-            try
-                set targetAccount to account "{safe_account}"
-                set trashMailbox to mailbox "Trash" of targetAccount
-                set trashMessages to every message of trashMailbox
+                try
+                    set targetAccount to account "{safe_account}"
+                    set trashMailbox to mailbox "Trash" of targetAccount
+                    {matching_messages_script}
+                    set matchingCount to count of matchingMessages
 
-                repeat with aMessage in trashMessages
-                    if deleteCount >= {max_deletes} then exit repeat
+                    if matchingCount is 0 then
+                        set targetMessages to {{}}
+                    else if matchingCount > {max_deletes} then
+                        set targetMessages to items 1 thru {max_deletes} of matchingMessages
+                    else
+                        set targetMessages to matchingMessages
+                    end if
 
-                    try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
+                    repeat with aMessage in targetMessages
+                        try
+                            set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
 
-                        -- Apply filter conditions
-                        if {condition_str} then
                             set outputText to outputText & "✓ Permanently deleted: " & messageSubject & return
                             set outputText to outputText & "   From: " & messageSender & return & return
 
                             delete aMessage
                             set deleteCount to deleteCount + 1
-                        end if
-                    end try
-                end repeat
+                        end try
+                    end repeat
 
-                set outputText to outputText & "========================================" & return
-                set outputText to outputText & "TOTAL DELETED: " & deleteCount & " email(s)" & return
-                set outputText to outputText & "========================================" & return
+                    set outputText to outputText & "========================================" & return
+                    set outputText to outputText & "TOTAL DELETED: " & deleteCount & " email(s)" & return
+                    set outputText to outputText & "========================================" & return
 
-            on error errMsg
-                return "Error: " & errMsg
-            end try
+                on error errMsg
+                    return "Error: " & errMsg
+                end try
 
-            return outputText
+                return outputText
+            end timeout
         end tell
         '''
     else:  # move_to_trash
         # Safety check: require at least one filter or explicit apply_to_all
-        if not subject_keyword and not sender and not apply_to_all:
+        if not subject_terms and not sender and not apply_to_all:
             return (
                 "Error: No filter provided. Provide subject_keyword or sender to filter emails, "
                 "or set apply_to_all=True to move all messages to trash."
             )
 
-        condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
-        safe_mailbox = escape_applescript(mailbox)
+        # Build search condition with escaped inputs
+        conditions = []
+        if subject_terms:
+            conditions.append(contains_any_condition("subject", subject_terms))
+        if sender:
+            conditions.append(f'sender contains "{escape_applescript(sender)}"')
+
+        if conditions:
+            matching_messages_script = f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
+        else:
+            matching_messages_script = (
+                "set matchingMessages to every message of sourceMailbox"
+            )
 
         script = f'''
         tell application "Mail"
-            set outputText to "MOVING EMAILS TO TRASH" & return & return
-            set deleteCount to 0
+            with timeout of 300 seconds
+                set outputText to "MOVING EMAILS TO TRASH" & return & return
+                set deleteCount to 0
 
-            try
-                set targetAccount to account "{safe_account}"
-                -- Get source mailbox
                 try
-                    set sourceMailbox to mailbox "{safe_mailbox}" of targetAccount
-                on error
-                    if "{safe_mailbox}" is "INBOX" then
-                        set sourceMailbox to mailbox "Inbox" of targetAccount
-                    else
-                        error "Mailbox not found: {safe_mailbox}"
-                    end if
-                end try
-
-                -- Get trash mailbox
-                set trashMailbox to mailbox "Trash" of targetAccount
-                set sourceMessages to every message of sourceMailbox
-
-                repeat with aMessage in sourceMessages
-                    if deleteCount >= {max_deletes} then exit repeat
-
+                    set targetAccount to account "{safe_account}"
+                    -- Get source mailbox
                     try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
-                        set messageDate to date received of aMessage
+                        set sourceMailbox to mailbox "{safe_mailbox}" of targetAccount
+                    on error
+                        if "{safe_mailbox}" is "INBOX" then
+                            set sourceMailbox to mailbox "Inbox" of targetAccount
+                        else
+                            error "Mailbox not found: {safe_mailbox}"
+                        end if
+                    end try
 
-                        -- Apply filter conditions
-                        if {condition_str} then
+                    -- Get trash mailbox
+                    set trashMailbox to mailbox "Trash" of targetAccount
+                    {matching_messages_script}
+                    set matchingCount to count of matchingMessages
+
+                    if matchingCount is 0 then
+                        set targetMessages to {{}}
+                    else if matchingCount > {max_deletes} then
+                        set targetMessages to items 1 thru {max_deletes} of matchingMessages
+                    else
+                        set targetMessages to matchingMessages
+                    end if
+
+                    repeat with aMessage in targetMessages
+                        try
+                            set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
+
                             move aMessage to trashMailbox
+                            set deleteCount to deleteCount + 1
 
                             set outputText to outputText & "✓ Moved to trash: " & messageSubject & return
                             set outputText to outputText & "   From: " & messageSender & return
                             set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                        end try
+                    end repeat
 
-                            set deleteCount to deleteCount + 1
-                        end if
-                    end try
-                end repeat
+                    set outputText to outputText & "========================================" & return
+                    set outputText to outputText & "TOTAL MOVED TO TRASH: " & deleteCount & " email(s)" & return
+                    set outputText to outputText & "========================================" & return
 
-                set outputText to outputText & "========================================" & return
-                set outputText to outputText & "TOTAL MOVED TO TRASH: " & deleteCount & " email(s)" & return
-                set outputText to outputText & "========================================" & return
+                on error errMsg
+                    return "Error: " & errMsg
+                end try
 
-            on error errMsg
-                return "Error: " & errMsg
-            end try
-
-            return outputText
+                return outputText
+            end timeout
         end tell
         '''
 
-    result = run_applescript(script)
+    result = run_applescript(script, timeout=300)
     return result
 
 
 import re
 
 # Characters that could break AppleScript strings or mailbox names
-_INVALID_MAILBOX_CHARS = re.compile(r'[\\\"<>|?*:\x00-\x1f]')
+_INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
 
 
 @mcp.tool()
@@ -566,7 +759,7 @@ def create_mailbox(
         if _INVALID_MAILBOX_CHARS.search(seg):
             return (
                 f"Error: Invalid characters in mailbox name segment '{seg}'. "
-                "Avoid \\ \" < > | ? * : and control characters."
+                'Avoid \\ " < > | ? * : and control characters.'
             )
 
     safe_account = escape_applescript(account)
@@ -675,13 +868,15 @@ def archive_emails(
     condition_str = build_filter_condition(subject=subject_keyword, sender=sender)
     if only_read:
         read_cond = "messageRead is true"
-        condition_str = f"{condition_str} and {read_cond}" if condition_str != "true" else read_cond
+        condition_str = (
+            f"{condition_str} and {read_cond}" if condition_str != "true" else read_cond
+        )
 
     # Date filter
     date_setup = ""
     date_cond = ""
     if older_than_days and older_than_days > 0:
-        date_setup = f'set cutoffDate to (current date) - ({older_than_days} * days)'
+        date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
         date_cond = " and messageDate < cutoffDate"
 
     if dry_run:
