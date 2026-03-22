@@ -7,7 +7,13 @@
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date)](https://star-history.com/#patrickfreyer/apple-mail-mcp&Date)
+<a href="https://star-history.com/#patrickfreyer/apple-mail-mcp&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
+ </picture>
+</a>
 
 An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp).
 
