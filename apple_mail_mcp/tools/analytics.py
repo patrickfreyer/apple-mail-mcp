@@ -422,6 +422,31 @@ def export_emails(
     # Expand home directory
     save_dir = os.path.expanduser(save_directory)
 
+    # Path validation: resolve to absolute path and enforce safety constraints
+    resolved_path = os.path.realpath(save_dir)
+    home_dir = os.path.expanduser('~')
+
+    # Must be under the user's home directory
+    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
+        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
+
+    # Block sensitive directories
+    sensitive_dirs = [
+        os.path.join(home_dir, '.ssh'),
+        os.path.join(home_dir, '.gnupg'),
+        os.path.join(home_dir, '.config'),
+        os.path.join(home_dir, '.aws'),
+        os.path.join(home_dir, '.claude'),
+        os.path.join(home_dir, 'Library', 'LaunchAgents'),
+        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
+        os.path.join(home_dir, 'Library', 'Keychains'),
+    ]
+    for sensitive_dir in sensitive_dirs:
+        if resolved_path.startswith(sensitive_dir + os.sep) or resolved_path == sensitive_dir:
+            return f"Error: Cannot export emails to sensitive directory: {sensitive_dir}"
+
+    save_dir = resolved_path
+
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
     safe_mailbox = escape_applescript(mailbox)
