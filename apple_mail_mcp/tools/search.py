@@ -232,7 +232,21 @@ def _search_mail_records(
                     set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
                 on error
                     if "{escaped_mailbox}" is "INBOX" then
-                        set searchMailbox to mailbox "Inbox" of targetAccount
+                        try
+                            set searchMailbox to mailbox "Inbox" of targetAccount
+                        on error
+                            set searchMailbox to missing value
+                            repeat with mb in mailboxes of targetAccount
+                                set mbName to name of mb
+                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                    set searchMailbox to mb
+                                    exit repeat
+                                end if
+                            end repeat
+                            if searchMailbox is missing value then
+                                error "Could not find inbox mailbox"
+                            end if
+                        end try
                     else
                         error "Mailbox not found: {escaped_mailbox}"
                     end if
@@ -773,7 +787,21 @@ def search_by_sender(
                     set aMailbox to mailbox "{escaped_mailbox}" of anAccount
                 on error
                     if "{escaped_mailbox}" is "INBOX" then
-                        set aMailbox to mailbox "Inbox" of anAccount
+                        try
+                            set aMailbox to mailbox "Inbox" of anAccount
+                        on error
+                            set aMailbox to missing value
+                            repeat with mb in mailboxes of anAccount
+                                set mbName to name of mb
+                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                    set aMailbox to mb
+                                    exit repeat
+                                end if
+                            end repeat
+                            if aMailbox is missing value then
+                                error "Could not find inbox mailbox"
+                            end if
+                        end try
                     else
                         error "Mailbox not found: {escaped_mailbox}"
                     end if
@@ -933,7 +961,21 @@ def search_email_content(
                 set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
                 if "{escaped_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
+                    try
+                        set targetMailbox to mailbox "Inbox" of targetAccount
+                    on error
+                        set targetMailbox to missing value
+                        repeat with mb in mailboxes of targetAccount
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set targetMailbox to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if targetMailbox is missing value then
+                            error "Could not find inbox mailbox"
+                        end if
+                    end try
                 else
                     error "Mailbox not found: {escaped_mailbox}"
                 end if
@@ -1220,7 +1262,21 @@ def get_recent_from_sender(
                     set aMailbox to mailbox "{escaped_mailbox}" of anAccount
                 on error
                     if "{escaped_mailbox}" is "INBOX" then
-                        set aMailbox to mailbox "Inbox" of anAccount
+                        try
+                            set aMailbox to mailbox "Inbox" of anAccount
+                        on error
+                            set aMailbox to missing value
+                            repeat with mb in mailboxes of anAccount
+                                set mbName to name of mb
+                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                    set aMailbox to mb
+                                    exit repeat
+                                end if
+                            end repeat
+                            if aMailbox is missing value then
+                                error "Could not find inbox mailbox"
+                            end if
+                        end try
                     else
                         error "Mailbox not found: {escaped_mailbox}"
                     end if
@@ -1346,7 +1402,21 @@ def get_email_thread(
             set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
         on error
             if "{escaped_mailbox}" is "INBOX" then
-                set searchMailbox to mailbox "Inbox" of targetAccount
+                try
+                    set searchMailbox to mailbox "Inbox" of targetAccount
+                on error
+                    set searchMailbox to missing value
+                    repeat with mb in mailboxes of targetAccount
+                        set mbName to name of mb
+                        if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                            set searchMailbox to mb
+                            exit repeat
+                        end if
+                    end repeat
+                    if searchMailbox is missing value then
+                        error "Could not find inbox mailbox"
+                    end if
+                end try
             else if "{escaped_mailbox}" is "All" then
                 set searchMailboxes to every mailbox of targetAccount
                 set useAllMailboxes to true

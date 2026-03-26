@@ -261,7 +261,21 @@ def get_needs_response(
                 set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
                 if "{escaped_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
+                    try
+                        set targetMailbox to mailbox "Inbox" of targetAccount
+                    on error
+                        set targetMailbox to missing value
+                        repeat with mb in mailboxes of targetAccount
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set targetMailbox to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if targetMailbox is missing value then
+                            error "Could not find inbox mailbox"
+                        end if
+                    end try
                 else
                     error "Mailbox not found: {escaped_mailbox}"
                 end if
@@ -486,7 +500,21 @@ def get_top_senders(
                 set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
             on error
                 if "{escaped_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
+                    try
+                        set targetMailbox to mailbox "Inbox" of targetAccount
+                    on error
+                        set targetMailbox to missing value
+                        repeat with mb in mailboxes of targetAccount
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set targetMailbox to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if targetMailbox is missing value then
+                            error "Could not find inbox mailbox"
+                        end if
+                    end try
                 else
                     error "Mailbox not found: {escaped_mailbox}"
                 end if
