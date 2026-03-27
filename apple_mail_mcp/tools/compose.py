@@ -476,6 +476,7 @@ def reply_to_email(
     send: bool = True,
     mode: Optional[str] = None,
     attachments: Optional[str] = None,
+    body_html: Optional[str] = None,
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -490,6 +491,7 @@ def reply_to_email(
         send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
         mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
 
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
@@ -511,6 +513,31 @@ def reply_to_email(
     body_tmp.write(reply_body)
     body_tmp.close()
     body_temp_path = body_tmp.name
+
+    # If body_html provided, write it to a temp file for the AppleScript to read.
+    # If plain text only, wrap it in basic HTML so the clipboard paste renders
+    # properly in Mail's HTML compose view (preserving line breaks and gap).
+    html_temp_path = None
+    # Append an empty paragraph to create a visible gap before the quoted original.
+    # Mail strips trailing <br> tags, so we use a <p> with &nbsp; instead.
+    gap_html = "<div><br></div><div><br></div>"
+    if body_html:
+        html_content = body_html + gap_html
+    else:
+        # Wrap plain text in HTML, converting newlines to <br>
+        escaped_plain = html_escape(reply_body)
+        escaped_plain = escaped_plain.replace("\n", "<br>")
+        html_content = f"<div>{escaped_plain}</div>{gap_html}"
+    html_tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".html",
+        prefix="mail_reply_html_",
+        delete=False,
+        encoding="utf-8",
+    )
+    html_tmp.write(html_content)
+    html_tmp.close()
+    html_temp_path = html_tmp.name
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
@@ -572,106 +599,115 @@ def reply_to_email(
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
 
     # Determine behavior per mode
+    # All modes use HTML clipboard paste (via NSPasteboard) to insert the reply body.
+    # This preserves Mail.app's native quoted original in the HTML layer.
+    # (setting `content` via AppleScript overwrites the HTML layer entirely,
+    # destroying the email thread history.)
+
     if effective_mode == "send":
         header_text = "SENDING REPLY"
-        send_or_draft_command = "send replyMessage"
+        post_paste_action = """
+                delay 0.5
+                tell application "Mail"
+                    send replyMessage
+                end tell"""
         success_text = "Reply sent successfully!"
-        # For send, Mail handles the quoted original via the HTML layer
-        set_content_script = "set content of replyMessage to replyBodyText"
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
-        # For open, we use the clipboard to paste the reply body.
-        # This preserves Mail.app's native quoted original
-        # (setting content via AppleScript overwrites the async HTML layer).
-        send_or_draft_command = f"""
-                set visible of replyMessage to true
-                activate
-                delay 1.5
-                -- Use clipboard to paste reply body (preserves quoted original)
-                set the clipboard to replyBodyText
-                tell application "System Events"
-                    tell process "Mail"
-                        keystroke "v" using command down
-                    end tell
-                end tell
-                delay 0.5"""
+        post_paste_action = ""
         success_text = "Reply opened in Mail for review. Edit and send when ready."
-        set_content_script = "-- content set via clipboard paste"
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
-        send_or_draft_command = "close window 1 saving yes"
+        post_paste_action = """
+                delay 0.5
+                tell application "Mail"
+                    close window 1 saving yes
+                end tell"""
         success_text = "Reply saved as draft!"
-        # For draft, we must manually build the quoted original because
-        # close-window-saving-yes saves the content property literally
-        # and the reply message's content property is initially empty
-        set_content_script = """set origContent to content of foundMessage
-                set origSender to sender of foundMessage
-                set origDate to date received of foundMessage
-                set quotedText to "On " & (origDate as string) & ", " & origSender & " wrote:" & return & return & origContent
-                set content of replyMessage to replyBodyText & return & return & quotedText"""
 
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
+    html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
 
     script = f'''
-    tell application "Mail"
-        set outputText to "{header_text}" & return & return
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
 
-        try
-            -- Read reply body from temp file (avoids AppleScript escaping issues)
-            {read_body_script}
+-- Step 1: Place reply body HTML on clipboard via NSPasteboard
+set htmlString to do shell script "cat '{html_temp_path}'"
+set pb to current application's NSPasteboard's generalPasteboard()
+set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+pb's clearContents()
+set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
+pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
 
-            set targetAccount to account "{safe_account}"
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
-            set foundMessage to missing value
+-- Step 2: Find the email and create reply
+tell application "Mail"
+    set outputText to "{header_text}" & return & return
 
-            -- Find the first matching message
-            repeat with aMessage in inboxMessages
-                try
-                    set messageSubject to subject of aMessage
+    try
+        -- Read reply body from temp file (for output text only)
+        {read_body_script}
 
-                    if messageSubject contains "{safe_subject_keyword}" then
-                        set foundMessage to aMessage
-                        exit repeat
-                    end if
-                end try
-            end repeat
+        set targetAccount to account "{safe_account}"
+        {inbox_mailbox_script("inboxMailbox", "targetAccount")}
+        set inboxMessages to every message of inboxMailbox
+        set foundMessage to missing value
 
-            if foundMessage is not missing value then
-                set messageSubject to subject of foundMessage
-                set messageSender to sender of foundMessage
-                set messageDate to date received of foundMessage
+        -- Find the first matching message
+        repeat with aMessage in inboxMessages
+            try
+                set messageSubject to subject of aMessage
 
-                -- Create reply
-                {reply_command}
-                delay 0.5
+                if messageSubject contains "{safe_subject_keyword}" then
+                    set foundMessage to aMessage
+                    exit repeat
+                end if
+            end try
+        end repeat
 
-                -- Ensure the reply is from the correct account
-                set emailAddrs to email addresses of targetAccount
-                set senderAddress to item 1 of emailAddrs
-                set sender of replyMessage to senderAddress
+        if foundMessage is not missing value then
+            set messageSubject to subject of foundMessage
+            set messageSender to sender of foundMessage
+            set messageDate to date received of foundMessage
 
-                -- Set reply content
-                {set_content_script}
-                delay 0.5
+            -- Create reply
+            {reply_command}
+            delay 0.5
 
-                -- Add CC/BCC recipients
-                {cc_script}
-                {bcc_script}
+            -- Ensure the reply is from the correct account
+            set emailAddrs to email addresses of targetAccount
+            set senderAddress to item 1 of emailAddrs
+            set sender of replyMessage to senderAddress
 
-                -- Add attachments
-                {attachment_script}
+            -- Add CC/BCC recipients
+            {cc_script}
+            {bcc_script}
 
-                -- Send or save as draft
-                {send_or_draft_command}
+            -- Add attachments
+            {attachment_script}
 
-                set outputText to outputText & "{success_text}" & return & return
-                set outputText to outputText & "Original email:" & return
-                set outputText to outputText & "  Subject: " & messageSubject & return
-                set outputText to outputText & "  From: " & messageSender & return
-                set outputText to outputText & "  Date: " & (messageDate as string) & return & return
-                set outputText to outputText & "Reply body:" & return
-                set outputText to outputText & "  " & replyBodyText & return
+            -- Paste reply body (HTML already on clipboard from Step 1)
+            set visible of replyMessage to true
+            activate
+            delay 1.5
+
+            tell application "System Events"
+                tell process "Mail"
+                    keystroke "v" using command down
+                end tell
+            end tell
+            delay 0.5
+
+            {post_paste_action}
+
+            set outputText to outputText & "{success_text}" & return & return
+            set outputText to outputText & "Original email:" & return
+            set outputText to outputText & "  Subject: " & messageSubject & return
+            set outputText to outputText & "  From: " & messageSender & return
+            set outputText to outputText & "  Date: " & (messageDate as string) & return & return
+            set outputText to outputText & "Reply body:" & return
+            set outputText to outputText & "  " & replyBodyText & return
     '''
 
     if cc:
@@ -694,28 +730,49 @@ def reply_to_email(
                 set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
             end if
 
-            -- Clean up temp file
+            -- Clean up temp files
             {cleanup_script}
+            {html_cleanup_script}
 
         on error errMsg
-            -- Clean up temp file even on error
+            -- Clean up temp files even on error
             try
                 {cleanup_script}
+                {html_cleanup_script}
             end try
             return "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
         end try
 
         return outputText
     end tell
+
+    -- Restore clipboard
+    if oldClip is not missing value then
+        pb's clearContents()
+        pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+    end if
     """
 
     try:
-        result = run_applescript(script)
-        return result
+        # Use osascript directly for AppleScriptObjC (use framework) support
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            return f"Error in reply: {stderr}"
+        return result.stdout.decode("utf-8", errors="replace").strip()
+    except subprocess.TimeoutExpired:
+        return "Error: Reply script timed out"
     finally:
         # Belt-and-suspenders cleanup in case AppleScript didn't run
         if os.path.exists(body_temp_path):
             os.unlink(body_temp_path)
+        if html_temp_path and os.path.exists(html_temp_path):
+            os.unlink(html_temp_path)
 
 
 @mcp.tool()
@@ -973,72 +1030,125 @@ def forward_email(
                 make new to recipient at end of to recipients of forwardMessage with properties {{address:"{safe_addr}"}}
         '''
 
-    script = f'''
-    tell application "Mail"
-        set outputText to "FORWARDING EMAIL" & return & return
+    # If an optional message is provided, write it as HTML to a temp file
+    # for NSPasteboard clipboard injection (preserves forwarded content).
+    fwd_html_temp_path = None
+    fwd_html_paste_script = ""
+    fwd_html_cleanup_script = ""
+    if message:
+        escaped_plain = html_escape(message)
+        escaped_plain = escaped_plain.replace("\n", "<br>")
+        fwd_html_content = f"{escaped_plain}<br><br>"
+        fwd_html_tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".html",
+            prefix="mail_fwd_html_",
+            delete=False,
+            encoding="utf-8",
+        )
+        fwd_html_tmp.write(fwd_html_content)
+        fwd_html_tmp.close()
+        fwd_html_temp_path = fwd_html_tmp.name
+        fwd_html_cleanup_script = f'do shell script "rm -f \'{fwd_html_temp_path}\'"'
+        fwd_html_paste_script = f"""
+                set visible of forwardMessage to true
+                activate
+                delay 1.5
 
+                set htmlString to do shell script "cat '{fwd_html_temp_path}'"
+                set pb to current application's NSPasteboard's generalPasteboard()
+                set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+                pb's clearContents()
+                set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
+                pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+
+                tell application "System Events"
+                    tell process "Mail"
+                        keystroke "v" using command down
+                    end tell
+                end tell
+                delay 0.5
+
+                if oldClip is not missing value then
+                    pb's clearContents()
+                    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+                end if
+        """
+
+    use_frameworks = ""
+    if message:
+        use_frameworks = """use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+"""
+
+    script = f'''{use_frameworks}
+tell application "Mail"
+    set outputText to "FORWARDING EMAIL" & return & return
+
+    try
+        set targetAccount to account "{safe_account}"
+        -- Try to get mailbox
         try
-            set targetAccount to account "{safe_account}"
-            -- Try to get mailbox
+            set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
+        on error
+            if "{safe_mailbox}" is "INBOX" then
+                set targetMailbox to mailbox "Inbox" of targetAccount
+            else
+                error "Mailbox not found: {safe_mailbox}"
+            end if
+        end try
+
+        set mailboxMessages to every message of targetMailbox
+        set foundMessage to missing value
+
+        -- Find the first matching message
+        repeat with aMessage in mailboxMessages
             try
-                set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
-            on error
-                if "{safe_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
-                else
-                    error "Mailbox not found: {safe_mailbox}"
+                set messageSubject to subject of aMessage
+
+                if messageSubject contains "{safe_subject_keyword}" then
+                    set foundMessage to aMessage
+                    exit repeat
                 end if
             end try
+        end repeat
 
-            set mailboxMessages to every message of targetMailbox
-            set foundMessage to missing value
+        if foundMessage is not missing value then
+            set messageSubject to subject of foundMessage
+            set messageSender to sender of foundMessage
+            set messageDate to date received of foundMessage
 
-            -- Find the first matching message
-            repeat with aMessage in mailboxMessages
-                try
-                    set messageSubject to subject of aMessage
+            -- Create forward
+            set forwardMessage to forward foundMessage with opening window
 
-                    if messageSubject contains "{safe_subject_keyword}" then
-                        set foundMessage to aMessage
-                        exit repeat
-                    end if
-                end try
-            end repeat
+            -- Set sender account
+            set emailAddrs to email addresses of targetAccount
+            set senderAddress to item 1 of emailAddrs
+            set sender of forwardMessage to senderAddress
 
-            if foundMessage is not missing value then
-                set messageSubject to subject of foundMessage
-                set messageSender to sender of foundMessage
-                set messageDate to date received of foundMessage
+            -- Add recipients
+            {to_script}
 
-                -- Create forward
-                set forwardMessage to forward foundMessage with opening window
+            -- Add CC/BCC recipients
+            {cc_script}
+            {bcc_script}
 
-                -- Set sender account
-                set emailAddrs to email addresses of targetAccount
-                set senderAddress to item 1 of emailAddrs
-                set sender of forwardMessage to senderAddress
+            -- Add optional message via HTML clipboard paste (preserves forwarded content)
+            {fwd_html_paste_script}
 
-                -- Add recipients
-                {to_script}
+            -- Send the forward
+            send forwardMessage
 
-                -- Add CC/BCC recipients
-                {cc_script}
-                {bcc_script}
+            -- Clean up temp files
+            {fwd_html_cleanup_script}
 
-                -- Add optional message
-                if "{escaped_message}" is not "" then
-                    set content of forwardMessage to "{escaped_message}" & return & return & content of forwardMessage
-                end if
-
-                -- Send the forward
-                send forwardMessage
-
-                set outputText to outputText & "✓ Email forwarded successfully!" & return & return
-                set outputText to outputText & "Original email:" & return
-                set outputText to outputText & "  Subject: " & messageSubject & return
-                set outputText to outputText & "  From: " & messageSender & return
-                set outputText to outputText & "  Date: " & (messageDate as string) & return & return
-                set outputText to outputText & "Forwarded to: {safe_to}" & return
+            set outputText to outputText & "✓ Email forwarded successfully!" & return & return
+            set outputText to outputText & "Original email:" & return
+            set outputText to outputText & "  Subject: " & messageSubject & return
+            set outputText to outputText & "  From: " & messageSender & return
+            set outputText to outputText & "  Date: " & (messageDate as string) & return & return
+            set outputText to outputText & "Forwarded to: {safe_to}" & return
     '''
 
     if cc:
@@ -1057,6 +1167,9 @@ def forward_email(
             end if
 
         on error errMsg
+            try
+                {fwd_html_cleanup_script}
+            end try
             return "Error: " & errMsg
         end try
 
@@ -1064,8 +1177,26 @@ def forward_email(
     end tell
     """
 
-    result = run_applescript(script)
-    return result
+    try:
+        if message:
+            # Use osascript directly for AppleScriptObjC (use framework) support
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                return f"Error forwarding email: {stderr}"
+            return result.stdout.decode("utf-8", errors="replace").strip()
+        else:
+            return run_applescript(script)
+    except subprocess.TimeoutExpired:
+        return "Error: Forward script timed out"
+    finally:
+        if fwd_html_temp_path and os.path.exists(fwd_html_temp_path):
+            os.unlink(fwd_html_temp_path)
 
 
 @mcp.tool()
