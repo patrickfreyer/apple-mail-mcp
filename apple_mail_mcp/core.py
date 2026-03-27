@@ -185,12 +185,31 @@ LOWERCASE_HANDLER = """
 def inbox_mailbox_script(
     var_name: str = "inboxMailbox", account_var: str = "anAccount"
 ) -> str:
-    """Return AppleScript snippet to get inbox mailbox with INBOX/Inbox fallback."""
+    """Return AppleScript snippet to get inbox mailbox with INBOX/Inbox/localized fallback.
+
+    Exchange and other accounts may use localized names (e.g. "Входящие" for Russian,
+    "Posteingang" for German, "Boîte de réception" for French).
+    """
     return f"""
                 try
                     set {var_name} to mailbox "INBOX" of {account_var}
                 on error
-                    set {var_name} to mailbox "Inbox" of {account_var}
+                    try
+                        set {var_name} to mailbox "Inbox" of {account_var}
+                    on error
+                        -- Fallback: find inbox by iterating mailboxes
+                        set {var_name} to missing value
+                        repeat with mb in mailboxes of {account_var}
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set {var_name} to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if {var_name} is missing value then
+                            error "Could not find inbox mailbox"
+                        end if
+                    end try
                 end try"""
 
 

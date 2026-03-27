@@ -35,14 +35,28 @@ def _mailbox_fallback_script(
     mailbox_name: str,
     account_var: str = "targetAccount",
 ) -> str:
-    """Return AppleScript snippet that resolves a mailbox with INBOX/Inbox fallback."""
+    """Return AppleScript snippet that resolves a mailbox with INBOX/Inbox/localized fallback."""
     safe = escape_applescript(mailbox_name)
     return f'''
             try
                 set {var_name} to mailbox "{safe}" of {account_var}
             on error
                 if "{safe}" is "INBOX" then
-                    set {var_name} to mailbox "Inbox" of {account_var}
+                    try
+                        set {var_name} to mailbox "Inbox" of {account_var}
+                    on error
+                        set {var_name} to missing value
+                        repeat with mb in mailboxes of {account_var}
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set {var_name} to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if {var_name} is missing value then
+                            error "Mailbox not found: {safe}"
+                        end if
+                    end try
                 else
                     error "Mailbox not found: {safe}"
                 end if

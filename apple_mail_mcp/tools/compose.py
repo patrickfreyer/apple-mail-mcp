@@ -984,7 +984,21 @@ def forward_email(
                 set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
             on error
                 if "{safe_mailbox}" is "INBOX" then
-                    set targetMailbox to mailbox "Inbox" of targetAccount
+                    try
+                        set targetMailbox to mailbox "Inbox" of targetAccount
+                    on error
+                        set targetMailbox to missing value
+                        repeat with mb in mailboxes of targetAccount
+                            set mbName to name of mb
+                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
+                                set targetMailbox to mb
+                                exit repeat
+                            end if
+                        end repeat
+                        if targetMailbox is missing value then
+                            error "Could not find inbox mailbox"
+                        end if
+                    end try
                 else
                     error "Mailbox not found: {safe_mailbox}"
                 end if
