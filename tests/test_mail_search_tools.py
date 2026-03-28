@@ -230,7 +230,7 @@ class SearchToolTests(unittest.TestCase):
 
 
 class ManageToolTests(unittest.TestCase):
-    def test_update_email_status_by_ids_uses_exact_id_condition(self):
+    def test_update_email_status_with_message_ids_uses_exact_id_condition(self):
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -238,7 +238,7 @@ class ManageToolTests(unittest.TestCase):
             return "updated"
 
         with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=fake_run):
-            result = manage_tools.update_email_status_by_ids(
+            result = manage_tools.update_email_status(
                 account="Work",
                 mailbox="INBOX",
                 message_ids=["101", "202"],

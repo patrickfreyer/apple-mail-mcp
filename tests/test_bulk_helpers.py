@@ -1,4 +1,4 @@
-"""Tests for bulk.py pure-Python helper functions (no Mail.app interaction)."""
+"""Tests for core.py helper functions (no Mail.app interaction)."""
 
 import sys
 import os
@@ -6,13 +6,12 @@ import os
 # Ensure package is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from apple_mail_mcp.tools.bulk import (
-    _build_filter_conditions,
-    _date_filter_script,
-    _mailbox_fallback_script,
-    _validate_filters,
+from apple_mail_mcp.core import (
+    escape_applescript,
+    build_filter_condition,
+    build_date_filter,
+    build_mailbox_ref,
 )
-from apple_mail_mcp.core import escape_applescript
 
 
 def test_escape_applescript_quotes():
@@ -24,84 +23,60 @@ def test_escape_applescript_backslash():
 
 
 def test_build_filter_no_args():
-    assert _build_filter_conditions() == "true"
+    assert build_filter_condition() == "true"
 
 
 def test_build_filter_subject_only():
-    result = _build_filter_conditions(subject_keyword="invoice")
+    result = build_filter_condition(subject="invoice")
     assert 'messageSubject contains "invoice"' in result
 
 
 def test_build_filter_sender_only():
-    result = _build_filter_conditions(sender="alice@example.com")
+    result = build_filter_condition(sender="alice@example.com")
     assert 'messageSender contains "alice@example.com"' in result
 
 
 def test_build_filter_both():
-    result = _build_filter_conditions(subject_keyword="hello", sender="bob")
+    result = build_filter_condition(subject="hello", sender="bob")
     assert "and" in result
     assert "messageSubject" in result
     assert "messageSender" in result
 
 
 def test_build_filter_escapes_injection():
-    result = _build_filter_conditions(subject_keyword='"; do evil; "')
+    result = build_filter_condition(subject='"; do evil; "')
     assert '\\"' in result
     assert "do evil" in result  # still present but escaped
 
 
-def test_date_filter_none():
-    setup, cond = _date_filter_script(None)
-    assert setup == ""
-    assert cond == "true"
-
-
 def test_date_filter_zero():
-    setup, cond = _date_filter_script(0)
+    setup, cond = build_date_filter(0)
     assert setup == ""
-    assert cond == "true"
+    assert cond == ""
 
 
 def test_date_filter_positive():
-    setup, cond = _date_filter_script(30)
+    setup, cond = build_date_filter(30)
     assert "cutoffDate" in setup
     assert "30" in setup
     assert "cutoffDate" in cond
 
 
-def test_mailbox_fallback_inbox():
-    script = _mailbox_fallback_script("myBox", "INBOX")
+def test_mailbox_ref_inbox():
+    script = build_mailbox_ref("INBOX")
     assert '"INBOX"' in script
     assert '"Inbox"' in script  # fallback
 
 
-def test_mailbox_fallback_custom():
-    script = _mailbox_fallback_script("myBox", "Archive")
+def test_mailbox_ref_custom():
+    script = build_mailbox_ref("Archive")
     assert '"Archive"' in script
 
 
-def test_validate_filters_none():
-    result = _validate_filters(None, None, None)
-    assert result is not None
-    assert "Error" in result
-
-
-def test_validate_filters_subject():
-    assert _validate_filters("test", None, None) is None
-
-
-def test_validate_filters_sender():
-    assert _validate_filters(None, "alice", None) is None
-
-
-def test_validate_filters_older_than_days():
-    assert _validate_filters(None, None, 30) is None
-
-
-def test_validate_filters_zero_days_not_enough():
-    result = _validate_filters(None, None, 0)
-    assert result is not None
-    assert "Error" in result
+def test_mailbox_ref_nested():
+    script = build_mailbox_ref("Projects/2024")
+    assert '"2024"' in script
+    assert '"Projects"' in script
 
 
 if __name__ == "__main__":
