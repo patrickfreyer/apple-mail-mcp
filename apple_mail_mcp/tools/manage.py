@@ -15,7 +15,6 @@ from apple_mail_mcp.core import (
     inbox_mailbox_script,
     build_mailbox_ref,
     build_filter_condition,
-    build_date_filter,
 )
 
 
