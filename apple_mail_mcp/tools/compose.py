@@ -701,13 +701,9 @@ tell application "Mail"
 
             {post_paste_action}
 
-            set outputText to outputText & "{success_text}" & return & return
-            set outputText to outputText & "Original email:" & return
-            set outputText to outputText & "  Subject: " & messageSubject & return
-            set outputText to outputText & "  From: " & messageSender & return
-            set outputText to outputText & "  Date: " & (messageDate as string) & return & return
-            set outputText to outputText & "Reply body:" & return
-            set outputText to outputText & "  " & replyBodyText & return
+            set outputText to outputText & "{success_text}" & return
+            set outputText to outputText & "To: " & messageSender & return
+            set outputText to outputText & "Subject: " & messageSubject & return
     '''
 
     if cc:
@@ -928,9 +924,9 @@ def compose_email(
             -- Send, save as draft, or leave open for review
             {send_command}
 
-            set outputText to outputText & "{success_text}" & return & return
-            set outputText to outputText & "From: " & name of targetAccount & return
+            set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: {safe_to}" & return
+            set outputText to outputText & "Subject: {escaped_subject}" & return
     '''
 
     if cc:
@@ -949,8 +945,6 @@ def compose_email(
     '''
 
     script += f'''
-            set outputText to outputText & "Subject: {escaped_subject}" & return
-            set outputText to outputText & "Body: " & "{escaped_body}" & return
 
         on error errMsg
             return "Error: " & errMsg & return & "Please check that the account name and email addresses are correct."
@@ -1143,12 +1137,9 @@ tell application "Mail"
             -- Clean up temp files
             {fwd_html_cleanup_script}
 
-            set outputText to outputText & "✓ Email forwarded successfully!" & return & return
-            set outputText to outputText & "Original email:" & return
-            set outputText to outputText & "  Subject: " & messageSubject & return
-            set outputText to outputText & "  From: " & messageSender & return
-            set outputText to outputText & "  Date: " & (messageDate as string) & return & return
-            set outputText to outputText & "Forwarded to: {safe_to}" & return
+            set outputText to outputText & "Email forwarded successfully." & return
+            set outputText to outputText & "To: {safe_to}" & return
+            set outputText to outputText & "Subject: " & messageSubject & return
     '''
 
     if cc:
