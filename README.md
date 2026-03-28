@@ -45,38 +45,32 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 
 > **Tip:** An `.mcpb` bundle is also available on the [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases) page for one-click install in Claude Desktop.
 
-## Tools (27)
+## Tools (22)
 
 ### Reading & Search
 | Tool | Description |
 |------|-------------|
 | `get_inbox_overview` | Dashboard with unread counts, folders, and recent emails |
-| `list_inbox_emails` | List emails with account/read-status filtering |
-| `get_email_with_content` | Search emails with full content preview |
-| `get_unread_count` | Unread count per account |
+| `list_inbox_emails` | List emails with account/read-status filtering and optional content preview |
+| `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
-| `get_recent_emails` | Recent emails from a specific account |
-| `get_recent_from_sender` | Recent emails from a sender with time-range filters |
-| `search_emails` | Advanced multi-criteria search (subject, sender, dates, attachments) |
-| `search_by_sender` | Find all emails from a specific sender |
-| `search_email_content` | Full-text search in email bodies |
-| `search_all_accounts` | Cross-account unified search |
-| `get_newsletters` | Detect newsletter and subscription emails |
+| `search_emails` | Unified search — subject, sender, body text, dates, attachments, cross-account |
 | `get_email_thread` | Conversation thread view |
 
 ### Organization
 | Tool | Description |
 |------|-------------|
 | `list_mailboxes` | Folder hierarchy with message counts |
-| `move_email` | Move emails between folders (supports nested paths) |
-| `update_email_status` | Batch mark read/unread, flag/unflag |
-| `manage_trash` | Soft delete, permanent delete, empty trash |
+| `create_mailbox` | Create new mailboxes (supports nested paths) |
+| `move_email` | Move/archive emails with filters (subject, sender, date, read status, dry-run) |
+| `update_email_status` | Mark read/unread, flag/unflag — by filters or message IDs |
+| `manage_trash` | Soft delete, permanent delete, empty trash (with dry-run) |
 
 ### Composition
 | Tool | Description |
 |------|-------------|
-| `compose_email` | Send new emails (TO, CC, BCC) |
-| `reply_to_email` | Reply or reply-all with optional CC/BCC |
+| `compose_email` | Send new emails (plain text or HTML body) |
+| `reply_to_email` | Reply or reply-all with optional HTML body |
 | `forward_email` | Forward with optional message, CC/BCC |
 | `manage_drafts` | Create, list, send, and delete drafts |
 | `create_rich_email_draft` | Build a rich HTML `.eml` draft, open it in Mail, and optionally save it to Drafts |
@@ -86,6 +80,13 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 |------|-------------|
 | `list_email_attachments` | List attachments with names and sizes |
 | `save_email_attachment` | Save attachments to disk |
+
+### Smart Inbox
+| Tool | Description |
+|------|-------------|
+| `get_awaiting_reply` | Find sent emails that haven't received a reply |
+| `get_needs_response` | Identify emails that likely need your response |
+| `get_top_senders` | Analyse most frequent senders by count or domain |
 
 ### Analytics & Export
 | Tool | Description |
