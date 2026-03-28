@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple Mail Inbox Dashboard</title>
+    <style>
+        /* CSS Variables for theming */
+        :root {
+            /* macOS Light Theme Colors */
+            --bg-primary: #f5f5f7;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #fafafa;
+            --bg-hover: #f0f0f2;
+            --bg-active: #e8e8ed;
+
+            --text-primary: #1d1d1f;
+            --text-secondary: #6e6e73;
+            --text-tertiary: #86868b;
+
+            --border-color: #d2d2d7;
+            --border-light: #e8e8ed;
+
+            --accent-blue: #007aff;
+            --accent-blue-hover: #0066d6;
+            --accent-green: #34c759;
+            --accent-orange: #ff9500;
+            --accent-red: #ff3b30;
+            --accent-purple: #af52de;
+            --accent-teal: #5ac8fa;
+
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+            --radius-xl: 20px;
+
+            --transition-fast: 0.15s ease;
+            --transition-normal: 0.25s ease;
+        }
+
+        /* Reset and Base Styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Main Container */
+        .dashboard {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-title h1 {
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            color: var(--text-primary);
+        }
+
+        .mail-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(180deg, #4fc3f7 0%, #2196f3 100%);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow-md);
+        }
+
+        .mail-icon svg {
+            width: 22px;
+            height: 22px;
+            fill: white;
+        }
+
+        /* Search Bar */
+        .search-container {
+            position: relative;
+            width: 280px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 10px 16px 10px 40px;
+            font-size: 14px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            outline: none;
+            transition: var(--transition-fast);
+        }
+
+        .search-input:focus {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15);
+        }
+
+        .search-input::placeholder {
+            color: var(--text-tertiary);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 16px;
+            height: 16px;
+            fill: var(--text-tertiary);
+        }
+
+        /* Accounts Section */
+        .section-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-tertiary);
+            margin-bottom: 12px;
+        }
+
+        .accounts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .account-card {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border-light);
+            cursor: pointer;
+            transition: var(--transition-normal);
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .account-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+            border-color: var(--border-color);
+        }
+
+        .account-avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .account-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .account-name {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .account-status {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .unread-badge {
+            background: var(--accent-blue);
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 12px;
+            min-width: 28px;
+            text-align: center;
+        }
+
+        .unread-badge.zero {
+            background: var(--text-tertiary);
+            opacity: 0.6;
+        }
+
+        /* Emails Section */
+        .emails-section {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border-light);
+            overflow: hidden;
+        }
+
+        .emails-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-light);
+            background: var(--bg-tertiary);
+        }
+
+        .emails-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .emails-count {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .emails-list {
+            list-style: none;
+        }
+
+        .email-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-light);
+            cursor: pointer;
+            transition: var(--transition-fast);
+            gap: 14px;
+        }
+
+        .email-item:last-child {
+            border-bottom: none;
+        }
+
+        .email-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .email-item.unread {
+            background: var(--bg-tertiary);
+        }
+
+        .email-item.unread .email-subject {
+            font-weight: 600;
+        }
+
+        .email-status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            flex-shrink: 0;
+            margin-top: 6px;
+            opacity: 0;
+            transition: var(--transition-fast);
+        }
+
+        .email-item.unread .email-status-indicator {
+            opacity: 1;
+        }
+
+        .email-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .email-top-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 4px;
+            gap: 12px;
+        }
+
+        .email-sender {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .email-date {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .email-subject {
+            font-size: 14px;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .email-preview {
+            font-size: 13px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .email-actions {
+            display: flex;
+            gap: 8px;
+            opacity: 0;
+            transition: var(--transition-fast);
+            flex-shrink: 0;
+        }
+
+        .email-item:hover .email-actions {
+            opacity: 1;
+        }
+
+        .action-btn {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: var(--bg-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: var(--transition-fast);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .action-btn:hover {
+            background: var(--bg-active);
+        }
+
+        .action-btn svg {
+            width: 16px;
+            height: 16px;
+            fill: var(--text-secondary);
+        }
+
+        .action-btn.mark-read:hover svg {
+            fill: var(--accent-blue);
+        }
+
+        .action-btn.archive:hover svg {
+            fill: var(--accent-orange);
+        }
+
+        .action-btn.delete:hover svg {
+            fill: var(--accent-red);
+        }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px 20px;
+            text-align: center;
+        }
+
+        .empty-state-icon {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            fill: var(--text-tertiary);
+            opacity: 0.5;
+        }
+
+        .empty-state-title {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .empty-state-description {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* Loading State */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            gap: 12px;
+            color: var(--text-secondary);
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Toast Notification */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--text-primary);
+            color: white;
+            padding: 14px 20px;
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: var(--transition-normal);
+            z-index: 1000;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .dashboard {
+                padding: 16px;
+            }
+
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 16px;
+            }
+
+            .search-container {
+                width: 100%;
+            }
+
+            .accounts-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .email-actions {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-title">
+                <div class="mail-icon">
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+                    </svg>
+                </div>
+                <h1>Inbox Dashboard</h1>
+            </div>
+            <div class="search-container">
+                <svg class="search-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+                <input type="text" class="search-input" id="searchInput" placeholder="Search emails...">
+            </div>
+        </header>
+
+        <!-- Accounts Section -->
+        <section class="accounts-section">
+            <h2 class="section-title">Accounts</h2>
+            <div class="accounts-grid" id="accountsGrid">
+                <!-- Account cards will be rendered here -->
+            </div>
+        </section>
+
+        <!-- Recent Emails Section -->
+        <section class="emails-section">
+            <div class="emails-header">
+                <h2>Recent Emails</h2>
+                <span class="emails-count" id="emailsCount">0 emails</span>
+            </div>
+            <ul class="emails-list" id="emailsList">
+                <!-- Email items will be rendered here -->
+            </ul>
+        </section>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <!-- MCP Apps SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@anthropic-ai/mcp-apps-sdk@latest/dist/mcp-apps-sdk.umd.js"></script>
+
+    <script>
+        // Data placeholders - will be replaced with actual data
+        /* ACCOUNTS_DATA_PLACEHOLDER */
+        /* EMAILS_DATA_PLACEHOLDER */
+
+        // Fallback if data not injected
+        if (typeof accountsData === 'undefined') {
+            var accountsData = {};
+        }
+        if (typeof recentEmails === 'undefined') {
+            var recentEmails = [];
+        }
+
+        // Account color palette
+        const accountColors = [
+            '#007aff', '#34c759', '#ff9500', '#af52de',
+            '#ff3b30', '#5ac8fa', '#ff2d55', '#4cd964'
+        ];
+
+        // Get color for account
+        function getAccountColor(accountName, index) {
+            return accountColors[index % accountColors.length];
+        }
+
+        // Get initials from account name
+        function getInitials(name) {
+            return name
+                .split(' ')
+                .map(word => word.charAt(0))
+                .join('')
+                .toUpperCase()
+                .substring(0, 2);
+        }
+
+        // Format date for display
+        function formatDate(dateStr) {
+            if (!dateStr) return '';
+
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+            if (diffDays === 0) {
+                return date.toLocaleTimeString('en-US', {
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true
+                });
+            } else if (diffDays === 1) {
+                return 'Yesterday';
+            } else if (diffDays < 7) {
+                return date.toLocaleDateString('en-US', { weekday: 'short' });
+            } else {
+                return date.toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric'
+                });
+            }
+        }
+
+        // Render account cards
+        function renderAccounts() {
+            const container = document.getElementById('accountsGrid');
+            container.innerHTML = '';
+
+            const accountNames = Object.keys(accountsData);
+
+            if (accountNames.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg class="empty-state-icon" viewBox="0 0 24 24">
+                            <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+                        </svg>
+                        <p class="empty-state-title">No Accounts Found</p>
+                        <p class="empty-state-description">Connect your email accounts to get started</p>
+                    </div>
+                `;
+                return;
+            }
+
+            accountNames.forEach((name, index) => {
+                const unreadCount = accountsData[name];
+                const color = getAccountColor(name, index);
+                const initials = getInitials(name);
+
+                const card = document.createElement('div');
+                card.className = 'account-card';
+                card.setAttribute('data-account', name);
+                card.innerHTML = `
+                    <div class="account-avatar" style="background: ${color}">
+                        ${initials}
+                    </div>
+                    <div class="account-info">
+                        <div class="account-name">${escapeHtml(name)}</div>
+                        <div class="account-status">${unreadCount > 0 ? 'Active' : 'All caught up'}</div>
+                    </div>
+                    <div class="unread-badge ${unreadCount === 0 ? 'zero' : ''}">${unreadCount}</div>
+                `;
+
+                card.addEventListener('click', () => filterByAccount(name));
+                container.appendChild(card);
+            });
+        }
+
+        // Render email list
+        function renderEmails(emails = recentEmails) {
+            const container = document.getElementById('emailsList');
+            const countEl = document.getElementById('emailsCount');
+
+            container.innerHTML = '';
+            countEl.textContent = `${emails.length} email${emails.length !== 1 ? 's' : ''}`;
+
+            if (emails.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg class="empty-state-icon" viewBox="0 0 24 24">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                        </svg>
+                        <p class="empty-state-title">Inbox Zero</p>
+                        <p class="empty-state-description">No emails match your current filter</p>
+                    </div>
+                `;
+                return;
+            }
+
+            emails.forEach((email, index) => {
+                const item = document.createElement('li');
+                item.className = `email-item ${!email.is_read ? 'unread' : ''}`;
+                item.setAttribute('data-index', index);
+
+                item.innerHTML = `
+                    <div class="email-status-indicator"></div>
+                    <div class="email-content">
+                        <div class="email-top-row">
+                            <span class="email-sender">${escapeHtml(email.sender || 'Unknown Sender')}</span>
+                            <span class="email-date">${formatDate(email.date)}</span>
+                        </div>
+                        <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+                        <div class="email-preview">${escapeHtml(email.preview || '')}</div>
+                    </div>
+                    <div class="email-actions">
+                        <button class="action-btn mark-read" title="${email.is_read ? 'Mark as Unread' : 'Mark as Read'}">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+                            </svg>
+                        </button>
+                        <button class="action-btn archive" title="Archive">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/>
+                            </svg>
+                        </button>
+                        <button class="action-btn delete" title="Delete">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                            </svg>
+                        </button>
+                    </div>
+                `;
+
+                // Add event listeners for action buttons
+                const markReadBtn = item.querySelector('.mark-read');
+                const archiveBtn = item.querySelector('.archive');
+                const deleteBtn = item.querySelector('.delete');
+
+                markReadBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    handleMarkRead(email, index);
+                });
+
+                archiveBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    handleArchive(email, index);
+                });
+
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    handleDelete(email, index);
+                });
+
+                container.appendChild(item);
+            });
+        }
+
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Filter emails by account
+        function filterByAccount(accountName) {
+            const filtered = recentEmails.filter(email =>
+                email.account === accountName ||
+                !email.account // Show all if no account field
+            );
+            renderEmails(filtered);
+            showToast(`Showing emails from ${accountName}`);
+        }
+
+        // Search functionality
+        function handleSearch(query) {
+            const lowerQuery = query.toLowerCase();
+            const filtered = recentEmails.filter(email => {
+                const subject = (email.subject || '').toLowerCase();
+                const sender = (email.sender || '').toLowerCase();
+                const preview = (email.preview || '').toLowerCase();
+                return subject.includes(lowerQuery) ||
+                       sender.includes(lowerQuery) ||
+                       preview.includes(lowerQuery);
+            });
+            renderEmails(filtered);
+        }
+
+        // MCP Action handlers
+        async function handleMarkRead(email, index) {
+            try {
+                if (window.MCPAppsSDK) {
+                    await window.MCPAppsSDK.callTool('update_email_status', {
+                        account: email.account || '',
+                        action: email.is_read ? 'mark_unread' : 'mark_read',
+                        subject_keyword: email.subject
+                    });
+                }
+
+                // Update local state
+                email.is_read = !email.is_read;
+                renderEmails();
+                showToast(email.is_read ? 'Marked as read' : 'Marked as unread');
+            } catch (error) {
+                console.error('Failed to mark email:', error);
+                showToast('Failed to update email status');
+            }
+        }
+
+        async function handleArchive(email, index) {
+            try {
+                if (window.MCPAppsSDK) {
+                    await window.MCPAppsSDK.callTool('move_email', {
+                        account: email.account || '',
+                        subject_keyword: email.subject,
+                        to_mailbox: 'Archive'
+                    });
+                }
+
+                // Remove from local list
+                recentEmails.splice(index, 1);
+                renderEmails();
+                showToast('Email archived');
+            } catch (error) {
+                console.error('Failed to archive email:', error);
+                showToast('Failed to archive email');
+            }
+        }
+
+        async function handleDelete(email, index) {
+            try {
+                if (window.MCPAppsSDK) {
+                    await window.MCPAppsSDK.callTool('manage_trash', {
+                        account: email.account || '',
+                        action: 'move_to_trash',
+                        subject_keyword: email.subject
+                    });
+                }
+
+                // Remove from local list
+                recentEmails.splice(index, 1);
+                renderEmails();
+                showToast('Email moved to trash');
+            } catch (error) {
+                console.error('Failed to delete email:', error);
+                showToast('Failed to delete email');
+            }
+        }
+
+        // Toast notification
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            renderAccounts();
+            renderEmails();
+
+            // Setup search
+            const searchInput = document.getElementById('searchInput');
+            let searchTimeout;
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    handleSearch(e.target.value);
+                }, 300);
+            });
+        });
+    </script>
+</body>
+</html>

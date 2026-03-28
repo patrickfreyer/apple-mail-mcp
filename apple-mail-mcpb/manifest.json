@@ -1,0 +1,149 @@
+{
+  "dxt_version": "0.1",
+  "name": "Apple Mail MCP",
+  "version": "2.1.0",
+  "description": "Natural language interface for Apple Mail with 27 tools — email search, composition, bulk operations, smart inbox analytics, folder management, and security-hardened destructive operations. Includes Email Management Expert Skill and Interactive UI Dashboard.",
+  "author": {
+    "name": "Patrick Freyer"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/patrickfreyer/apple-mail-mcp.git"
+  },
+  "documentation": "https://github.com/patrickfreyer/apple-mail-mcp#readme",
+  "user_config": {
+    "user_preferences": {
+      "type": "string",
+      "title": "Email Preferences",
+      "description": "Your personal email preferences that will be provided to the AI assistant when using email tools (e.g., 'Default to BCG account, show max 50 emails, prefer Archive folder')",
+      "required": false,
+      "default": ""
+    }
+  },
+  "server": {
+    "type": "python",
+    "entry_point": "apple_mail_mcp.py",
+    "mcp_config": {
+      "command": "/bin/bash",
+      "args": [
+        "${__dirname}/start_mcp.sh"
+      ],
+      "env": {
+        "USER_EMAIL_PREFERENCES": "${user_config.user_preferences}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "get_inbox_overview",
+      "description": "Get a comprehensive dashboard overview of your email inbox status across all accounts. Shows unread counts by account, mailbox structure with unread indicators, preview of recent emails, and provides AI-driven action suggestions."
+    },
+    {
+      "name": "list_inbox_emails",
+      "description": "List all emails from inbox across all accounts or a specific account. Filter by account name, limit number of emails, and filter read/unread status. Supports JSON output format."
+    },
+    {
+      "name": "get_unread_count",
+      "description": "Get the count of unread emails for each account. Quick overview of unread emails across all Mail accounts."
+    },
+    {
+      "name": "list_accounts",
+      "description": "List all available Mail accounts configured in Apple Mail."
+    },
+    {
+      "name": "get_recent_emails",
+      "description": "Get the most recent emails from a specific account. Optional content preview with configurable count. Supports JSON output format."
+    },
+    {
+      "name": "list_mailboxes",
+      "description": "List all mailboxes (folders) for a specific account or all accounts. Shows folder structure with optional message counts."
+    },
+    {
+      "name": "move_email",
+      "description": "Move emails between mailboxes by searching for subject keywords. Supports nested mailboxes with path notation (e.g., 'Projects/Amplify Impact')."
+    },
+    {
+      "name": "reply_to_email",
+      "description": "Reply to emails matching a subject keyword. Send reply or save as draft with custom body and option to reply to all recipients. Supports CC/BCC."
+    },
+    {
+      "name": "compose_email",
+      "description": "Compose and send a new email from a specific account. Supports TO, CC, and BCC recipients with custom subject and body."
+    },
+    {
+      "name": "forward_email",
+      "description": "Forward emails matching a subject keyword to specified recipients. Optionally prepend a custom message. Supports CC/BCC."
+    },
+    {
+      "name": "list_email_attachments",
+      "description": "List attachments for emails matching a subject keyword. Shows attachment names and sizes."
+    },
+    {
+      "name": "save_email_attachment",
+      "description": "Save a specific attachment from an email to disk. Validates save path for security — blocks writes to sensitive directories."
+    },
+    {
+      "name": "search_emails",
+      "description": "Unified email search with 16 filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged, newsletter detection, thread view. Supports cross-account search, JSON output, and uses fast native Mail.app filtering."
+    },
+    {
+      "name": "update_email_status",
+      "description": "Update email status in batch — mark as read/unread, flag/unflag. Requires at least one filter or explicit apply_to_all for safety."
+    },
+    {
+      "name": "manage_trash",
+      "description": "Manage email deletion: move_to_trash, delete_permanent, empty_trash. Requires filters for safety. empty_trash requires confirm_empty=True."
+    },
+    {
+      "name": "manage_drafts",
+      "description": "Complete draft management: list, create, send, and delete drafts. Supports full composition parameters (TO, CC, BCC)."
+    },
+    {
+      "name": "create_mailbox",
+      "description": "Create a new mailbox (folder) in a specified account. Supports nested paths and auto-creates parent folders."
+    },
+    {
+      "name": "archive_emails",
+      "description": "Move emails to Archive mailbox with safety features. Requires filters, dry_run=True by default, only_read=True by default, max 50 cap."
+    },
+    {
+      "name": "mark_emails",
+      "description": "Batch mark emails as read/unread/flagged/unflagged. Requires at least one filter (subject, sender, or date). Default max 50."
+    },
+    {
+      "name": "delete_emails",
+      "description": "Soft-delete emails (move to Trash) with safety features. dry_run=True by default, required filters, max 25 limit."
+    },
+    {
+      "name": "bulk_move_emails",
+      "description": "Batch move emails matching filters to a target mailbox. Supports nested paths, required filters, max 50 limit."
+    },
+    {
+      "name": "get_awaiting_reply",
+      "description": "Find sent emails that haven't received a reply. Cross-references Sent and Inbox to identify follow-up opportunities."
+    },
+    {
+      "name": "get_needs_response",
+      "description": "Identify unread emails needing a response. Filters out newsletters and automated senders, assigns priority hints."
+    },
+    {
+      "name": "get_top_senders",
+      "description": "Rank senders by email frequency. Supports date range filtering and optional grouping by domain."
+    },
+    {
+      "name": "get_statistics",
+      "description": "Email analytics: account overview, sender stats, or mailbox breakdown. Shows totals, read/unread ratios, top senders."
+    },
+    {
+      "name": "export_emails",
+      "description": "Export emails to txt or html. Single email or entire mailbox (capped at 1000). Configurable save location."
+    },
+    {
+      "name": "inbox_dashboard",
+      "description": "Interactive UI dashboard for MCP Apps-compatible clients. Shows account cards, recent emails, and search. Requires mcp-ui-server."
+    }
+  ],
+  "prompts": []
+}

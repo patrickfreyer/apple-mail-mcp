@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/apple-mail-mcp/venv/bin/python3",
+      "args": [
+        "/path/to/apple-mail-mcp/apple_mail_mcp.py"
+      ]
+    }
+  }
+}
