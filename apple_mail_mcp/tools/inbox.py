@@ -9,6 +9,7 @@ from apple_mail_mcp.core import (
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    content_preview_script,
 )
 
 
@@ -40,15 +41,20 @@ def list_inbox_emails(
     account: Optional[str] = None,
     max_emails: int = 0,
     include_read: bool = True,
+    include_content: bool = False,
     output_format: str = "text",
 ) -> str:
     """
     List all emails from inbox across all accounts or a specific account.
 
+    Replaces the former get_recent_emails tool — use account + max_emails to
+    get recent emails from a single account.
+
     Args:
         account: Optional account name to filter (e.g., "Gmail", "Work"). If None, shows all accounts.
         max_emails: Maximum number of emails to return per account (0 = all)
         include_read: Whether to include read emails (default: True)
+        include_content: Whether to include a content preview for each email (slower, default: False)
         output_format: "text" (default, human-readable) or "json" (structured list of email dicts)
 
     Returns:
@@ -56,7 +62,7 @@ def list_inbox_emails(
     """
 
     if output_format == "json":
-        return _list_inbox_emails_json(account, max_emails, include_read)
+        return _list_inbox_emails_json(account, max_emails, include_read, include_content)
 
     script = f"""
     tell application "Mail"
@@ -103,6 +109,9 @@ def list_inbox_emails(
                                 set outputText to outputText & readIndicator & " " & messageSubject & return
                                 set outputText to outputText & "   From: " & messageSender & return
                                 set outputText to outputText & "   Date: " & (messageDate as string) & return
+
+                                {content_preview_script(200) if include_content else ""}
+
                                 set outputText to outputText & return
 
                                 set totalCount to totalCount + 1
@@ -132,6 +141,7 @@ def _list_inbox_emails_json(
     account: Optional[str],
     max_emails: int,
     include_read: bool,
+    include_content: bool = False,
 ) -> str:
     """Return inbox emails as a JSON string."""
     escaped_account = escape_applescript(account) if account else None
@@ -180,68 +190,62 @@ def _list_inbox_emails_json(
 
 @mcp.tool()
 @inject_preferences
-def get_unread_count() -> Dict[str, int]:
-    """
-    Get the count of unread emails for each account.
-
-    Returns:
-        Dictionary mapping account names to unread email counts
-    """
-
-    script = f"""
-    tell application "Mail"
-        set resultList to {{}}
-        set allAccounts to every account
-
-        repeat with anAccount in allAccounts
-            set accountName to name of anAccount
-
-            try
-                {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                set unreadCount to unread count of inboxMailbox
-                set end of resultList to accountName & ":" & unreadCount
-            on error
-                set end of resultList to accountName & ":ERROR"
-            end try
-        end repeat
-
-        set AppleScript's text item delimiters to "|"
-        return resultList as string
-    end tell
-    """
-
-    result = run_applescript(script)
-
-    # Parse the result
-    counts = {}
-    for item in result.split("|"):
-        if ":" in item:
-            account, count = item.split(":", 1)
-            if count != "ERROR":
-                counts[account] = int(count)
-            else:
-                counts[account] = -1  # Error indicator
-
-    return counts
-
-
-@mcp.tool()
-@inject_preferences
 def get_mailbox_unread_counts(
     account: Optional[str] = None,
     include_zero: bool = False,
-) -> Dict[str, Dict[str, int]]:
+    summary_only: bool = False,
+) -> Dict[str, Any]:
     """
     Get unread counts per mailbox for one account or all accounts.
+
+    When summary_only=True, returns only per-account inbox unread totals
+    (replaces the former get_unread_count tool).
 
     Args:
         account: Optional account name filter
         include_zero: Whether to include mailboxes with zero unread messages
+        summary_only: If True, return only per-account inbox unread totals
+                      (flat dict of account name -> unread count)
 
     Returns:
-        Nested dictionary keyed by account name then mailbox path
+        If summary_only=False: nested dict keyed by account name then mailbox path
+        If summary_only=True: flat dict mapping account names to inbox unread counts
     """
     escaped_account = escape_applescript(account) if account else None
+
+    # Fast path: summary_only returns just per-account inbox unread totals
+    if summary_only:
+        script = f"""
+        tell application "Mail"
+            set resultList to {{}}
+            set allAccounts to every account
+
+            repeat with anAccount in allAccounts
+                set accountName to name of anAccount
+
+                try
+                    {inbox_mailbox_script("inboxMailbox", "anAccount")}
+                    set unreadCount to unread count of inboxMailbox
+                    set end of resultList to accountName & ":" & unreadCount
+                on error
+                    set end of resultList to accountName & ":ERROR"
+                end try
+            end repeat
+
+            set AppleScript's text item delimiters to "|"
+            return resultList as string
+        end tell
+        """
+        result = run_applescript(script)
+        counts: Dict[str, int] = {}
+        for item in result.split("|"):
+            if ":" in item:
+                acct_name, count_str = item.split(":", 1)
+                if count_str != "ERROR":
+                    counts[acct_name] = int(count_str)
+                else:
+                    counts[acct_name] = -1
+        return counts
 
     account_filter = (
         f'''
@@ -344,144 +348,6 @@ def list_accounts() -> List[str]:
 
     result = run_applescript(script)
     return result.split("|") if result else []
-
-
-@mcp.tool()
-@inject_preferences
-def get_recent_emails(
-    account: str,
-    count: int = 10,
-    include_content: bool = False,
-    output_format: str = "text",
-) -> str:
-    """
-    Get the most recent emails from a specific account.
-
-    Args:
-        account: Account name (e.g., "Gmail", "Work")
-        count: Number of recent emails to retrieve (default: 10)
-        include_content: Whether to include content preview (slower, default: False)
-        output_format: "text" (default, human-readable) or "json" (structured list of email dicts)
-
-    Returns:
-        Formatted list of recent emails
-    """
-
-    if output_format == "json":
-        return _get_recent_emails_json(account, count)
-
-    # Escape user inputs for AppleScript
-    escaped_account = escape_applescript(account)
-
-    content_script = (
-        """
-        try
-            set msgContent to content of aMessage
-            set AppleScript's text item delimiters to {{return, linefeed}}
-            set contentParts to text items of msgContent
-            set AppleScript's text item delimiters to " "
-            set cleanText to contentParts as string
-            set AppleScript's text item delimiters to ""
-
-            if length of cleanText > 200 then
-                set contentPreview to text 1 thru 200 of cleanText & "..."
-            else
-                set contentPreview to cleanText
-            end if
-
-            set outputText to outputText & "   Preview: " & contentPreview & return
-        on error
-            set outputText to outputText & "   Preview: [Not available]" & return
-        end try
-    """
-        if include_content
-        else ""
-    )
-
-    script = f'''
-    tell application "Mail"
-        set outputText to "RECENT EMAILS - {escaped_account}" & return & return
-
-        try
-            set targetAccount to account "{escaped_account}"
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
-
-            set currentIndex to 0
-            repeat with aMessage in inboxMessages
-                set currentIndex to currentIndex + 1
-                if currentIndex > {count} then exit repeat
-
-                try
-                    set messageSubject to subject of aMessage
-                    set messageSender to sender of aMessage
-                    set messageDate to date received of aMessage
-                    set messageRead to read status of aMessage
-
-                    if messageRead then
-                        set readIndicator to "✓"
-                    else
-                        set readIndicator to "✉"
-                    end if
-
-                    set outputText to outputText & readIndicator & " " & messageSubject & return
-                    set outputText to outputText & "   From: " & messageSender & return
-                    set outputText to outputText & "   Date: " & (messageDate as string) & return
-
-                    {content_script}
-
-                    set outputText to outputText & return
-                end try
-            end repeat
-
-            set outputText to outputText & "========================================" & return
-            set outputText to outputText & "Showing " & (currentIndex - 1) & " email(s)" & return
-            set outputText to outputText & "========================================" & return
-
-        on error errMsg
-            return "Error: " & errMsg
-        end try
-
-        return outputText
-    end tell
-    '''
-
-    result = run_applescript(script)
-    return result
-
-
-def _get_recent_emails_json(account: str, count: int) -> str:
-    """Return recent emails as a JSON string."""
-    escaped_account = escape_applescript(account)
-    script = f'''
-    tell application "Mail"
-        set resultLines to {{}}
-        try
-            set targetAccount to account "{escaped_account}"
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
-            set currentIndex to 0
-            repeat with aMessage in inboxMessages
-                set currentIndex to currentIndex + 1
-                if currentIndex > {count} then exit repeat
-                try
-                    set messageSubject to subject of aMessage
-                    set messageSender to sender of aMessage
-                    set messageDate to date received of aMessage
-                    set messageRead to read status of aMessage
-                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & "{escaped_account}"
-                end try
-            end repeat
-        on error errMsg
-            return "Error: " & errMsg
-        end try
-        set AppleScript's text item delimiters to linefeed
-        return resultLines as string
-    end tell
-    '''
-    raw = run_applescript(script)
-    emails = _parse_pipe_delimited_emails(raw)
-    return json.dumps(emails, indent=2)
 
 
 @mcp.tool()

@@ -768,11 +768,11 @@ def inbox_dashboard() -> Any:
     if not UI_AVAILABLE:
         return "Error: UI module not available. Please install mcp-ui-server package."
 
-    from apple_mail_mcp.tools.inbox import get_unread_count
+    from apple_mail_mcp.tools.inbox import get_mailbox_unread_counts
     from ui import create_inbox_dashboard_ui
 
-    # Get unread counts per account
-    accounts_data = get_unread_count()
+    # Get unread counts per account (summary_only gives flat account->count dict)
+    accounts_data = get_mailbox_unread_counts(summary_only=True)
 
     # Get recent emails across all accounts as structured data
     recent_emails = _get_recent_emails_structured(
