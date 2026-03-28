@@ -82,7 +82,8 @@ class SearchToolTests(unittest.TestCase):
         self.assertIn("set offsetRemaining to 1", captured["script"])
         self.assertIn("set collectLimit to 3", captured["script"])
 
-    def test_search_subjects_unread_only_filter(self):
+    def test_search_emails_unread_only_filter(self):
+        """Test that read_status='unread' adds the correct whose clause."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -91,7 +92,7 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_subjects(
+                search_tools.search_emails(
                     account="Work",
                     subject_keyword="Ticket",
                     read_status="unread",
@@ -189,6 +190,43 @@ class SearchToolTests(unittest.TestCase):
             response["items"][0]["mail_link"],
             "message:%3CQwcH6OP9REaEX0pi8aR6-g%40geopod-ismtpd-60%3E",
         )
+
+    def test_search_emails_account_none_iterates_all_accounts(self):
+        """When account is None, the script should iterate all accounts."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.search_emails(
+                account=None,
+                subject_keyword="Test",
+                output_format="json",
+                limit=5,
+            )
+
+        self.assertIn("set searchAccounts to every account", captured["script"])
+
+    def test_search_emails_body_text_uses_lowercase_handler(self):
+        """When body_text is provided, the script should include LOWERCASE_HANDLER."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.search_emails(
+                account="Work",
+                body_text="invoice",
+                output_format="json",
+                limit=5,
+            )
+
+        self.assertIn("on lowercase(str)", captured["script"])
+        self.assertIn('lowerContent contains "invoice"', captured["script"])
 
 
 class ManageToolTests(unittest.TestCase):
