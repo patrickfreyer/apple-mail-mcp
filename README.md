@@ -17,33 +17,43 @@
 
 An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp).
 
-## Quick Start
+## Installation
 
 **Prerequisites:** macOS with Apple Mail configured, Python 3.7+
+
+### Option A: Claude Code Plugin (Recommended)
+
+```bash
+# Clone the repo
+git clone https://github.com/patrickfreyer/apple-mail-mcp.git
+
+# Install as plugin (from Claude Code)
+/plugin install /path/to/apple-mail-mcp
+```
+
+The plugin automatically:
+- Registers the MCP server with Claude Code
+- Adds the `/email-management` slash command
+- Loads the Email Management Expert skill
+
+### Option B: Claude Desktop (MCPB)
+
+1. Download `apple-mail-mcp-v2.2.0.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
+2. Open Claude Desktop → Settings → Developer → MCP Servers → Install from file
+3. Select the `.mcpb` file and grant Mail.app permissions
+4. Restart Claude Desktop
+
+### Option C: Manual MCP Setup
 
 ```bash
 git clone https://github.com/patrickfreyer/apple-mail-mcp.git
 cd apple-mail-mcp
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+
+# Add to Claude Code
+claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 ```
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "apple-mail": {
-      "command": "/path/to/apple-mail-mcp/venv/bin/python3",
-      "args": ["/path/to/apple-mail-mcp/apple_mail_mcp.py"]
-    }
-  }
-}
-```
-
-Restart Claude Desktop and grant Mail.app permissions when prompted.
-
-> **Tip:** An `.mcpb` bundle is also available on the [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases) page for one-click install in Claude Desktop.
 
 ## Tools (22)
 
