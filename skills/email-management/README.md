@@ -14,7 +14,7 @@ Together, they create an intelligent email management assistant that knows both 
 ## Contents
 
 ```
-skill-email-management/
+skills/email-management/
 ├── SKILL.md                        # Main skill definition with core workflows
 ├── examples/
 │   ├── inbox-zero-workflow.md     # Complete inbox zero methodology
@@ -76,14 +76,14 @@ Install the skill directly from the cloned repository:
 **User Scope (Recommended):**
 ```bash
 # From the repo directory
-cp -r skill-email-management ~/.claude/skills/email-management
+cp -r skills/email-management ~/.claude/skills/email-management
 ```
 
 **Project Scope:**
 ```bash
 # From the repo directory
 mkdir -p .claude/skills
-cp -r skill-email-management .claude/skills/email-management
+cp -r skills/email-management .claude/skills/email-management
 ```
 
 ## Usage
