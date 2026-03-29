@@ -1,0 +1,22 @@
+{
+  "name": "apple-mail-mcp",
+  "owner": {
+    "name": "Patrick Freyer",
+    "email": "freyer.patrick@bcg.com"
+  },
+  "metadata": {
+    "description": "Apple Mail MCP — natural language email management for Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "apple-mail",
+      "source": ".",
+      "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 24 MCP tools and an expert email management skill",
+      "version": "2.2.0",
+      "author": {
+        "name": "Patrick Freyer"
+      }
+    }
+  ]
+}
