@@ -66,8 +66,9 @@ chmod +x "${BUILD_DIR}/start_mcp.sh"
 
 # Copy Email Management Skill
 echo -e "\n${YELLOW}Step 5: Copying Email Management Skill...${NC}"
-if [ -d "${SOURCE_DIR}/skill-email-management" ]; then
-    cp -r "${SOURCE_DIR}/skill-email-management" "${BUILD_DIR}/"
+if [ -d "${SOURCE_DIR}/skills/email-management" ]; then
+    mkdir -p "${BUILD_DIR}/skill-email-management"
+    cp -r "${SOURCE_DIR}/skills/email-management/"* "${BUILD_DIR}/skill-email-management/"
     echo -e "  ${GREEN}✓${NC} Email Management Expert Skill included"
 else
     echo -e "  ${YELLOW}⚠${NC} Skill directory not found (optional, skipping)"
