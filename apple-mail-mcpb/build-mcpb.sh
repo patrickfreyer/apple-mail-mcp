@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-SOURCE_DIR="${SCRIPT_DIR}/.."
+SOURCE_DIR="${SCRIPT_DIR}/../plugin"
 BUILD_DIR="${SCRIPT_DIR}/build"
 OUTPUT_DIR="${SCRIPT_DIR}/../"
 PACKAGE_NAME="apple-mail-mcp"
