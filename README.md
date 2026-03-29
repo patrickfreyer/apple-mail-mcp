@@ -18,11 +18,25 @@
 
 An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp).
 
-## Installation
+## Quick Install
 
 **Prerequisites:** macOS with Apple Mail configured, Python 3.10+
 
-### Option A: `uvx` (Recommended — zero install)
+### Claude Code Plugin (Recommended)
+
+Two commands — gets you the MCP server, `/email-management` slash command, and the Email Management Expert skill:
+
+```bash
+claude plugin marketplace add patrickfreyer/apple-mail-mcp
+claude plugin install apple-mail@apple-mail-mcp
+```
+
+Then restart Claude Code.
+
+### Other Install Methods
+
+<details>
+<summary><strong>uvx (zero install, MCP server only)</strong></summary>
 
 ```bash
 claude mcp add apple-mail -- uvx apple-mail-mcp
@@ -41,42 +55,40 @@ Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_conf
 }
 ```
 
-### Option B: `pip install`
+</details>
+
+<details>
+<summary><strong>pip install (MCP server only)</strong></summary>
 
 ```bash
 pip install apple-mail-mcp
-
-# Then add to Claude Code
 claude mcp add apple-mail -- apple-mail-mcp
 ```
 
-### Option C: Claude Code Plugin
+</details>
 
-```bash
-git clone https://github.com/patrickfreyer/apple-mail-mcp.git
-
-# Install as plugin (from Claude Code)
-/plugin install /path/to/apple-mail-mcp
-```
-
-The plugin automatically registers the MCP server, adds the `/email-management` slash command, and loads the Email Management Expert skill.
-
-### Option D: Claude Desktop (MCPB)
+<details>
+<summary><strong>Claude Desktop MCPB</strong></summary>
 
 1. Download `apple-mail-mcp-v2.2.0.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
 2. Open Claude Desktop → Settings → Developer → MCP Servers → Install from file
 3. Select the `.mcpb` file and grant Mail.app permissions
 
-### Option E: Manual Setup
+</details>
+
+<details>
+<summary><strong>Manual setup</strong></summary>
 
 ```bash
 git clone https://github.com/patrickfreyer/apple-mail-mcp.git
-cd apple-mail-mcp
+cd apple-mail-mcp/plugin
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 
 claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 ```
+
+</details>
 
 ## Tools (22)
 
@@ -201,13 +213,11 @@ This is more reliable than injecting raw HTML into AppleScript `content`, which 
 
 ## Email Management Skill
 
-A companion [Claude Code Skill](skill-email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). Install it alongside the MCP for intelligent, multi-step email management:
+A companion [Claude Code Skill](plugin/skills/email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). When installed as a plugin, the skill is loaded automatically. For standalone MCP installs, copy it manually:
 
 ```bash
-cp -r skill-email-management ~/.claude/skills/email-management
+cp -r plugin/skills/email-management ~/.claude/skills/email-management
 ```
-
-See [skill-email-management/README.md](skill-email-management/README.md) for details.
 
 ## Requirements
 
@@ -231,11 +241,18 @@ See [skill-email-management/README.md](skill-email-management/README.md) for det
 
 ```
 apple-mail-mcp/
-├── apple_mail_mcp.py          # Main MCP server (27 tools)
-├── requirements.txt           # Python dependencies
-├── apple-mail-mcpb/           # MCP Bundle build files
-├── skill-email-management/    # Email Management Expert Skill
-├── CHANGELOG.md
+├── .claude-plugin/
+│   └── marketplace.json       # Marketplace manifest (for plugin distribution)
+├── plugin/                    # Claude Code plugin
+│   ├── .claude-plugin/
+│   │   └── plugin.json        # Plugin manifest
+│   ├── commands/              # /email-management slash command
+│   ├── skills/                # Email Management Expert skill
+│   ├── apple_mail_mcp/        # Python MCP server package (24 tools)
+│   ├── apple_mail_mcp.py      # Entry point
+│   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)
+│   └── requirements.txt
+├── apple-mail-mcpb/           # MCPB build files (Claude Desktop)
 ├── LICENSE
 └── README.md
 ```
