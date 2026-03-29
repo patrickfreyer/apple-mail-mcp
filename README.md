@@ -49,7 +49,7 @@ Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_conf
   "mcpServers": {
     "apple-mail": {
       "command": "uvx",
-      "args": ["apple-mail-mcp"]
+      "args": ["mcp-apple-mail"]
     }
   }
 }
