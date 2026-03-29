@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-apple-mail"
-version = "2.2.0"
+version = "3.1.0"
 description = "MCP server giving AI assistants full access to Apple Mail - read, search, compose, organize & analyze emails"
 readme = "README.md"
 license = "MIT"
@@ -49,4 +49,7 @@ Issues = "https://github.com/patrickfreyer/apple-mail-mcp/issues"
 Changelog = "https://github.com/patrickfreyer/apple-mail-mcp/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["apple_mail_mcp"]
+packages = ["plugin/apple_mail_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["plugin/apple_mail_mcp/**"]
