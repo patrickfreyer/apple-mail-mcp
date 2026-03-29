@@ -1,7 +1,7 @@
 # Apple Mail MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/pypi/v/apple-mail-mcp)](https://pypi.org/project/apple-mail-mcp/)
+[![PyPI](https://img.shields.io/pypi/v/mcp-apple-mail)](https://pypi.org/project/mcp-apple-mail/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![GitHub stars](https://img.shields.io/github/stars/patrickfreyer/apple-mail-mcp?style=social)](https://github.com/patrickfreyer/apple-mail-mcp/stargazers)
@@ -39,7 +39,7 @@ Then restart Claude Code.
 <summary><strong>uvx (zero install, MCP server only)</strong></summary>
 
 ```bash
-claude mcp add apple-mail -- uvx apple-mail-mcp
+claude mcp add apple-mail -- uvx mcp-apple-mail
 ```
 
 Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
@@ -61,8 +61,8 @@ Or for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_conf
 <summary><strong>pip install (MCP server only)</strong></summary>
 
 ```bash
-pip install apple-mail-mcp
-claude mcp add apple-mail -- apple-mail-mcp
+pip install mcp-apple-mail
+claude mcp add apple-mail -- mcp-apple-mail
 ```
 
 </details>
