@@ -3,7 +3,7 @@
 from typing import Optional
 
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript
+from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, build_mailbox_ref
 
 
 # ---------------------------------------------------------------------------
@@ -29,38 +29,6 @@ def _build_filter_conditions(
         )
     return " and ".join(conditions) if conditions else "true"
 
-
-def _mailbox_fallback_script(
-    var_name: str,
-    mailbox_name: str,
-    account_var: str = "targetAccount",
-) -> str:
-    """Return AppleScript snippet that resolves a mailbox with INBOX/Inbox/localized fallback."""
-    safe = escape_applescript(mailbox_name)
-    return f'''
-            try
-                set {var_name} to mailbox "{safe}" of {account_var}
-            on error
-                if "{safe}" is "INBOX" then
-                    try
-                        set {var_name} to mailbox "Inbox" of {account_var}
-                    on error
-                        set {var_name} to missing value
-                        repeat with mb in mailboxes of {account_var}
-                            set mbName to name of mb
-                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                set {var_name} to mb
-                                exit repeat
-                            end if
-                        end repeat
-                        if {var_name} is missing value then
-                            error "Mailbox not found: {safe}"
-                        end if
-                    end try
-                else
-                    error "Mailbox not found: {safe}"
-                end if
-            end try'''
 
 
 def _date_filter_script(older_than_days: Optional[int]) -> str:
@@ -148,7 +116,7 @@ def mark_emails(
     safe_account = escape_applescript(account)
     condition_str = _build_filter_conditions(subject_keyword, sender)
     date_setup, date_condition = _date_filter_script(older_than_days)
-    mailbox_setup = _mailbox_fallback_script("targetMailbox", mailbox)
+    mailbox_setup = build_mailbox_ref(mailbox, "targetAccount", "targetMailbox")
 
     script = f'''
     tell application "Mail"
@@ -245,7 +213,7 @@ def delete_emails(
     safe_account = escape_applescript(account)
     condition_str = _build_filter_conditions(subject_keyword, sender)
     date_setup, date_condition = _date_filter_script(older_than_days)
-    mailbox_setup = _mailbox_fallback_script("sourceMailbox", mailbox)
+    mailbox_setup = build_mailbox_ref(mailbox, "targetAccount", "sourceMailbox")
 
     mode_label = "DRY RUN - PREVIEW" if dry_run else "DELETING (move to Trash)"
     move_action = "" if dry_run else """
@@ -354,7 +322,7 @@ def bulk_move_emails(
     safe_account = escape_applescript(account)
     condition_str = _build_filter_conditions(subject_keyword, sender)
     date_setup, date_condition = _date_filter_script(older_than_days)
-    source_setup = _mailbox_fallback_script("sourceMailbox", from_mailbox)
+    source_setup = build_mailbox_ref(from_mailbox, "targetAccount", "sourceMailbox")
 
     # Build nested mailbox reference for destination
     mailbox_parts = to_mailbox.split("/")

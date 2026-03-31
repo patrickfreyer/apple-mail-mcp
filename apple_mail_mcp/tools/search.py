@@ -8,11 +8,13 @@ from urllib.parse import quote
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
+    build_mailbox_ref,
     contains_any_condition,
     inject_preferences,
     escape_applescript,
     normalize_search_terms,
     run_applescript,
+    inbox_mailbox_script,
     LOWERCASE_HANDLER,
 )
 
@@ -228,29 +230,7 @@ def _search_mail_records(
         """
     else:
         mailbox_script = f'''
-                try
-                    set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
-                on error
-                    if "{escaped_mailbox}" is "INBOX" then
-                        try
-                            set searchMailbox to mailbox "Inbox" of targetAccount
-                        on error
-                            set searchMailbox to missing value
-                            repeat with mb in mailboxes of targetAccount
-                                set mbName to name of mb
-                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                    set searchMailbox to mb
-                                    exit repeat
-                                end if
-                            end repeat
-                            if searchMailbox is missing value then
-                                error "Could not find inbox mailbox"
-                            end if
-                        end try
-                    else
-                        error "Mailbox not found: {escaped_mailbox}"
-                    end if
-                end try
+                {build_mailbox_ref(mailbox, "targetAccount", "searchMailbox")}
                 set searchMailboxes to {{searchMailbox}}
         '''
         skip_script = ""
@@ -783,29 +763,7 @@ def search_by_sender(
     else:
         mailbox_loop_start = f'''
                 -- Fast path: only search the target mailbox
-                try
-                    set aMailbox to mailbox "{escaped_mailbox}" of anAccount
-                on error
-                    if "{escaped_mailbox}" is "INBOX" then
-                        try
-                            set aMailbox to mailbox "Inbox" of anAccount
-                        on error
-                            set aMailbox to missing value
-                            repeat with mb in mailboxes of anAccount
-                                set mbName to name of mb
-                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                    set aMailbox to mb
-                                    exit repeat
-                                end if
-                            end repeat
-                            if aMailbox is missing value then
-                                error "Could not find inbox mailbox"
-                            end if
-                        end try
-                    else
-                        error "Mailbox not found: {escaped_mailbox}"
-                    end if
-                end try
+                {build_mailbox_ref(mailbox, "anAccount", "aMailbox")}
                 set mailboxName to name of aMailbox
                 if true then
         '''
@@ -957,29 +915,7 @@ def search_email_content(
         set resultCount to 0
         try
             set targetAccount to account "{escaped_account}"
-            try
-                set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
-            on error
-                if "{escaped_mailbox}" is "INBOX" then
-                    try
-                        set targetMailbox to mailbox "Inbox" of targetAccount
-                    on error
-                        set targetMailbox to missing value
-                        repeat with mb in mailboxes of targetAccount
-                            set mbName to name of mb
-                            if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                set targetMailbox to mb
-                                exit repeat
-                            end if
-                        end repeat
-                        if targetMailbox is missing value then
-                            error "Could not find inbox mailbox"
-                        end if
-                    end try
-                else
-                    error "Mailbox not found: {escaped_mailbox}"
-                end if
-            end try
+            {build_mailbox_ref(mailbox, "targetAccount", "targetMailbox")}
             set mailboxMessages to every message of targetMailbox
             repeat with aMessage in mailboxMessages
                 if resultCount >= {max_results} then exit repeat
@@ -1258,29 +1194,7 @@ def get_recent_from_sender(
     else:
         mailbox_loop_start = f'''
                 -- Fast path: only search the target mailbox
-                try
-                    set aMailbox to mailbox "{escaped_mailbox}" of anAccount
-                on error
-                    if "{escaped_mailbox}" is "INBOX" then
-                        try
-                            set aMailbox to mailbox "Inbox" of anAccount
-                        on error
-                            set aMailbox to missing value
-                            repeat with mb in mailboxes of anAccount
-                                set mbName to name of mb
-                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                    set aMailbox to mb
-                                    exit repeat
-                                end if
-                            end repeat
-                            if aMailbox is missing value then
-                                error "Could not find inbox mailbox"
-                            end if
-                        end try
-                    else
-                        error "Mailbox not found: {escaped_mailbox}"
-                    end if
-                end try
+                {build_mailbox_ref(mailbox, "anAccount", "aMailbox")}
                 set mailboxName to name of aMailbox
                 if true then
         '''
@@ -1397,39 +1311,17 @@ def get_email_thread(
         cleaned_keyword = cleaned_keyword.replace(prefix, "").strip()
     escaped_keyword = escape_applescript(cleaned_keyword)
 
-    mailbox_script = f'''
-        try
-            set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
-        on error
-            if "{escaped_mailbox}" is "INBOX" then
-                try
-                    set searchMailbox to mailbox "Inbox" of targetAccount
-                on error
-                    set searchMailbox to missing value
-                    repeat with mb in mailboxes of targetAccount
-                        set mbName to name of mb
-                        if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                            set searchMailbox to mb
-                            exit repeat
-                        end if
-                    end repeat
-                    if searchMailbox is missing value then
-                        error "Could not find inbox mailbox"
-                    end if
-                end try
-            else if "{escaped_mailbox}" is "All" then
-                set searchMailboxes to every mailbox of targetAccount
-                set useAllMailboxes to true
-            else
-                error "Mailbox not found: {escaped_mailbox}"
-            end if
-        end try
-
-        if "{escaped_mailbox}" is not "All" then
+    if mailbox == "All":
+        mailbox_script = '''
+            set searchMailboxes to every mailbox of targetAccount
+            set useAllMailboxes to true
+        '''
+    else:
+        mailbox_script = f'''
+            {build_mailbox_ref(mailbox, "targetAccount", "searchMailbox")}
             set searchMailboxes to {{searchMailbox}}
             set useAllMailboxes to false
-        end if
-    '''
+        '''
 
     script = f'''
     tell application "Mail"
@@ -1627,16 +1519,7 @@ def search_all_accounts(
                 -- Find INBOX mailbox
                 set inboxMailbox to missing value
                 try
-                    set inboxMailbox to mailbox "INBOX" of acct
-                on error
-                    -- Try to find inbox by checking mailboxes
-                    repeat with mb in mailboxes of acct
-                        set mbName to name of mb
-                        if mbName is "INBOX" or mbName is "Inbox" then
-                            set inboxMailbox to mb
-                            exit repeat
-                        end if
-                    end repeat
+                    {inbox_mailbox_script("inboxMailbox", "acct")}
                 end try
 
                 if inboxMailbox is not missing value then

@@ -77,25 +77,7 @@ def move_email(
             try
                 set targetAccount to account "{safe_account}"
                 -- Try to get source mailbox (handle both "INBOX"/"Inbox" variations)
-                try
-                    set sourceMailbox to mailbox "{safe_from_mailbox}" of targetAccount
-                on error
-                    if "{safe_from_mailbox}" is "INBOX" then
-                        try
-                            set sourceMailbox to mailbox "Inbox" of targetAccount
-                        on error
-                            set sourceMailbox to missing value
-                            repeat with mb in mailboxes of targetAccount
-                                set mbName to name of mb
-                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                    set sourceMailbox to mb
-                                    exit repeat
-                                end if
-                            end repeat
-                            if sourceMailbox is missing value then
-                                error "Could not find inbox mailbox"
-                            end if
-                        end try
+                {build_mailbox_ref(from_mailbox, "targetAccount", "sourceMailbox")}
                     else
                         error "Source mailbox not found"
                     end if
@@ -450,25 +432,7 @@ def update_email_status_by_ids(
 
             try
                 set targetAccount to account "{safe_account}"
-                try
-                    set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
-                on error
-                    if "{safe_mailbox}" is "INBOX" then
-                        try
-                            set targetMailbox to mailbox "Inbox" of targetAccount
-                        on error
-                            set targetMailbox to missing value
-                            repeat with mb in mailboxes of targetAccount
-                                set mbName to name of mb
-                                if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                    set targetMailbox to mb
-                                    exit repeat
-                                end if
-                            end repeat
-                            if targetMailbox is missing value then
-                                error "Could not find inbox mailbox"
-                            end if
-                        end try
+                {build_mailbox_ref(mailbox, "targetAccount", "targetMailbox")}
                     else
                         error "Mailbox not found: {safe_mailbox}"
                     end if
@@ -689,25 +653,7 @@ def manage_trash(
                 try
                     set targetAccount to account "{safe_account}"
                     -- Get source mailbox
-                    try
-                        set sourceMailbox to mailbox "{safe_mailbox}" of targetAccount
-                    on error
-                        if "{safe_mailbox}" is "INBOX" then
-                            try
-                                set sourceMailbox to mailbox "Inbox" of targetAccount
-                            on error
-                                set sourceMailbox to missing value
-                                repeat with mb in mailboxes of targetAccount
-                                    set mbName to name of mb
-                                    if mbName is "Входящие" or mbName is "Posteingang" or mbName is "Boîte de réception" or mbName is "Bandeja de entrada" or mbName is "受信トレイ" or mbName is "收件箱" then
-                                        set sourceMailbox to mb
-                                        exit repeat
-                                    end if
-                                end repeat
-                                if sourceMailbox is missing value then
-                                    error "Could not find inbox mailbox"
-                                end if
-                            end try
+                    {build_mailbox_ref(mailbox, "targetAccount", "sourceMailbox")}
                         else
                             error "Mailbox not found: {safe_mailbox}"
                         end if
