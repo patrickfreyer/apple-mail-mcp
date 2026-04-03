@@ -356,9 +356,7 @@ tell application "System Events"
         end repeat
         delay 0.3
 
-        -- Select all in body and paste HTML
-        keystroke "a" using command down
-        delay 0.2
+        -- Paste HTML into body (no select-all to avoid wiping attachments)
         keystroke "v" using command down
         delay 0.5
 
