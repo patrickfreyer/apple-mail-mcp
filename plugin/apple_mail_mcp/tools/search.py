@@ -79,7 +79,11 @@ def _parse_search_records(output: str) -> List[Dict[str, Any]]:
             "received_date": parts[7].strip(),
         }
         if internet_message_id:
-            record["mail_link"] = "message:" + quote(internet_message_id, safe="")
+            # Apple Mail requires: message:// scheme, angle brackets (percent-encoded),
+            # and raw @ in the Message-ID. Normalize ID in case angle brackets are
+            # present or missing (AppleScript returns both forms).
+            msg_id = internet_message_id.strip("<>")
+            record["mail_link"] = f"message://%3C{quote(msg_id, safe='@')}%3E"
         if len(parts) > 8 and parts[8].strip():
             record["content_preview"] = parts[8].strip()
         records.append(record)
