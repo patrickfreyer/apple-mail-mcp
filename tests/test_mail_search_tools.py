@@ -77,7 +77,7 @@ class SearchToolTests(unittest.TestCase):
         self.assertEqual(response["next_offset"], 3)
         self.assertEqual(
             response["items"][0]["mail_link"],
-            "message:%3Cabc%40example.com%3E",
+            "message://%3Cabc@example.com%3E",
         )
         self.assertIn("set offsetRemaining to 1", captured["script"])
         self.assertIn("set collectLimit to 3", captured["script"])
@@ -188,7 +188,7 @@ class SearchToolTests(unittest.TestCase):
         )
         self.assertEqual(
             response["items"][0]["mail_link"],
-            "message:%3CQwcH6OP9REaEX0pi8aR6-g%40geopod-ismtpd-60%3E",
+            "message://%3CQwcH6OP9REaEX0pi8aR6-g@geopod-ismtpd-60%3E",
         )
 
     def test_search_emails_account_none_iterates_all_accounts(self):
