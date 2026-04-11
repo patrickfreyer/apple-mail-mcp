@@ -191,6 +191,37 @@ class SearchToolTests(unittest.TestCase):
             "message://%3CQwcH6OP9REaEX0pi8aR6-g@geopod-ismtpd-60%3E",
         )
 
+    def test_search_emails_mail_link_normalizes_missing_angle_brackets(self):
+        """AppleScript sometimes returns the Message-ID without angle brackets;
+        the mail_link should still include them (percent-encoded)."""
+
+        def fake_run(script, timeout=120):
+            return _record_line(
+                402,
+                "Unbracketed Ticket",
+                internet_message_id="abc@example.com",
+            )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                search_tools.search_emails(
+                    account="Work",
+                    subject_keyword="Unbracketed",
+                    output_format="json",
+                    limit=1,
+                    max_results=None,
+                )
+            )
+
+        self.assertEqual(
+            response["items"][0]["internet_message_id"],
+            "abc@example.com",
+        )
+        self.assertEqual(
+            response["items"][0]["mail_link"],
+            "message://%3Cabc@example.com%3E",
+        )
+
     def test_search_emails_account_none_iterates_all_accounts(self):
         """When account is None, the script should iterate all accounts."""
         captured = {}
