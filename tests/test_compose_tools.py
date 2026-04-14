@@ -3,9 +3,18 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from apple_mail_mcp.tools import compose as compose_tools
+
+
+def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
+    """Build a MagicMock shaped like subprocess.CompletedProcess."""
+    result = MagicMock()
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
 
 
 class ComposeToolTests(unittest.TestCase):
@@ -334,6 +343,236 @@ class CreateRichEmailDraftFromAddressTests(unittest.TestCase):
 
             payload = output_path.read_text()
             self.assertIn("From: secondary@example.org", payload)
+
+
+class ReplyToEmailSenderOverrideTests(unittest.TestCase):
+    def test_default_emits_single_alias_fallback_for_reply_message(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript"
+            ) as mock_applescript,
+        ):
+            compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply body",
+                send=False,
+            )
+
+        mock_applescript.assert_not_called()
+        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        self.assertIn("if (count of emailAddrs) is 1 then", script)
+        self.assertIn(
+            "set sender of replyMessage to item 1 of emailAddrs", script
+        )
+        self.assertNotIn('set sender of replyMessage to "', script)
+
+    def test_injects_sender_when_from_address_is_valid(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="default@example.com\nsecondary@example.org",
+            ),
+        ):
+            compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply body",
+                from_address="secondary@example.org",
+                send=False,
+            )
+
+        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        self.assertIn(
+            'set sender of replyMessage to "secondary@example.org"', script
+        )
+        self.assertNotIn("if (count of emailAddrs) is 1 then", script)
+
+    def test_rejects_invalid_from_address_without_running_main_script(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run"
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="default@example.com",
+            ),
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply body",
+                from_address="unknown@example.com",
+                send=False,
+            )
+
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: 'from_address'"))
+
+
+class ForwardEmailSenderOverrideTests(unittest.TestCase):
+    def test_default_emits_single_alias_fallback_for_forward_message(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "✓ Forwarded"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="recipient@example.com",
+            )
+
+        self.assertEqual(len(captured), 1)
+        script = captured[0]
+        self.assertIn("if (count of emailAddrs) is 1 then", script)
+        self.assertIn(
+            "set sender of forwardMessage to item 1 of emailAddrs", script
+        )
+        self.assertNotIn('set sender of forwardMessage to "', script)
+
+    def test_injects_sender_when_from_address_is_valid(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if len(scripts) == 1:
+                return "default@example.com\nsecondary@example.org"
+            return "✓ Forwarded"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="recipient@example.com",
+                from_address="secondary@example.org",
+            )
+
+        self.assertEqual(len(scripts), 2)
+        main_script = scripts[1]
+        self.assertIn(
+            'set sender of forwardMessage to "secondary@example.org"',
+            main_script,
+        )
+        self.assertNotIn("if (count of emailAddrs) is 1 then", main_script)
+
+    def test_rejects_invalid_from_address_without_running_main_script(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            return "default@example.com"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="recipient@example.com",
+                from_address="unknown@example.com",
+            )
+
+        self.assertEqual(len(scripts), 1)
+        self.assertTrue(result.startswith("Error: 'from_address'"))
+
+
+class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
+    def test_default_emits_single_alias_fallback_for_new_draft(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "✓ Draft created"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.manage_drafts(
+                account="Work",
+                action="create",
+                subject="Draft",
+                to="recipient@example.com",
+                body="Body",
+            )
+
+        self.assertEqual(len(captured), 1)
+        script = captured[0]
+        self.assertIn("if (count of emailAddrs) is 1 then", script)
+        self.assertIn(
+            "set sender of newDraft to item 1 of emailAddrs", script
+        )
+        self.assertNotIn('set sender of newDraft to "', script)
+
+    def test_injects_sender_when_from_address_is_valid(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if len(scripts) == 1:
+                return "default@example.com\nsecondary@example.org"
+            return "✓ Draft created"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.manage_drafts(
+                account="Work",
+                action="create",
+                subject="Draft",
+                to="recipient@example.com",
+                body="Body",
+                from_address="secondary@example.org",
+            )
+
+        self.assertEqual(len(scripts), 2)
+        main_script = scripts[1]
+        self.assertIn(
+            'set sender of newDraft to "secondary@example.org"', main_script
+        )
+        self.assertNotIn("if (count of emailAddrs) is 1 then", main_script)
+
+    def test_rejects_invalid_from_address_without_running_main_script(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            return "default@example.com"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools.manage_drafts(
+                account="Work",
+                action="create",
+                subject="Draft",
+                to="recipient@example.com",
+                body="Body",
+                from_address="unknown@example.com",
+            )
+
+        self.assertEqual(len(scripts), 1)
+        self.assertTrue(result.startswith("Error: 'from_address'"))
 
 
 if __name__ == "__main__":
