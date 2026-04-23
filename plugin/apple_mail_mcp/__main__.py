@@ -12,14 +12,23 @@ import apple_mail_mcp.server as server
 # When the MCP client (e.g. Claude) exits without closing stdin cleanly,
 # the FastMCP server can keep running orphaned in the background. The
 # orphaned server keeps polling Mail.app via Apple Events, which causes
-# Mail to relaunch after the user quits it. Detect the orphan state
-# (PPID reparented to launchd) and self-terminate. Uses os._exit because
-# sys.exit does not tear down FastMCP's background asyncio loop reliably.
-def _start_orphan_watcher(interval_sec: int = 10) -> None:
+# Mail to relaunch after the user quits it. Capture the initial PPID at
+# startup and self-terminate when it changes (parent died, we have been
+# reparented). Uses os._exit because sys.exit does not tear down FastMCP's
+# background asyncio loop reliably. get_ppid and exit_fn are injectable
+# for unit testing.
+def _start_orphan_watcher(
+    interval_sec: int = 10,
+    get_ppid=os.getppid,
+    exit_fn=os._exit,
+) -> None:
+    initial_ppid = get_ppid()
+
     def _watch() -> None:
         while True:
-            if os.getppid() < 100:
-                os._exit(0)
+            if get_ppid() != initial_ppid:
+                exit_fn(0)
+                return
             time.sleep(interval_sec)
 
     threading.Thread(target=_watch, daemon=True).start()
