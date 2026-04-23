@@ -1,11 +1,33 @@
 """Entry point for `python -m apple_mail_mcp` and `apple-mail-mcp` CLI."""
 
 import argparse
+import os
+import threading
+import time
 
 import apple_mail_mcp.server as server
 
 
+# Workaround for modelcontextprotocol/python-sdk#526.
+# When the MCP client (e.g. Claude) exits without closing stdin cleanly,
+# the FastMCP server can keep running orphaned in the background. The
+# orphaned server keeps polling Mail.app via Apple Events, which causes
+# Mail to relaunch after the user quits it. Detect the orphan state
+# (PPID reparented to launchd) and self-terminate. Uses os._exit because
+# sys.exit does not tear down FastMCP's background asyncio loop reliably.
+def _start_orphan_watcher(interval_sec: int = 10) -> None:
+    def _watch() -> None:
+        while True:
+            if os.getppid() < 100:
+                os._exit(0)
+            time.sleep(interval_sec)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def main():
+    _start_orphan_watcher()
+
     parser = argparse.ArgumentParser(description="Apple Mail MCP Server")
     parser.add_argument(
         "--read-only",
