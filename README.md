@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/patrickfreyer-apple-mail-mcp-badge.png)](https://mseep.ai/app/patrickfreyer-apple-mail-mcp)
+
 # Apple Mail MCP Server
 
 <!-- mcp-name: io.github.patrickfreyer/apple-mail -->
