@@ -352,6 +352,62 @@ def list_accounts() -> List[str]:
 
 @mcp.tool()
 @inject_preferences
+def list_account_addresses() -> Dict[str, List[str]]:
+    """
+    List all configured email addresses for each Mail account.
+
+    Useful for mapping a Mail.app account name (e.g. "Gmail", "Work") to the
+    actual email address(es) it receives mail at — handy when an integration
+    needs to know which inbox a message landed in by address rather than by
+    Mail.app's display name.
+
+    Returns:
+        Dict mapping account name -> list of email addresses configured on
+        that account. Accounts with no addresses configured map to [].
+    """
+
+    script = """
+    tell application "Mail"
+        set outLines to {}
+        set allAccounts to every account
+
+        repeat with anAccount in allAccounts
+            set acctName to name of anAccount
+            try
+                set emailAddrs to email addresses of anAccount
+            on error
+                set emailAddrs to {}
+            end try
+            if emailAddrs is missing value then
+                set emailAddrs to {}
+            end if
+            set AppleScript's text item delimiters to ","
+            set addrStr to emailAddrs as string
+            set AppleScript's text item delimiters to ""
+            set end of outLines to acctName & "|" & addrStr
+        end repeat
+
+        set AppleScript's text item delimiters to linefeed
+        set joined to outLines as string
+        set AppleScript's text item delimiters to ""
+        return joined
+    end tell
+    """
+
+    result = run_applescript(script)
+    out: Dict[str, List[str]] = {}
+    if not result:
+        return out
+    for line in result.splitlines():
+        if "|" not in line:
+            continue
+        name, addrs = line.split("|", 1)
+        out[name] = [a.strip() for a in addrs.split(",") if a.strip()]
+    return out
+
+
+@mcp.tool()
+@inject_preferences
 def list_mailboxes(account: Optional[str] = None, include_counts: bool = True) -> str:
     """
     List all mailboxes (folders) for a specific account or all accounts.
