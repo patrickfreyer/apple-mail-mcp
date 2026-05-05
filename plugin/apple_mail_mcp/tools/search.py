@@ -122,6 +122,8 @@ def _format_search_records_text(
             lines.append(f"   From: {item['sender']}")
             lines.append(f"   Date: {item['received_date']}")
             lines.append(f"   Mailbox: {item['mailbox']}")
+            if item.get("mail_link"):
+                lines.append(f"   Link: {item['mail_link']}")
             if item.get("content_preview"):
                 lines.append(f"   Content: {item['content_preview']}")
             lines.append("")
