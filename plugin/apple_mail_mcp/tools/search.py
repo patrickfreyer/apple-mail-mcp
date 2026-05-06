@@ -873,13 +873,36 @@ def get_email_message(
 
     text_body = ""
     html_body = ""
+    attachments: List[Dict[str, Any]] = []
     if msg.is_multipart():
         # Walk all parts; pick the longest text/* of each kind so nested
         # multipart/alternative layouts don't accidentally surface a one-line
-        # auto-reply over the real body.
+        # auto-reply over the real body. Anything with a filename or an
+        # explicit attachment disposition gets surfaced separately so
+        # callers can render a download list.
+        idx = 0
         for part in msg.walk():
             ctype = part.get_content_type()
             if part.get_content_maintype() == "multipart":
+                continue
+            disposition = (part.get("Content-Disposition") or "").lower()
+            filename = part.get_filename()
+            is_attachment = bool(filename) or "attachment" in disposition
+            if is_attachment:
+                try:
+                    payload = part.get_payload(decode=True) or b""
+                except Exception:
+                    payload = b""
+                attachments.append(
+                    {
+                        "index": idx,
+                        "filename": _decode_header_value(filename) or f"attachment-{idx + 1}",
+                        "content_type": ctype,
+                        "size": len(payload),
+                        "is_inline": "inline" in disposition,
+                    }
+                )
+                idx += 1
                 continue
             try:
                 body = _decode_payload(part)
@@ -912,9 +935,116 @@ def get_email_message(
             "content_text": _sanitize_text(text_body),
             "content_html": html_body,
             "has_html": bool(html_body),
+            "attachments": attachments,
         },
         ensure_ascii=False,
     )
+
+
+@mcp.tool()
+@inject_preferences
+def get_email_attachment(
+    account: str,
+    message_id: str,
+    attachment_index: int,
+    mailbox: str = "INBOX",
+) -> str:
+    """
+    Return one attachment from a message as base64-encoded bytes.
+
+    Pair with get_email_message — the attachments array there exposes
+    each part's `index`, `filename`, `content_type`, and `size`. Pass
+    that index back here to fetch the bytes for download or inline
+    rendering. Wire transport is JSON, so the payload is base64; the
+    caller decodes.
+
+    Args:
+        account: Account name (e.g. "Gmail").
+        message_id: Apple Mail's numeric `id of message`.
+        attachment_index: Zero-based index from get_email_message's
+            `attachments` array.
+        mailbox: Mailbox to look in (default "INBOX"). Falls back to
+            scanning every mailbox of the account, mirroring
+            get_email_message's behaviour.
+
+    Returns:
+        JSON string {filename, content_type, size, content_base64}
+        or {error: "<reason>"} on failure.
+    """
+    import base64
+
+    escaped_account = escape_applescript(account)
+    escaped_mailbox = escape_applescript(mailbox)
+    escaped_id = escape_applescript(str(message_id))
+
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{escaped_account}"
+            try
+                set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
+                set matches to (every message of targetMailbox whose id is ({escaped_id} as integer))
+                if (count of matches) > 0 then
+                    return source of (item 1 of matches)
+                end if
+            end try
+            repeat with aMailbox in (every mailbox of targetAccount)
+                try
+                    set m to (every message of aMailbox whose id is ({escaped_id} as integer))
+                    if (count of m) > 0 then
+                        return source of (item 1 of m)
+                    end if
+                end try
+            end repeat
+            return "ERROR|||not_found"
+        on error errMsg
+            return "ERROR|||" & errMsg
+        end try
+    end tell
+    '''
+    raw = run_applescript(script, timeout=180)
+    if raw.startswith("ERROR|||"):
+        return json.dumps({"error": raw[8:].strip() or "applescript_error"})
+
+    import email as email_mod
+
+    msg = email_mod.message_from_string(raw)
+
+    if not msg.is_multipart():
+        return json.dumps({"error": "no_attachments"})
+
+    idx = 0
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        disposition = (part.get("Content-Disposition") or "").lower()
+        filename = part.get_filename()
+        is_attachment = bool(filename) or "attachment" in disposition
+        if not is_attachment:
+            continue
+        if idx == attachment_index:
+            try:
+                raw_payload = part.get_payload(decode=True)
+                if isinstance(raw_payload, bytearray):
+                    payload: bytes = bytes(raw_payload)
+                elif isinstance(raw_payload, bytes):
+                    payload = raw_payload
+                else:
+                    payload = b""
+            except Exception as e:
+                return json.dumps({"error": f"decode_failed: {e}"})
+            return json.dumps(
+                {
+                    "filename": _decode_header_value(filename)
+                    or f"attachment-{idx + 1}",
+                    "content_type": part.get_content_type(),
+                    "size": len(payload),
+                    "content_base64": base64.b64encode(payload).decode("ascii"),
+                }
+            )
+        idx += 1
+
+    return json.dumps({"error": "index_out_of_range"})
 
 
 def _sanitize_text(s: str) -> str:
