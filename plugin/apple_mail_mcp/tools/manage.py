@@ -31,6 +31,7 @@ def move_email(
     older_than_days: Optional[int] = None,
     dry_run: bool = False,
     only_read: bool = False,
+    message_ids: Optional[List[str]] = None,
 ) -> str:
     """
     Move email(s) matching filters from one mailbox to another.
@@ -38,6 +39,8 @@ def move_email(
     Supports subject, sender, and date filters. Use dry_run=True to preview
     matches without moving. Set only_read=True to skip unread emails (useful
     for archiving). For archiving to "Archive", just set to_mailbox="Archive".
+    Pass message_ids to move specific messages by exact id (ignores other
+    filters; same fast path as update_email_status).
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
@@ -50,21 +53,91 @@ def move_email(
         older_than_days: Optional age filter - only move emails older than N days
         dry_run: If True, preview what would be moved without acting (default: False)
         only_read: If True, only move emails that have been read (default: False)
+        message_ids: Optional list of exact Mail message ids for precise targeting. When set, all other filters are ignored.
 
     Returns:
         Confirmation message with details of moved emails
     """
 
+    safe_account = escape_applescript(account)
+    safe_from = escape_applescript(from_mailbox)
+    safe_to = escape_applescript(to_mailbox)
+
+    # Destination mailbox reference — built once and reused by both the
+    # filter-based path and the id-based fast path below.
+    mailbox_parts = to_mailbox.split("/")
+    if len(mailbox_parts) > 1:
+        dest_ref = f'mailbox "{escape_applescript(mailbox_parts[-1])}" of '
+        for i in range(len(mailbox_parts) - 2, -1, -1):
+            dest_ref += f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
+        dest_ref += "targetAccount"
+    else:
+        dest_ref = f'mailbox "{safe_to}" of targetAccount'
+
+    # --- ID-based fast path: ignore subject/sender/date filters entirely.
+    # Mirrors the message_ids branch in update_email_status so callers
+    # who already know the message id (e.g. an inbox app's "archive"
+    # button) don't have to round-trip through subject filtering.
+    if message_ids is not None:
+        normalized_ids = normalize_message_ids(message_ids)
+        if not normalized_ids:
+            return "Error: 'message_ids' must contain one or more numeric Mail ids"
+
+        id_condition = equals_any_numeric_condition("id", normalized_ids)
+        mode_label = "DRY RUN - PREVIEW MOVE BY IDS" if dry_run else "MOVING EMAILS BY IDS"
+        move_action = "" if dry_run else "move aMessage to destMailbox"
+        result_prefix = "Would move" if dry_run else "Moved"
+
+        script = f'''
+        tell application "Mail"
+            with timeout of 300 seconds
+                set outputText to "{mode_label}: {safe_from} -> {safe_to}" & return & return
+                set moveCount to 0
+
+                try
+                    set targetAccount to account "{safe_account}"
+                    {build_mailbox_ref(from_mailbox, var_name="sourceMailbox")}
+                    set destMailbox to {dest_ref}
+
+                    set targetMessages to every message of sourceMailbox whose {id_condition}
+                    set requestedCount to {len(normalized_ids)}
+
+                    repeat with aMessage in targetMessages
+                        try
+                            set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
+
+                            {move_action}
+
+                            set outputText to outputText & "{result_prefix}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+
+                            set moveCount to moveCount + 1
+                        end try
+                    end repeat
+
+                    set outputText to outputText & "========================================" & return
+                    set outputText to outputText & "REQUESTED: " & requestedCount & " id(s), MATCHED: " & moveCount & return
+                    set outputText to outputText & "========================================" & return
+
+                on error errMsg
+                    return "Error: " & errMsg
+                end try
+
+                return outputText
+            end timeout
+        end tell
+        '''
+        return run_applescript(script, timeout=300)
+
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
     if not subject_terms and not sender and not older_than_days:
         return (
             "Error: At least one filter is required (subject_keyword, sender, "
-            "or older_than_days). This prevents accidentally moving everything."
+            "older_than_days, or message_ids). This prevents accidentally moving everything."
         )
-
-    safe_account = escape_applescript(account)
-    safe_from = escape_applescript(from_mailbox)
-    safe_to = escape_applescript(to_mailbox)
 
     # Build filter condition for the loop body (uses local vars)
     condition_str = build_filter_condition(
@@ -95,15 +168,8 @@ def move_email(
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
         date_cond = " and messageDate < cutoffDate"
 
-    # Build nested mailbox reference for destination
-    mailbox_parts = to_mailbox.split("/")
-    if len(mailbox_parts) > 1:
-        dest_ref = f'mailbox "{escape_applescript(mailbox_parts[-1])}" of '
-        for i in range(len(mailbox_parts) - 2, -1, -1):
-            dest_ref += f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
-        dest_ref += "targetAccount"
-    else:
-        dest_ref = f'mailbox "{safe_to}" of targetAccount'
+    # dest_ref already computed at the top of the function (shared with
+    # the id-based fast path).
 
     if dry_run:
         mode_label = "DRY RUN - PREVIEW MOVE"
