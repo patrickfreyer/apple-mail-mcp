@@ -739,3 +739,184 @@ def get_email_thread(
 
     result = run_applescript(script)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Single-message rich-content fetch.
+# Used by Sane's email detail view to surface HTML body + To/Cc/Bcc on demand
+# without bloating every search response. Walks the raw RFC822 source through
+# Python's email module so newsletter-style HTML, encoded recipient lists,
+# and multipart structures all parse correctly.
+# ---------------------------------------------------------------------------
+
+
+def _decode_payload(part) -> str:
+    """Best-effort string decode of one MIME part (handles charset + b64/qp)."""
+    payload = part.get_payload(decode=True)
+    if payload is None:
+        # Fallback: get_payload(decode=False) when the part is a string already
+        return str(part.get_payload() or "")
+    charset = part.get_content_charset() or "utf-8"
+    try:
+        return payload.decode(charset, errors="replace")
+    except (LookupError, AttributeError):
+        return payload.decode("utf-8", errors="replace")
+
+
+def _split_addresses(value: Optional[str]) -> List[str]:
+    """Parse an RFC822 address list into normalized 'Name <addr>' strings."""
+    if not value:
+        return []
+    import email.utils
+
+    parsed = email.utils.getaddresses([value])
+    out: List[str] = []
+    for name, addr in parsed:
+        if not addr:
+            continue
+        addr = addr.strip()
+        if name:
+            out.append(f'"{name.strip()}" <{addr}>')
+        else:
+            out.append(addr)
+    return out
+
+
+def _decode_header_value(value: Optional[str]) -> str:
+    """Decode RFC2047-encoded header to a plain string."""
+    if not value:
+        return ""
+    import email.header
+
+    parts = email.header.decode_header(value)
+    out = []
+    for chunk, charset in parts:
+        if isinstance(chunk, bytes):
+            try:
+                out.append(chunk.decode(charset or "utf-8", errors="replace"))
+            except LookupError:
+                out.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            out.append(chunk)
+    return "".join(out)
+
+
+@mcp.tool()
+@inject_preferences
+def get_email_message(
+    account: str,
+    message_id: str,
+    mailbox: str = "INBOX",
+) -> str:
+    """
+    Return one email's full body (text + HTML when available) and recipients.
+
+    Heavier than search_emails — it pulls the raw RFC822 source from Mail.app
+    via AppleScript, then parses MIME in Python. Use it on demand when a UI
+    needs to render the rich body or surface Cc/Bcc lists; do not call it
+    inside a poll loop.
+
+    Args:
+        account: Account name (e.g. "Gmail")
+        message_id: Apple Mail's numeric `id of message` (the same value
+            search_emails returns as `message_id`)
+        mailbox: Mailbox to look in (default "INBOX")
+
+    Returns:
+        JSON string with keys:
+          subject, sender, date, message_id,
+          to_recipients, cc_recipients, bcc_recipients,
+          content_text, content_html, has_html
+    """
+    escaped_account = escape_applescript(account)
+    escaped_mailbox = escape_applescript(mailbox)
+    escaped_id = escape_applescript(str(message_id))
+
+    # First try the recorded mailbox; if the message has been moved (or
+    # archived to All Mail / a custom folder) the user still expects the
+    # detail panel to render, so fall back to scanning every mailbox in
+    # the account before reporting not_found.
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{escaped_account}"
+            try
+                set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
+                set matches to (every message of targetMailbox whose id is ({escaped_id} as integer))
+                if (count of matches) > 0 then
+                    return source of (item 1 of matches)
+                end if
+            end try
+            -- Fallback: scan every mailbox of the account.
+            repeat with aMailbox in (every mailbox of targetAccount)
+                try
+                    set m to (every message of aMailbox whose id is ({escaped_id} as integer))
+                    if (count of m) > 0 then
+                        return source of (item 1 of m)
+                    end if
+                end try
+            end repeat
+            return "ERROR|||not_found"
+        on error errMsg
+            return "ERROR|||" & errMsg
+        end try
+    end tell
+    '''
+
+    raw = run_applescript(script, timeout=180)
+    if raw.startswith("ERROR|||"):
+        return json.dumps({"error": raw[8:].strip() or "applescript_error"})
+
+    import email as email_mod
+
+    msg = email_mod.message_from_string(raw)
+
+    text_body = ""
+    html_body = ""
+    if msg.is_multipart():
+        # Walk all parts; pick the longest text/* of each kind so nested
+        # multipart/alternative layouts don't accidentally surface a one-line
+        # auto-reply over the real body.
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if part.get_content_maintype() == "multipart":
+                continue
+            try:
+                body = _decode_payload(part)
+            except Exception:
+                continue
+            if ctype == "text/html" and len(body) > len(html_body):
+                html_body = body
+            elif ctype == "text/plain" and len(body) > len(text_body):
+                text_body = body
+    else:
+        try:
+            body = _decode_payload(msg)
+        except Exception:
+            body = ""
+        if msg.get_content_type() == "text/html":
+            html_body = body
+        else:
+            text_body = body
+
+    return json.dumps(
+        {
+            "subject": _decode_header_value(msg.get("Subject")),
+            "sender": _decode_header_value(msg.get("From")),
+            "date": _decode_header_value(msg.get("Date")),
+            "message_id": _decode_header_value(msg.get("Message-ID"))
+            or _decode_header_value(msg.get("Message-Id")),
+            "to_recipients": _split_addresses(_decode_header_value(msg.get("To"))),
+            "cc_recipients": _split_addresses(_decode_header_value(msg.get("Cc"))),
+            "bcc_recipients": _split_addresses(_decode_header_value(msg.get("Bcc"))),
+            "content_text": _sanitize_text(text_body),
+            "content_html": html_body,
+            "has_html": bool(html_body),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _sanitize_text(s: str) -> str:
+    """Strip object replacement characters Mail substitutes for inline media."""
+    return s.replace("￼", "").replace("​", "").strip()
