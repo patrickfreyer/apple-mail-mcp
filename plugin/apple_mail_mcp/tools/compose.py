@@ -773,6 +773,271 @@ tell application "Mail"
 
 @mcp.tool()
 @inject_preferences
+def reply_to_email_by_id(
+    message_id: str,
+    reply_body: str,
+    account: Optional[str] = None,
+    reply_to_all: bool = False,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    send: bool = True,
+    mode: Optional[str] = None,
+    body_html: Optional[str] = None,
+) -> str:
+    """
+    Reply to an email matched by its Internet Message-ID header.
+
+    Unlike reply_to_email which finds threads by subject keyword (and can match
+    the wrong thread when subjects collide), this tool targets one specific
+    message via its globally unique Message-ID. Use this when you have the
+    Message-ID from prior search/list results.
+
+    Args:
+        message_id: The email's Internet Message-ID (with or without angle brackets).
+        reply_body: The body text of the reply.
+        account: Optional account hint to narrow the search; if omitted, all accounts are scanned.
+        reply_to_all: If True, reply to all recipients; if False, reply only to sender.
+        cc: Optional CC recipients, comma-separated.
+        bcc: Optional BCC recipients, comma-separated.
+        send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
+        mode: Delivery mode — "send", "draft", or "open". Overrides `send` when set.
+        body_html: Optional HTML body for rich formatting.
+
+    Returns:
+        Confirmation message with details of the reply sent or saved.
+    """
+
+    # Normalize Message-ID: strip angle brackets so AppleScript matches the raw form.
+    normalized_id = message_id.strip().strip("<>").strip()
+    if not normalized_id:
+        return "Error: message_id is empty"
+
+    safe_message_id = escape_applescript(normalized_id)
+    account_hint = (account or "").strip()
+    safe_account_hint = escape_applescript(account_hint) if account_hint else ""
+
+    # Write reply body to a temp file (avoid AppleScript escaping pitfalls).
+    body_tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="mail_reply_id_", delete=False, encoding="utf-8"
+    )
+    body_tmp.write(reply_body)
+    body_tmp.close()
+    body_temp_path = body_tmp.name
+
+    # HTML clipboard payload (same trick as reply_to_email).
+    gap_html = "<div><br></div><div><br></div>"
+    if body_html:
+        html_content = body_html + gap_html
+    else:
+        escaped_plain = html_escape(reply_body)
+        escaped_plain = escaped_plain.replace("\n", "<br>")
+        html_content = f"<div>{escaped_plain}</div>{gap_html}"
+    html_tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", prefix="mail_reply_id_html_", delete=False, encoding="utf-8"
+    )
+    html_tmp.write(html_content)
+    html_tmp.close()
+    html_temp_path = html_tmp.name
+
+    if reply_to_all:
+        reply_command = "set replyMessage to reply foundMessage with opening window and reply to all"
+    else:
+        reply_command = "set replyMessage to reply foundMessage with opening window"
+
+    cc_script = ""
+    if cc:
+        for addr in [a.strip() for a in cc.split(",")]:
+            safe_addr = escape_applescript(addr)
+            cc_script += f'''
+            make new cc recipient at end of cc recipients of replyMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    bcc_script = ""
+    if bcc:
+        for addr in [a.strip() for a in bcc.split(",")]:
+            safe_addr = escape_applescript(addr)
+            bcc_script += f'''
+            make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
+            '''
+
+    safe_cc = escape_applescript(cc) if cc else ""
+    safe_bcc = escape_applescript(bcc) if bcc else ""
+
+    if mode is not None:
+        if mode not in ("send", "draft", "open"):
+            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+        effective_mode = mode
+    else:
+        effective_mode = "send" if send else "draft"
+
+    if effective_mode == "send":
+        header_text = "SENDING REPLY (BY ID)"
+        post_paste_action = """
+                delay 0.5
+                tell application "Mail"
+                    send replyMessage
+                end tell"""
+        success_text = "Reply sent successfully!"
+    elif effective_mode == "open":
+        header_text = "OPENING REPLY FOR REVIEW (BY ID)"
+        post_paste_action = ""
+        success_text = "Reply opened in Mail for review. Edit and send when ready."
+    else:
+        header_text = "SAVING REPLY AS DRAFT (BY ID)"
+        post_paste_action = """
+                delay 0.5
+                tell application "Mail"
+                    close window 1 saving yes
+                end tell"""
+        success_text = "Reply saved as draft!"
+
+    cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
+    html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
+
+    # Search strategy: if an account hint is provided, try that account's INBOX
+    # first; otherwise iterate every account. Match Mail's `message id` property
+    # against the normalized Message-ID. AppleScript returns both bracketed and
+    # unbracketed forms across versions, so try the raw value and a bracketed
+    # form as a fallback.
+    search_loop = f'''
+        set foundMessage to missing value
+        set foundAccount to missing value
+        set targetMid to "{safe_message_id}"
+        set targetMidBracketed to "<" & targetMid & ">"
+
+        set accountList to {{}}
+        if "{safe_account_hint}" is not "" then
+            try
+                set end of accountList to account "{safe_account_hint}"
+            end try
+        end if
+        repeat with anAcct in accounts
+            if (anAcct as text) is not "" then
+                set end of accountList to (contents of anAcct)
+            end if
+        end repeat
+
+        repeat with anAccount in accountList
+            try
+                {inbox_mailbox_script("inboxMailbox", "anAccount")}
+                try
+                    set candidates to (every message of inboxMailbox whose message id is targetMid)
+                    if (count of candidates) is 0 then
+                        set candidates to (every message of inboxMailbox whose message id is targetMidBracketed)
+                    end if
+                    if (count of candidates) > 0 then
+                        set foundMessage to item 1 of candidates
+                        set foundAccount to anAccount
+                        exit repeat
+                    end if
+                end try
+            end try
+        end repeat
+    '''
+
+    script = f'''
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+set htmlString to do shell script "cat '{html_temp_path}'"
+set pb to current application's NSPasteboard's generalPasteboard()
+set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+pb's clearContents()
+set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
+pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+
+tell application "Mail"
+    set outputText to "{header_text}" & return & return
+
+    try
+        {search_loop}
+
+        if foundMessage is not missing value then
+            set messageSubject to subject of foundMessage
+            set messageSender to sender of foundMessage
+
+            -- Create reply
+            {reply_command}
+            delay 0.5
+
+            -- Ensure the reply is from the correct account
+            try
+                set emailAddrs to email addresses of foundAccount
+                set senderAddress to item 1 of emailAddrs
+                set sender of replyMessage to senderAddress
+            end try
+
+            {cc_script}
+            {bcc_script}
+
+            set visible of replyMessage to true
+            activate
+            delay 1.5
+
+            tell application "System Events"
+                tell process "Mail"
+                    keystroke "v" using command down
+                end tell
+            end tell
+            delay 0.5
+
+            {post_paste_action}
+
+            set outputText to outputText & "{success_text}" & return
+            set outputText to outputText & "To: " & messageSender & return
+            set outputText to outputText & "Subject: " & messageSubject & return
+        else
+            set outputText to outputText & "No email found with Message-ID: " & targetMid & return
+        end if
+
+        {cleanup_script}
+        {html_cleanup_script}
+
+    on error errMsg
+        try
+            {cleanup_script}
+            {html_cleanup_script}
+        end try
+        return "Error: " & errMsg
+    end try
+
+    return outputText
+end tell
+
+if oldClip is not missing value then
+    pb's clearContents()
+    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+end if
+'''
+
+    if cc:
+        script += f'\n-- cc: {safe_cc}\n'
+    if bcc:
+        script += f'\n-- bcc: {safe_bcc}\n'
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            return f"Error in reply: {stderr}"
+        return result.stdout.decode("utf-8", errors="replace").strip()
+    except subprocess.TimeoutExpired:
+        return "Error: Reply script timed out"
+    finally:
+        if os.path.exists(body_temp_path):
+            os.unlink(body_temp_path)
+        if html_temp_path and os.path.exists(html_temp_path):
+            os.unlink(html_temp_path)
+
+
+@mcp.tool()
+@inject_preferences
 def compose_email(
     account: str,
     to: str,
