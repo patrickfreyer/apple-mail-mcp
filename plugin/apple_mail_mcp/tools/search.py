@@ -832,24 +832,38 @@ def get_email_message(
     escaped_mailbox = escape_applescript(mailbox)
     escaped_id = escape_applescript(str(message_id))
 
+    # First try the recorded mailbox; if the message has been moved (or
+    # archived to All Mail / a custom folder) the user still expects the
+    # detail panel to render, so fall back to scanning every mailbox in
+    # the account before reporting not_found.
     script = f'''
     tell application "Mail"
         try
             set targetAccount to account "{escaped_account}"
-            set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
-            set matches to (every message of targetMailbox whose id is ({escaped_id} as integer))
-            if (count of matches) is 0 then
-                return "ERROR|||not_found"
-            end if
-            set foundMessage to item 1 of matches
-            return source of foundMessage
+            try
+                set targetMailbox to mailbox "{escaped_mailbox}" of targetAccount
+                set matches to (every message of targetMailbox whose id is ({escaped_id} as integer))
+                if (count of matches) > 0 then
+                    return source of (item 1 of matches)
+                end if
+            end try
+            -- Fallback: scan every mailbox of the account.
+            repeat with aMailbox in (every mailbox of targetAccount)
+                try
+                    set m to (every message of aMailbox whose id is ({escaped_id} as integer))
+                    if (count of m) > 0 then
+                        return source of (item 1 of m)
+                    end if
+                end try
+            end repeat
+            return "ERROR|||not_found"
         on error errMsg
             return "ERROR|||" & errMsg
         end try
     end tell
     '''
 
-    raw = run_applescript(script, timeout=120)
+    raw = run_applescript(script, timeout=180)
     if raw.startswith("ERROR|||"):
         return json.dumps({"error": raw[8:].strip() or "applescript_error"})
 
