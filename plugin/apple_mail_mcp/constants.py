@@ -11,11 +11,22 @@ NEWSLETTER_KEYWORD_PATTERNS = [
     "bulletin", "briefing", "news@", "updates@",
 ]
 
-# Folders to skip during broad searches
+# Folders to skip during broad searches.
+# Includes localized variants so non-English Mail.app accounts (Exchange,
+# Outlook, Gmail in non-English locales) skip system folders correctly.
 SKIP_FOLDERS = [
+    # English / IMAP standards
     "Trash", "Junk", "Junk Email", "Deleted Items",
     "Sent", "Sent Items", "Sent Messages", "Drafts",
     "Spam", "Deleted Messages",
+    # French (Exchange/Outlook + Gmail FR)
+    "Corbeille", "Courrier indésirable", "Indésirables",
+    "Éléments supprimés", "Éléments envoyés", "Messages envoyés",
+    "Brouillons", "Boîte d'envoi",
+    # German
+    "Papierkorb", "Gesendet", "Entwürfe", "Werbung",
+    # Spanish
+    "Papelera", "Enviados", "Borradores", "Correo no deseado",
 ]
 
 # Thread subject prefixes to strip when matching threads

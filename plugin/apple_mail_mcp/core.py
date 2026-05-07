@@ -182,16 +182,47 @@ LOWERCASE_HANDLER = """
 """
 
 
+# Localized inbox mailbox names. Mail.app uses the system locale to name
+# the inbox folder for non-IMAP accounts (Exchange, on-my-Mac), so we must
+# try multiple names to find it. IMAP accounts (iCloud, Gmail) typically
+# expose 'INBOX' regardless of system language.
+INBOX_NAMES = [
+    "INBOX",                  # IMAP standard (iCloud, Gmail, Fastmail)
+    "Inbox",                  # English non-IMAP
+    "Boîte de réception",     # French (Exchange/Outlook on FR system)
+    "Boîte aux lettres",      # French alt
+    "Réception",              # French alt
+    "Posteingang",            # German
+    "Bandeja de entrada",     # Spanish
+    "Posta in arrivo",        # Italian
+    "Caixa de entrada",       # Portuguese
+    "Postvak IN",             # Dutch
+    "受信トレイ",             # Japanese
+]
+
+
 def inbox_mailbox_script(
     var_name: str = "inboxMailbox", account_var: str = "anAccount"
 ) -> str:
-    """Return AppleScript snippet to get inbox mailbox with INBOX/Inbox fallback."""
+    """Return AppleScript snippet to resolve the inbox mailbox.
+
+    Iterates through INBOX_NAMES (localized variants) so non-English
+    Mail.app accounts — typically Exchange on a French/German/etc.
+    system where the inbox is 'Boîte de réception' / 'Posteingang' —
+    still resolve correctly.
+    """
+    name_list = ", ".join(f'"{n}"' for n in INBOX_NAMES)
     return f"""
-                try
-                    set {var_name} to mailbox "INBOX" of {account_var}
-                on error
-                    set {var_name} to mailbox "Inbox" of {account_var}
-                end try"""
+                set {var_name} to missing value
+                repeat with __inboxLookupName in {{{name_list}}}
+                    try
+                        set {var_name} to mailbox (__inboxLookupName as string) of {account_var}
+                        exit repeat
+                    end try
+                end repeat
+                if {var_name} is missing value then
+                    error "No inbox mailbox found for account " & (name of {account_var})
+                end if"""
 
 
 def content_preview_script(max_length: int, output_var: str = "outputText") -> str:
@@ -257,6 +288,21 @@ def build_mailbox_ref(
             ref += f'mailbox "{escape_applescript(parts[i])}" of '
         ref += account_var
         return f"set {var_name} to {ref}"
+
+    # When caller asks for "INBOX" (default for most tools), iterate the
+    # localized fallback list so Exchange/non-English inboxes are found.
+    if mailbox.upper() == "INBOX":
+        name_list = ", ".join(f'"{n}"' for n in INBOX_NAMES)
+        return f'''set {var_name} to missing value
+            repeat with __mailboxLookupName in {{{name_list}}}
+                try
+                    set {var_name} to mailbox (__mailboxLookupName as string) of {account_var}
+                    exit repeat
+                end try
+            end repeat
+            if {var_name} is missing value then
+                error "Mailbox not found: {escaped} (no localized inbox match)"
+            end if'''
 
     return f'''try
                 set {var_name} to mailbox "{escaped}" of {account_var}
