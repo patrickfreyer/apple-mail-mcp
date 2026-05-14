@@ -850,3 +850,99 @@ def create_mailbox(
     return run_applescript(script)
 
 
+
+
+@mcp.tool()
+@inject_preferences
+def synchronize_account(account: Optional[str] = None) -> str:
+    """
+    Force Mail.app to synchronize an account (or every account) with its
+    IMAP / Exchange server right now. Equivalent to clicking the
+    refresh button next to the account or selecting Mailbox → Synchronize.
+
+    Use after `move_email`, `update_email_status`, or `manage_trash`
+    when downstream clients (iPhone, web mail, etc.) need to see the
+    change immediately. Mail.app's natural sync cadence is "automatic"
+    which can be several minutes — this collapses that to one IMAP push.
+
+    Implementation note:
+    --------------------
+    Uses the `synchronize with <account>` AppleScript verb (per Mail.sdef:
+    "Command to trigger synchronizing of an IMAP account with the server")
+    rather than `check for new mail`. The latter is receive-only — it
+    pulls new messages but does NOT push pending IMAP commands like
+    queued moves / archives / flag changes. With `check for new mail`,
+    archives done via `move_email` could sit in Mail.app's local cache
+    for several minutes before reaching the IMAP server, leaving iPhone
+    Mail (which reads IMAP directly) showing already-archived messages
+    still in INBOX. `synchronize with` is the bidirectional verb that
+    drains pending IMAP commands AND fetches new mail.
+
+    Mail.app's synchronize is potentially long-running. We wrap each
+    invocation in `with timeout of N seconds` so the AppleScript returns
+    promptly. When the timeout fires (error -1712) Mail.app keeps the
+    sync running in the background — exactly the fire-and-forget
+    semantics callers expect.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work"). Omit to sync every
+                 configured account.
+
+    Returns:
+        Confirmation string with the account(s) synced or queued.
+    """
+    # 8 s is comfortably longer than a healthy IMAP sync but short enough
+    # that a stuck account / network blip doesn't block the MCP call. On
+    # timeout we report "queued" — the sync continues asynchronously.
+    PER_ACCOUNT_TIMEOUT_S = 8
+
+    if account is None or not account.strip():
+        script = f'''
+        tell application "Mail"
+            set acctNames to {{}}
+            set queuedNames to {{}}
+            repeat with a in accounts
+                set acctName to name of a
+                set end of acctNames to acctName
+                try
+                    with timeout of {PER_ACCOUNT_TIMEOUT_S} seconds
+                        synchronize with a
+                    end timeout
+                on error errMsg number errNum
+                    if errNum is -1712 then
+                        set end of queuedNames to acctName
+                    end if
+                end try
+            end repeat
+            set AppleScript's text item delimiters to ", "
+            if (count of queuedNames) > 0 then
+                return "Synchronized all accounts: " & (acctNames as string) & " (queued: " & (queuedNames as string) & ")"
+            else
+                return "Synchronized all accounts: " & (acctNames as string)
+            end if
+        end tell
+        '''
+        return run_applescript(script)
+
+    acct_escaped = escape_applescript(account.strip())
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to first account whose name is "{acct_escaped}"
+            try
+                with timeout of {PER_ACCOUNT_TIMEOUT_S} seconds
+                    synchronize with targetAccount
+                end timeout
+                return "Synchronized: {acct_escaped}"
+            on error errMsg number errNum
+                if errNum is -1712 then
+                    return "Synchronizing: {acct_escaped} (queued — push in progress)"
+                end if
+                return "Error: " & errMsg
+            end try
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+    end tell
+    '''
+    return run_applescript(script)
