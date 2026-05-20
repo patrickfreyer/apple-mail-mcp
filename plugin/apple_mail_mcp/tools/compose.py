@@ -40,15 +40,19 @@ def _default_rich_draft_path(subject):
     return drafts_dir / (_safe_eml_name(subject) + ".eml")
 
 
-def _resolve_sender_address(account):
-    """Return the primary sender address for a Mail account, if available."""
+def _account_default_alias_if_single(account):
+    """Return the sole alias of `account` when it has exactly one configured
+    email address, else None. Used when no explicit sender is requested so
+    that single-address accounts still send from their own alias rather than
+    Mail's global "Send new messages from" preference.
+    """
     safe_account = escape_applescript(account)
     script = f'''
     tell application "Mail"
         try
             set targetAccount to account "{safe_account}"
             set emailAddrs to email addresses of targetAccount
-            if (count of emailAddrs) > 0 then
+            if (count of emailAddrs) is 1 then
                 return item 1 of emailAddrs
             end if
             return ""
@@ -57,9 +61,73 @@ def _resolve_sender_address(account):
         end try
     end tell
     '''
-    sender_address = run_applescript(script)
-    sender_address = sender_address.strip()
-    return sender_address or None
+    result = (run_applescript(script) or "").strip()
+    return result or None
+
+
+def _compose_sender_script(variable, account_ref, sender_override):
+    """Return AppleScript that sets the sender for a compose/reply/forward
+    outgoing message variable, respecting Mail's account-level defaults.
+
+    With `sender_override` the value is applied unconditionally. Without an
+    override, Mail's global composing preference may otherwise win over the
+    caller's account choice, so the sender is pinned to the account's only
+    alias when the account has a single address, and left untouched for
+    multi-alias accounts so the user's Mail preference stays in effect.
+    """
+    if sender_override:
+        safe_sender = escape_applescript(sender_override)
+        return f'set sender of {variable} to "{safe_sender}"'
+    return (
+        f"set emailAddrs to email addresses of {account_ref}\n"
+        f"if (count of emailAddrs) is 1 then\n"
+        f"    set sender of {variable} to item 1 of emailAddrs\n"
+        f"end if"
+    )
+
+
+def _validate_from_address(account, from_address):
+    """Return (validated_address, error_message) for a sender override.
+
+    When `from_address` is blank the override is skipped and both values
+    are None. Otherwise the candidate is matched case-insensitively
+    against the account's configured email addresses, and the original
+    casing from Mail is returned on success.
+    """
+    if from_address is None:
+        return None, None
+    candidate = from_address.strip()
+    if not candidate:
+        return None, None
+    safe_account = escape_applescript(account)
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{safe_account}"
+            set emailAddrs to email addresses of targetAccount
+            set AppleScript's text item delimiters to linefeed
+            set addrText to emailAddrs as text
+            set AppleScript's text item delimiters to ""
+            return addrText
+        on error
+            return ""
+        end try
+    end tell
+    '''
+    raw = run_applescript(script) or ""
+    aliases = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not aliases:
+        return None, (
+            f"Error: Could not read email addresses for account {account!r}."
+        )
+    lowered = {alias.lower(): alias for alias in aliases}
+    match = lowered.get(candidate.lower())
+    if not match:
+        return None, (
+            f"Error: 'from_address' {candidate!r} is not configured on account "
+            f"{account!r}. Known addresses: {', '.join(aliases)}"
+        )
+    return match, None
 
 
 _CDATA_BLOCK_PATTERN = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
@@ -163,6 +231,7 @@ def create_rich_email_draft(
     output_path: Optional[str] = None,
     open_in_mail: bool = True,
     save_as_draft: bool = False,
+    from_address: Optional[str] = None,
 ) -> str:
     """
     Create a rich-text email draft by generating an unsent `.eml` message and optionally opening it in Mail.
@@ -181,6 +250,7 @@ def create_rich_email_draft(
         output_path: Optional path for the generated `.eml` file
         open_in_mail: If True, open the generated `.eml` in Mail (default: True)
         save_as_draft: If True, ask Mail to save the opened compose window into Drafts (default: False)
+        from_address: Optional sender address to stamp into the `.eml` `From:` header. Must be one of the account's configured email addresses. When omitted, Mail fills the account's default "Send new messages from" address on open.
 
     Returns:
         Confirmation with the generated `.eml` path, missing details, and Mail-open/save status
@@ -190,6 +260,12 @@ def create_rich_email_draft(
 
     text_body = _strip_cdata_wrappers(text_body)
     html_body = _strip_cdata_wrappers(html_body)
+
+    sender_override, sender_error = _validate_from_address(account, from_address)
+    if sender_error:
+        return sender_error
+
+    sender_address = sender_override or _account_default_alias_if_single(account)
 
     recipients_to = _split_addresses(to)
     recipients_cc = _split_addresses(cc)
@@ -205,7 +281,6 @@ def create_rich_email_draft(
         missing_details.append("to")
     missing_details.extend(body_missing)
 
-    sender_address = _resolve_sender_address(account)
     message = EmailMessage()
     if subject:
         message["Subject"] = subject
@@ -272,6 +347,7 @@ def _send_html_email(
     bcc: Optional[str] = None,
     attachments_script: str = "",
     mode: str = "send",
+    sender_override: Optional[str] = None,
 ) -> str:
     """Send an HTML-formatted email via NSPasteboard clipboard injection.
 
@@ -296,6 +372,10 @@ def _send_html_email(
     if bcc:
         for addr in [a.strip() for a in bcc.split(",") if a.strip()]:
             bcc_lines += f'make new bcc recipient at end of bcc recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
+
+    sender_script = _compose_sender_script(
+        "newMsg", f'account "{safe_account}"', sender_override
+    )
 
     # Mode-specific behaviour after paste
     if mode == "send":
@@ -349,9 +429,7 @@ pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
 -- Step 2: Create compose window (empty body so signature doesn't interfere)
 tell application "Mail"
     set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
-    set emailAddrs to email addresses of account "{safe_account}"
-    set senderAddress to item 1 of emailAddrs
-    set sender of newMsg to senderAddress
+    {sender_script}
     tell newMsg
         {to_lines}
         {cc_lines}
@@ -498,6 +576,7 @@ def reply_to_email(
     mode: Optional[str] = None,
     attachments: Optional[str] = None,
     body_html: Optional[str] = None,
+    from_address: Optional[str] = None,
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -513,6 +592,7 @@ def reply_to_email(
         mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
+        from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
@@ -520,6 +600,10 @@ def reply_to_email(
 
     reply_body = _strip_cdata_wrappers(reply_body) or ""
     body_html = _strip_cdata_wrappers(body_html)
+
+    sender_override, sender_error = _validate_from_address(account, from_address)
+    if sender_error:
+        return sender_error
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -652,6 +736,10 @@ def reply_to_email(
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
     html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
 
+    sender_script = _compose_sender_script(
+        "replyMessage", "targetAccount", sender_override
+    )
+
     script = f'''
 use framework "Foundation"
 use framework "AppKit"
@@ -699,10 +787,7 @@ tell application "Mail"
             {reply_command}
             delay 0.5
 
-            -- Ensure the reply is from the correct account
-            set emailAddrs to email addresses of targetAccount
-            set senderAddress to item 1 of emailAddrs
-            set sender of replyMessage to senderAddress
+            {sender_script}
 
             -- Add CC/BCC recipients
             {cc_script}
@@ -807,6 +892,7 @@ def compose_email(
     attachments: Optional[str] = None,
     mode: str = "send",
     body_html: Optional[str] = None,
+    from_address: Optional[str] = None,
 ) -> str:
     """
     Compose and send a new email from a specific account.
@@ -821,6 +907,7 @@ def compose_email(
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
+        from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
         Confirmation message with details of the email
@@ -832,6 +919,11 @@ def compose_email(
 
     body = _strip_cdata_wrappers(body) or ""
     body_html = _strip_cdata_wrappers(body_html)
+
+    # Validate optional sender override
+    sender_override, sender_error = _validate_from_address(account, from_address)
+    if sender_error:
+        return sender_error
 
     # Validate and resolve attachments early
     attachment_script = ""
@@ -861,6 +953,7 @@ def compose_email(
             bcc=bcc,
             attachments_script=attachment_script,
             mode=mode,
+            sender_override=sender_override,
         )
 
     # --- Plain-text path: existing AppleScript approach ---
@@ -904,6 +997,10 @@ def compose_email(
         escape_applescript(attachment_info) if attachment_info else ""
     )
 
+    sender_script = _compose_sender_script(
+        "newMessage", "targetAccount", sender_override
+    )
+
     # Determine behavior per mode
     if mode == "send":
         header_text = "COMPOSING EMAIL"
@@ -931,10 +1028,7 @@ def compose_email(
             -- Create new outgoing message
             set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:{visible}}}
 
-            -- Set the sender account
-            set emailAddrs to email addresses of targetAccount
-            set senderAddress to item 1 of emailAddrs
-            set sender of newMessage to senderAddress
+            {sender_script}
 
             -- Add TO/CC/BCC recipients
             tell newMessage
@@ -995,6 +1089,7 @@ def forward_email(
     mailbox: str = "INBOX",
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
+    from_address: Optional[str] = None,
 ) -> str:
     """
     Forward an email to one or more recipients.
@@ -1007,6 +1102,7 @@ def forward_email(
         mailbox: Mailbox to search in (default: "INBOX")
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
+        from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
         Confirmation message with details of forwarded email
@@ -1014,12 +1110,20 @@ def forward_email(
 
     message = _strip_cdata_wrappers(message)
 
+    sender_override, sender_error = _validate_from_address(account, from_address)
+    if sender_error:
+        return sender_error
+
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
     safe_subject_keyword = escape_applescript(subject_keyword)
     safe_to = escape_applescript(to)
     safe_mailbox = escape_applescript(mailbox)
     escaped_message = escape_applescript(message) if message else ""
+
+    sender_script = _compose_sender_script(
+        "forwardMessage", "targetAccount", sender_override
+    )
 
     # Build CC recipients if provided
     cc_script = ""
@@ -1145,10 +1249,7 @@ tell application "Mail"
             -- Create forward
             set forwardMessage to forward foundMessage with opening window
 
-            -- Set sender account
-            set emailAddrs to email addresses of targetAccount
-            set senderAddress to item 1 of emailAddrs
-            set sender of forwardMessage to senderAddress
+            {sender_script}
 
             -- Add recipients
             {to_script}
@@ -1230,6 +1331,7 @@ def manage_drafts(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     draft_subject: Optional[str] = None,
+    from_address: Optional[str] = None,
 ) -> str:
     """
     Manage draft emails - list, create, send, open, or delete drafts.
@@ -1243,6 +1345,7 @@ def manage_drafts(
         cc: Optional CC recipients for create
         bcc: Optional BCC recipients for create
         draft_subject: Subject keyword to find draft (required for send/open/delete)
+        from_address: Optional sender address for new drafts (action="create"). Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
         Formatted output based on action
@@ -1288,9 +1391,17 @@ def manage_drafts(
         if not subject or not to or not body:
             return "Error: 'subject', 'to', and 'body' are required for creating drafts"
 
+        sender_override, sender_error = _validate_from_address(account, from_address)
+        if sender_error:
+            return sender_error
+
         escaped_subject = escape_applescript(subject)
         escaped_body = escape_applescript(body)
         safe_to = escape_applescript(to)
+
+        sender_script = _compose_sender_script(
+            "newDraft", "targetAccount", sender_override
+        )
 
         # Build TO recipients (split comma-separated)
         to_script = ""
@@ -1331,10 +1442,7 @@ def manage_drafts(
                 -- Create new outgoing message (draft)
                 set newDraft to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:false}}
 
-                -- Set the sender account
-                set emailAddrs to email addresses of targetAccount
-                set senderAddress to item 1 of emailAddrs
-                set sender of newDraft to senderAddress
+                {sender_script}
 
                 -- Add recipients
                 tell newDraft
