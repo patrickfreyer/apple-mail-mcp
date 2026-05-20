@@ -62,6 +62,24 @@ def _resolve_sender_address(account):
     return sender_address or None
 
 
+_CDATA_BLOCK_PATTERN = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
+
+
+def _strip_cdata_wrappers(text):
+    """Remove XML CDATA section markers from user-provided body content.
+
+    LLM callers occasionally wrap email bodies in `<![CDATA[...]]>`. HTML
+    parsers treat the opening `<![CDATA[` as a bogus comment that ends at
+    the first `>` in the actual content, so it's invisible — but the
+    trailing `]]>` has no preceding `<` and renders as literal text at the
+    end of the message. Strip both forms so callers don't have to know.
+    """
+    if not text:
+        return text
+    text = _CDATA_BLOCK_PATTERN.sub(r"\1", text)
+    return text.replace("<![CDATA[", "").replace("]]>", "")
+
+
 def _build_html_from_text(text_body):
     """Return a simple HTML wrapper for plain text content."""
     safe_body = html_escape(text_body or "")
@@ -169,6 +187,9 @@ def create_rich_email_draft(
     """
     if not account or not account.strip():
         return "Error: 'account' is required"
+
+    text_body = _strip_cdata_wrappers(text_body)
+    html_body = _strip_cdata_wrappers(html_body)
 
     recipients_to = _split_addresses(to)
     recipients_cc = _split_addresses(cc)
@@ -497,6 +518,9 @@ def reply_to_email(
         Confirmation message with details of the reply sent, saved draft, or opened draft
     """
 
+    reply_body = _strip_cdata_wrappers(reply_body) or ""
+    body_html = _strip_cdata_wrappers(body_html)
+
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
     safe_subject_keyword = escape_applescript(subject_keyword)
@@ -806,6 +830,9 @@ def compose_email(
     if mode not in ("send", "draft", "open"):
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
 
+    body = _strip_cdata_wrappers(body) or ""
+    body_html = _strip_cdata_wrappers(body_html)
+
     # Validate and resolve attachments early
     attachment_script = ""
     attachment_info = ""
@@ -984,6 +1011,8 @@ def forward_email(
     Returns:
         Confirmation message with details of forwarded email
     """
+
+    message = _strip_cdata_wrappers(message)
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -1218,6 +1247,8 @@ def manage_drafts(
     Returns:
         Formatted output based on action
     """
+
+    body = _strip_cdata_wrappers(body)
 
     # Escape account for all paths
     safe_account = escape_applescript(account)
