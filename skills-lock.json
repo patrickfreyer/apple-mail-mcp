@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "Plugin Structure": {
+      "source": "anthropics/claude-code",
+      "sourceType": "github",
+      "skillPath": "plugins/plugin-dev/skills/plugin-structure/SKILL.md",
+      "computedHash": "c4e9b3ea36efad4ab599465aaac71f81dc3320a183920678fe1587181c446b07"
+    },
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "9e1c8b3103f92fa8092568a44fe64858de7c5c9dc65ce4bea8f168080e889cfd"
+    }
+  }
+}
