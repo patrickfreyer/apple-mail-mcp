@@ -8,24 +8,42 @@ New or edited skills: delegate drafting to subagents; run **`plugin-dev:plugin-v
 
 **Ship new entry points as skills only.** Do not add new files under `commands/`. The existing `commands/email-management.md` stays for backward compatibility; Claude Code may auto-convert commands to skills at install time, so authoring both is duplicative.
 
-## Current and planned skills
+## Shipped skills
 
-| Directory | Status |
-|-----------|--------|
-| `email-management/` | Shipped — sustained organization & inbox zero |
-| `inbox-triage/` | Shipped — 5–10 min daily read-first scan |
-| `email-drafting/` | Planned — compose, reply, forward |
-| `email-attachments/` | Planned — download/save attachments |
+| Directory | Purpose |
+|-----------|---------|
+| `apple-mail-operator/` | MCP + Mail bootstrap, account/mailbox introspection, safe navigation, performance |
+| `inbox-triage/` | 5–10 min daily read-first scan (needs-response / awaiting-reply) |
+| `email-management/` | Umbrella sustained Inbox Zero habits and cross-cutting workflows |
+| `mailbox-taxonomy/` | Folder strategy, noise diagnosis, `create_mailbox` after approval |
+| `email-archive-cleanup/` | Staged archive / bulk move / trash with dry runs and exports |
+| `mail-rules-advisor/` | Mail filter / rule **proposals only** (no rule-creation MCP tool) |
+| `email-drafting/` | Compose, reply, forward, rich drafts; respects `--draft-safe` |
+| `email-style-profile/` | Learn writing voice from Sent mail + `USER_EMAIL_PREFERENCES` |
+| `email-attachments/` | List + save attachments safely |
+
+## Sibling routing cheat sheet
+
+| User intent | Prefer |
+|-------------|--------|
+| MCP errors, which tool, timeouts | `apple-mail-operator` |
+| Quick what's-new scan | `inbox-triage` |
+| Ongoing zero-inbox program | `email-management` |
+| Folder ontology / naming | `mailbox-taxonomy` |
+| Bulk moves / trash / export | `email-archive-cleanup` |
+| Filter text for Mail UI | `mail-rules-advisor` |
+| Draft mail | `email-drafting` |
+| Match my tone | `email-style-profile` → `email-drafting` |
+| Save PDFs / zips | `email-attachments` |
 
 ## SKILL.md conventions (summary)
 
-Follow the shipped `email-management/SKILL.md` as the canonical template. Full rules: [`docs/CLAUDE-conventions.md`](../../docs/CLAUDE-conventions.md) (Skill authoring section).
+Follow the shipped `email-management/SKILL.md` as the canonical template for umbrella depth. Narrow skills can stay shorter if they still include: purpose, triggers, performance notes, sibling matrix, destructive red lines. Full rules: [`docs/CLAUDE-conventions.md`](../../docs/CLAUDE-conventions.md) (Skill authoring section).
 
-- **Directory name == frontmatter `name`** (e.g. `email-management/`)
-- **`description`**: third-person, 4–6 quoted trigger phrases, names 3–5 central MCP tools, ends with "Do NOT use for X (see \<sibling\>)"
-- **Body**: imperative voice; top sections = purpose, when-to-use / when-NOT, performance defaults, decision tree, destructive-op caps
-- **Length**: ~1,500–2,000 words in `SKILL.md`; detail → `references/`, examples → `examples/`, scripts → `scripts/`
-- **No persona openers** ("You are an expert…")
+- **Directory name == frontmatter `name`**
+- **`description`**: third-person, 4–6 quoted triggers, name 3–5 central MCP tools, end with "Do NOT use for … (see sibling)"
+- **Body**: imperative voice; no persona openers ("You are an expert…")
+- **Length**: Larger skills target ~1,500–2,000 words; spill to `references/` as needed
 
 ## Before merging skill changes
 
@@ -35,5 +53,5 @@ Run **`plugin-dev:skill-reviewer`** on the description and body. Description qua
 
 - **`../commands/`** — Legacy slash command that delegates to `email-management/SKILL.md` via `${CLAUDE_PLUGIN_ROOT}`
 - **`../../docs/CLAUDE-conventions.md`** — Deep skill-authoring and tool rules
-- **`../apple_mail_mcp/tools/`** — MCP tools referenced in skill prose (search, inbox, compose, manage, analytics, smart_inbox)
+- **`../apple_mail_mcp/tools/`** — MCP tools referenced by skills
 - **`../.claude-plugin/plugin.json`** — Plugin manifest; skills auto-discovered from this tree

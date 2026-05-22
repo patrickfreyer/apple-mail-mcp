@@ -76,7 +76,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 
 - [ ] **Hybrid SQLite read-path** — Envelope Index spike; feature-flagged.
 - [ ] **Id-first destructive actions** — [`id-first-refactor-spec.md`](id-first-refactor-spec.md).
-- [ ] **Sibling skills** — `email-drafting`, `email-attachments` *(inbox-triage shipped; plugin uses `--draft-safe` by default)*.
+- [x] **Plugin workflow skill suite** — shipped `apple-mail-operator`, `inbox-triage`, `email-management`, `mailbox-taxonomy`, `email-archive-cleanup`, `mail-rules-advisor`, `email-drafting`, `email-style-profile`, `email-attachments`; plugin MCP defaults to `--draft-safe`.
 - [ ] **`include_timing` telemetry** on tool responses.
 - [ ] **Normalize generated wrapper JSON** — mcporter `content` wrapping vs direct dict.
 - [ ] **MCP registry submit** (`server.json`).

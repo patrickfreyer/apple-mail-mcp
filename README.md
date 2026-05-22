@@ -45,7 +45,7 @@ An MCP server that gives AI assistants full access to Apple Mail -- read, search
 
 ### Claude Code Plugin (Recommended)
 
-One install — MCP server (27 tools), `/email-management` slash command, and two skills (`email-management`, `inbox-triage`):
+One install — MCP server (27 tools), legacy `/email-management` slash command, and **nine** bundled workflow skills under `plugin/skills/` (see table below).
 
 ```bash
 claude plugin marketplace add patrickfreyer/apple-mail-mcp
@@ -357,18 +357,28 @@ This is more reliable than injecting raw HTML into AppleScript `content`, which 
 
 ## Claude Code Skills
 
-Two companion skills ship with the plugin and load automatically on install:
+Workflow skills ship with the plugin and load automatically on install (see [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) for routing):
 
 | Skill | Purpose |
 |-------|---------|
-| [`email-management`](plugin/skills/email-management/) | Sustained organization, Inbox Zero, folder workflows |
-| [`inbox-triage`](plugin/skills/inbox-triage/) | 5–10 min daily read-first scan (needs-response, awaiting-reply, top senders) |
+| [`apple-mail-operator`](plugin/skills/apple-mail-operator/) | MCP + Mail setup, accounts/mailboxes, safe navigation, performance |
+| [`inbox-triage`](plugin/skills/inbox-triage/) | 5–10 min read-first scan (needs-response, awaiting-reply) |
+| [`email-management`](plugin/skills/email-management/) | Sustained Inbox Zero habits and cross-cutting programs |
+| [`mailbox-taxonomy`](plugin/skills/mailbox-taxonomy/) | Folder strategy, noise diagnosis, structural `create_mailbox` |
+| [`email-archive-cleanup`](plugin/skills/email-archive-cleanup/) | Staged archive / bulk move / trash with dry runs + exports |
+| [`mail-rules-advisor`](plugin/skills/mail-rules-advisor/) | Mail filter / rule proposals (manual apply in Mail.app) |
+| [`email-drafting`](plugin/skills/email-drafting/) | Compose, reply, forward, rich drafts (`--draft-safe` aware) |
+| [`email-style-profile`](plugin/skills/email-style-profile/) | Learn voice from Sent mail + preferences for drafting |
+| [`email-attachments`](plugin/skills/email-attachments/) | List and save attachments with path safety |
 
-For standalone MCP installs, copy manually:
+For standalone MCP installs, copy the needed skill directories manually (example loop):
 
 ```bash
-cp -r plugin/skills/email-management ~/.claude/skills/email-management
-cp -r plugin/skills/inbox-triage ~/.claude/skills/inbox-triage
+for d in apple-mail-operator inbox-triage email-management mailbox-taxonomy \
+         email-archive-cleanup mail-rules-advisor email-drafting \
+         email-style-profile email-attachments; do
+  cp -r "plugin/skills/$d" "$HOME/.claude/skills/$d"
+done
 ```
 
 The plugin MCP server starts with **`--draft-safe`** by default (see `plugin/.claude-plugin/plugin.json`).
@@ -402,7 +412,7 @@ apple-mail-mcp/
 │   ├── .claude-plugin/
 │   │   └── plugin.json        # Plugin manifest
 │   ├── commands/              # /email-management slash command
-│   ├── skills/                # email-management + inbox-triage skills
+│   ├── skills/                # bundled workflow skills (see plugin/skills/CLAUDE.md)
 │   ├── apple_mail_mcp/        # Python MCP server package (27 tools)
 │   ├── apple_mail_mcp.py      # Entry point
 │   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)

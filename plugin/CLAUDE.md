@@ -28,7 +28,7 @@ Claude Code → /bin/bash ${CLAUDE_PLUGIN_ROOT}/start_mcp.sh → plugin/venv/bin
 ## Subfolders
 
 - **`apple_mail_mcp/`** — Python package (source of truth for all 27 MCP tools)
-- **`skills/`** — Procedural workflows (`email-management`, `inbox-triage` shipped); see `skills/CLAUDE.md`
+- **`skills/`** — Procedural workflows (nine shipped workflow skills — see `skills/CLAUDE.md`)
 - **`commands/`** — Legacy slash command; see `commands/CLAUDE.md`
 - **`ui/`** — Inbox dashboard HTML via `mcp-ui-server` (`dashboard.py`, `templates/`)
 

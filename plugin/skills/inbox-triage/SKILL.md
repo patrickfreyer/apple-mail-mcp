@@ -1,6 +1,6 @@
 ---
 name: inbox-triage
-description: This skill should be used when the user asks to "check my email", "what came in today", "what needs my attention", "morning email scan", "triage my inbox", "anything urgent in my mail", or wants a fast 5–10 minute read-only pass over Apple Mail without full inbox-zero cleanup. Uses get_inbox_overview, get_needs_response, get_awaiting_reply, list_inbox_emails, and get_email_by_id. Do NOT use for deep folder reorganization or bulk cleanup (see email-management) or composing replies (use compose MCP tools).
+description: This skill should be used when the user asks to "check my email", "what came in today", "what needs my attention", "morning email scan", "triage my inbox", "anything urgent in my mail", or wants a fast 5–10 minute read-only pass over Apple Mail without full inbox-zero cleanup. Uses get_inbox_overview, get_needs_response, get_awaiting_reply, list_inbox_emails, and get_email_by_id. Do NOT use for deep folder reorganization (mailbox-taxonomy), bulk archive or delete campaigns (email-archive-cleanup), proposing Mail filter text (mail-rules-advisor), MCP setup (apple-mail-operator), or composing replies — use email-drafting after this scan.
 ---
 
 # Inbox Triage
@@ -14,8 +14,11 @@ Fast, read-first email check for Apple Mail — what arrived, what needs a reply
 | "Check my email" / "what came in today" | Yes |
 | "What needs my attention" / "anything urgent" | Yes |
 | "Morning email scan" / "quick triage" | Yes |
-| "Clean up my inbox" / "inbox zero" | No → `email-management` |
-| "Write / reply to this email" | No → compose MCP tools (`reply_to_email`, `compose_email`, `create_rich_email_draft`, `manage_drafts`) |
+| "Clean up my inbox" / "inbox zero" / multi-week program | No → `email-management` |
+| "Folder strategy / noisy senders / rule ideas" | No → `mailbox-taxonomy` / `mail-rules-advisor` |
+| "Archive or bulk move/delete" | No → `email-archive-cleanup` |
+| "Mail MCP errors / which tool do I use?" | No → `apple-mail-operator` |
+| "Write / reply to this email" | No → `email-drafting` |
 
 ## Setup (once)
 
@@ -96,5 +99,8 @@ Do not bulk-move or trash during triage unless the user explicitly asks.
 
 ## Related skills
 
-- **`email-management`** — folder design, bulk cleanup, inbox zero sessions
-- **Compose MCP tools** — `reply_to_email`, `compose_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts` after triage identifies a message
+- **`email-management`** — sustained inbox-zero programs and cross-cutting habits  
+- **`mailbox-taxonomy`** / **`email-archive-cleanup`** / **`mail-rules-advisor`** — structure, execution, automation proposals  
+- **`email-drafting`** + **`email-style-profile`** — replies and voice alignment after triage identifies a message  
+- **`email-attachments`** — when the next action is extracting files, not reading queues  
+- **`apple-mail-operator`** — onboarding, account/mailbox introspection, troubleshooting

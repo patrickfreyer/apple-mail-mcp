@@ -64,14 +64,15 @@ fi
 cp "${SOURCE_DIR}/start_mcp.sh" "${BUILD_DIR}/"
 chmod +x "${BUILD_DIR}/start_mcp.sh"
 
-# Copy Email Management Skill
-echo -e "\n${YELLOW}Step 5: Copying Email Management Skill...${NC}"
-if [ -d "${SOURCE_DIR}/skills/email-management" ]; then
-    mkdir -p "${BUILD_DIR}/skill-email-management"
-    cp -r "${SOURCE_DIR}/skills/email-management/"* "${BUILD_DIR}/skill-email-management/"
-    echo -e "  ${GREEN}✓${NC} Email Management Expert Skill included"
+# Copy Claude Code workflow skills (mirror plugin/skills for manual install)
+echo -e "\n${YELLOW}Step 5: Copying Claude Code workflow skills...${NC}"
+if [ -d "${SOURCE_DIR}/skills" ]; then
+  mkdir -p "${BUILD_DIR}/skills"
+  cp -a "${SOURCE_DIR}/skills/." "${BUILD_DIR}/skills/"
+  SKILL_MD_COUNT="$(find "${BUILD_DIR}/skills" -name "SKILL.md" | wc -l | tr -d ' ')"
+  echo -e "  ${GREEN}✓${NC} skills/ mirrored (${SKILL_MD_COUNT} SKILL.md files)"
 else
-    echo -e "  ${YELLOW}⚠${NC} Skill directory not found (optional, skipping)"
+  echo -e "  ${YELLOW}⚠${NC} Skills directory missing at ${SOURCE_DIR}/skills — skipping skill bundle"
 fi
 
 # Copy MCP Package Directory
@@ -104,183 +105,60 @@ echo -e "  ${GREEN}✓${NC} Venv will be initialized automatically on first run 
 # Step 7: Create README
 echo -e "\n${YELLOW}Step 7: Creating README...${NC}"
 cat > "${BUILD_DIR}/README.md" << 'EOF'
-# Apple Mail MCP Server + Email Management Expert Skill
+# Apple Mail MCP bundle
 
-Natural language interface for Apple Mail with expert email management workflows.
+Portable Apple Mail MCP server for Claude Desktop **plus** a mirrored **`skills/`** tree copied from [`plugin/skills`](https://github.com/patrickfreyer/apple-mail-mcp/tree/main/plugin/skills) for Claude Code workflows.
 
-**What's Included:**
-- 🔧 **MCP Server**: 18 powerful email management tools
-- 🎓 **Expert Skill**: Comprehensive workflows and productivity strategies
+## What is inside this archive
 
-## Quick Installation
+| Path | Role |
+|------|------|
+| `apple_mail_mcp/` + `apple_mail_mcp.py` | FastMCP tool implementation (**27 tools**) |
+| `start_mcp.sh` | Creates `venv/`, installs `requirements.txt`, execs Python entry |
+| `requirements.txt` | Runtime Python dependencies |
+| `ui/` *(optional)* | MCP Apps dashboard helpers for `inbox_dashboard` |
+| `skills/` | Bundled Claude Code skills (`SKILL.md` per subdirectory) |
 
-### Step 1: Install MCP in Claude Desktop
-1. Install this .mcpb file in Claude Desktop (Developer > MCP Servers > Install from file)
-2. Grant permissions when prompted for Mail.app access
-3. Restart Claude Desktop
+For grouped tool summaries, see the upstream [`README`](https://github.com/patrickfreyer/apple-mail-mcp#readme).
 
-### Step 2: Install Email Management Skill (Recommended)
-The skill teaches Claude intelligent email workflows. Install to Claude Code:
+## Claude Desktop install (.mcpb)
 
-```bash
-# Extract skill from this bundle (or clone from repo)
-cp -r skill-email-management ~/.claude/skills/email-management
+1. Claude Desktop → **Settings → Developer → MCP Servers → Install from file** → choose this `.mcpb`.
+2. Approve Automation + Mail Data Access prompts when macOS asks.
+3. Populate **Default Mail Account** / **Email Preferences** in the MCP inspector when available.
+
+Prefer **`--draft-safe`** for shared/agent hosts; manifests typically enable it by default — override only deliberately.
+
+## Claude Code skills (manual sync)
+
+Mirror the bundle's `skills/` directory into Claude Code (`~/.claude/skills`):
+
+```
+mkdir -p ~/.claude/skills
+cp -a skills/. ~/.claude/skills/
 ```
 
-**Or manually:** Copy the `skill-email-management/` folder from this bundle to `~/.claude/skills/email-management`
+Skills included (each subfolder owns a `SKILL.md`):
 
-### Step 3: Start Using!
-Ask Claude about email management and watch the magic happen!
+- `apple-mail-operator` — MCP + Mail navigation bootstrap
+- `inbox-triage` — 5–10 minute read-first scan
+- `email-management` — sustained Inbox Zero umbrella
+- `mailbox-taxonomy` — folder taxonomy + noise diagnosis
+- `email-archive-cleanup` — staged archive / bulk move / trash with dry runs
+- `mail-rules-advisor` — Mail rule/filter proposals (**Mail UI apply only** — no MCP rule API)
+- `email-drafting` — compose/reply drafts (`--draft-safe` aware)
+- `email-style-profile` — derive voice prefs from Sent mail + `USER_EMAIL_PREFERENCES`
+- `email-attachments` — list/save attachments with path safeguards
 
-## Features
+Also copies `skills/CLAUDE.md` authoring notes — safe to ignore for runtime.
 
-### Email Reading & Search
-- **List Inbox Emails**: View all emails across accounts or filter by specific account
-- **Search with Content**: Find emails by subject with full content preview
-- **Recent Emails**: Get the most recent messages from any account
-- **Unread Count**: Quick overview of unread emails per account
+## Operational notes
 
-### Email Organization
-- **List Mailboxes**: View all folders/mailboxes with message counts
-- **Move Emails**: Move messages between folders using subject keywords
-- Supports nested mailboxes (e.g., "Projects/Amplify Impact")
+- Keep **`DEFAULT_MAIL_ACCOUNT`** set when multiple accounts fan out slowly.
+- Use narrow `recent_days` / caps before escalating cross-account AppleScript workloads.
+- `export_emails`, `save_email_attachment`, compose send paths imply disk or dispatch risk — preview + confirm.
 
-### Email Composition
-- **Reply to Emails**: Reply to messages matching subject keywords
-- **Compose New Emails**: Send new emails with TO, CC, and BCC
-- Reply to all recipients option
-
-### Attachment Management
-- **List Attachments**: View all attachments with names and sizes
-- **Save Attachments**: Download specific attachments to disk
-
-## Key Tools
-
-### `list_inbox_emails`
-List all emails from your inbox:
-- Filter by account name (e.g., "Gmail", "Work")
-- Limit number of emails returned
-- Filter read/unread status
-
-### `get_email_with_content`
-Search for emails with content preview:
-- Search by subject keyword
-- Specify account to search
-- Configurable content length
-- Returns full email details
-
-### `list_mailboxes`
-View folder structure:
-- List all folders for an account or all accounts
-- Shows message counts (total and unread)
-- Displays nested folder hierarchy
-
-### `move_email`
-Organize your inbox:
-- Move emails by subject keyword
-- Supports nested mailboxes with "/" separator
-- Safety limit on number of moves
-- Example: Move to "Projects/Amplify Impact"
-
-### `reply_to_email`
-Respond to messages:
-- Search by subject keyword
-- Custom reply body
-- Reply to sender or all recipients
-- Sends immediately
-
-### `compose_email`
-Send new emails:
-- Specify sender account
-- TO, CC, and BCC recipients
-- Custom subject and body
-- Immediate sending
-
-### `list_email_attachments`
-View attachments:
-- Search by subject keyword
-- Shows attachment names and sizes
-- List for multiple matching emails
-
-### `save_email_attachment`
-Download attachments:
-- Search by subject keyword
-- Specify attachment name
-- Save to custom path
-
-## 🎓 About the Email Management Skill
-
-The included skill transforms Claude into an expert email management assistant:
-
-**Intelligent Workflows:**
-- ✅ Inbox Zero methodology
-- ✅ Daily email triage (10-15 min routines)
-- ✅ Folder organization strategies
-- ✅ Advanced search patterns
-- ✅ Bulk cleanup operations
-
-**What You Get:**
-- 3,500+ lines of email productivity expertise
-- 6 comprehensive workflow documents
-- Copy-paste ready templates
-- Industry best practices (GTD, Inbox Zero)
-- Context-aware suggestions
-
-**Example Queries with Skill:**
-- "Help me achieve inbox zero" → Full workflow guidance
-- "Triage my inbox" → Quick daily routine
-- "How should I organize my project emails?" → Structure recommendations
-- "Clean up old emails" → Safe cleanup process
-
-## Configuration
-
-**Email Preferences (Optional):**
-Configure preferences in Claude Desktop settings under this MCP to customize behavior:
-- Default email account
-- Preferred maximum results
-- Frequently used folders
-
-**MCP Configuration:**
-No additional configuration required! Uses your Apple Mail accounts.
-
-## Permissions
-
-On first run, macOS will prompt for permissions:
-- **Mail.app Control**: Required to automate Mail
-- **Mail Data Access**: Required to read email content
-
-Grant these permissions for full functionality.
-
-## Usage Examples
-
-Ask Claude:
-- "Show me all unread emails in my Gmail account"
-- "Search for emails about 'project update' in my work account"
-- "Move emails with 'meeting' in the subject to my Archive folder"
-- "Reply to the email about 'Domain name' with 'Thanks for the update!'"
-- "List all attachments in emails about 'invoice'"
-- "Compose an email to john@example.com with subject 'Hello' from my personal account"
-- "What folders do I have in my work account?"
-
-## Requirements
-
-- macOS with Apple Mail configured
-- Python 3.10+
-- Mail app with at least one account configured
-- Appropriate macOS permissions granted
-
-## Notes
-
-- Email operations require Mail.app to be running
-- Some operations (like fetching content) may be slower than metadata-only operations
-- Exchange accounts may have different mailbox structures
-- Moving and replying to emails includes safety limits
-- Email sending is immediate - use with caution
-
-## Support
-
-For issues or questions:
-- GitHub: https://github.com/patrickfreyer/apple-mail-mcp
+Support & source: https://github.com/patrickfreyer/apple-mail-mcp
 EOF
 
 # Step 7: Create the MCPB package
@@ -321,13 +199,10 @@ echo -e "  2. Navigate to Developer > MCP Servers"
 echo -e "  3. Click 'Install from file' and select the .mcpb file"
 echo -e "  4. Grant Mail.app permissions when prompted"
 echo -e "  5. Restart Claude Desktop"
-echo -e "\n${GREEN}Step 2: Install Email Management Skill (Recommended)${NC}"
-echo -e "  Extract and install the skill to Claude Code:"
-echo -e "  ${YELLOW}unzip -q \"${OUTPUT_FILE}\" skill-email-management -d /tmp/${NC}"
-echo -e "  ${YELLOW}cp -r /tmp/skill-email-management ~/.claude/skills/email-management${NC}"
-echo -e "\n  Or extract the .mcpb and manually copy the skill-email-management/ folder"
-echo -e "\n${GREEN}What You Get:${NC}"
-echo -e "  🔧 MCP Server: 18 powerful email management tools"
-echo -e "  🎓 Expert Skill: Intelligent workflows and productivity strategies"
-echo -e "\nThis bundle provides comprehensive email management for Claude,"
-echo -e "combining powerful tools with expert workflow knowledge!"
+echo -e "\n${GREEN}Step 2: Copy bundled skills to Claude Code (optional)${NC}"
+echo -e "  ${YELLOW}unzip -q \"${OUTPUT_FILE}\" -d /tmp/am-mcp${NC}"
+echo -e "  ${YELLOW}mkdir -p \"$HOME/.claude/skills\"${NC}"
+echo -e "  ${YELLOW}cp -a /tmp/am-mcp/skills/. \"$HOME/.claude/skills/\"${NC}"
+echo -e "\n${GREEN}What ships:${NC}"
+echo -e "  FastMCP server with ${GREEN}27${NC} tools + mirrored plugin workflow skills/"
+echo -e "\nUpstream docs: https://github.com/patrickfreyer/apple-mail-mcp#readme"

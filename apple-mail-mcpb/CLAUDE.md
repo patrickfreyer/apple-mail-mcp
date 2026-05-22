@@ -11,7 +11,7 @@ Build files for the **`.mcpb`** distributable. Same Python server as [`plugin/`]
 cd apple-mail-mcpb && ./build-mcpb.sh
 ```
 
-Copies `apple_mail_mcp.py`, `start_mcp.sh`, `requirements.txt`, `apple_mail_mcp/`, optional skill + `ui/`. No venv in bundle — user machine creates it via `start_mcp.sh`. Keep embedded README Python 3.10+ claim in sync.
+Copies `apple_mail_mcp.py`, `start_mcp.sh`, `requirements.txt`, `apple_mail_mcp/`, mirrored `plugin/skills` → **`skills/`** in build output, optional `ui/`. No venv in bundle — user machine creates it via `start_mcp.sh`. Keep embedded README Python 3.10+ claim in sync.
 
 ## tools[] must match code
 

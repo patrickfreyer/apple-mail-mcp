@@ -12,7 +12,7 @@
     {
       "name": "apple-mail",
       "source": "./plugin",
-      "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools plus email-management and inbox-triage skills",
+      "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools plus bundled Claude Code workflow skills (Mail operator, triage, inbox zero, taxonomy, archiving, Mail rules advisor, drafting, attachments, writing style)",
       "version": "3.1.5",
       "author": {
         "name": "Patrick Freyer"

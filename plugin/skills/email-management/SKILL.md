@@ -1,21 +1,23 @@
 ---
 name: email-management
-description: This skill should be used when the user asks to "help me get to inbox zero", "clean up my inbox", "organize my email", "set up folders", "I'm drowning in email", or otherwise wants to organize or reduce volume in their Apple Mail inbox. Covers folder structure design, bulk cleanup with safety limits, and Inbox Zero methodology using the apple-mail MCP tools (get_inbox_overview, search_emails, move_email, update_email_status, manage_trash, get_statistics). Do NOT use for composing or replying to a specific message (use compose MCP tools), a quick read-first scan of recent mail (see inbox-triage), or attachment handling (use list_email_attachments and save_email_attachment).
+description: This skill should be used when the user asks to "help me get to inbox zero", "clean up my inbox", "daily email habits", "build a repeatable triage program", or "I'm drowning in email" and needs sustained inbox-zero coaching plus cross-cutting workflows across this MCP using get_inbox_overview, search_emails, move_email, update_email_status, manage_trash, and get_statistics. Do NOT use for tooling-only onboarding (see apple-mail-operator), focused folder-architecture redesign without execution (mailbox-taxonomy), Mail filter prose only (mail-rules-advisor), a 5-minute read-first scan only (inbox-triage), or drafting voice capture (email-style-profile before email-drafting).
 ---
 
 # Email Management
 
-Sustained inbox organization for Apple Mail: daily triage routines, folder structure design, bulk cleanup, and Inbox Zero methodology. This skill is about ongoing habits and structural cleanup, not one-off message actions.
+Sustained inbox organization for Apple Mail: repeatable processing habits plus Inbox Zero programs that combine reading, queues, guarded moves/trash, and analytics. Prefer narrow sibling skills (`mailbox-taxonomy`, `email-archive-cleanup`, `mail-rules-advisor`, `email-drafting`, `apple-mail-operator`) when the user intent is clearly one-shot or specialized — use this umbrella when they want coordinated multi-week cleanup or habitual discipline.
 
 ## When To Use This Skill
 
-Use when the request is about reducing inbox volume, designing or reshaping a folder layout, building a sustainable triage habit, or running a safe bulk cleanup.
+Use when the request is about reducing inbox volume through **habitual** processing, combining analytics with guarded moves/trash, or coaching an Inbox Zero cadence that may span multiple skill handoffs.
 
 Do NOT use for:
 
-- Composing or replying to a specific message — use compose MCP tools (`compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`).
-- A one-off pass over the last N hours of mail — see `inbox-triage`.
-- Downloading or saving attachments — use `list_email_attachments` and `save_email_attachment`.
+- Composing or replying to a specific message — route to **`email-drafting`** (still uses compose MCP tools under the hood).
+- A brief read-first scan — see **`inbox-triage`**.
+- Saving attachments — see **`email-attachments`**.
+- Pure Mail MCP setup / timeouts — see **`apple-mail-operator`**.
+- Designing folder ontology without agreeing execution path — **`mailbox-taxonomy`** (then **`email-archive-cleanup`** once moves ship).
 
 For finding a single specific email, call `search_emails()` directly without invoking this skill.
 
@@ -33,12 +35,15 @@ When in doubt, run a narrow query first and widen only if results are insufficie
 
 | Request signal | Route to |
 |----------------|----------|
-| "Help me get to inbox zero" / "clean up my inbox" / "organize email" | This skill |
-| "Write an email to..." / "reply to..." / "draft a..." | Compose MCP tools (`compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`) |
-| "Triage what came in today" / "what needs my attention right now" | `inbox-triage` |
-| "Save the attachment from..." | `list_email_attachments` / `save_email_attachment` |
-| "Find the email about X" | Call `search_emails()` directly |
-| "Delete all emails from..." / "archive everything older than..." | This skill, Cleanup section |
+| "Help me get to inbox zero" / "daily habits" | This skill |
+| "How does this MCP work?" / timeouts | `apple-mail-operator` |
+| "What came in today / needs reply NOW" | `inbox-triage` |
+| "Design folder layout / taxonomy brainstorm" | `mailbox-taxonomy` |
+| Staged archival / bulk deletes with dry runs | `email-archive-cleanup` |
+| Newsletter noise — propose Mail rules prose | `mail-rules-advisor` |
+| Compose / drafts | `email-drafting` (+ `email-style-profile` beforehand) |
+| Attachments extraction | `email-attachments` |
+| Single lookup | Prefer `apple-mail-operator` cheat sheet vs loading this umbrella |
 
 ## Destructive Operations — Safety Caps
 
@@ -71,13 +76,13 @@ Goal: process inbox to zero or near-zero in 15 to 30 minutes. For a **5–10 min
 1. Get overview: `get_inbox_overview()` to see unread counts, recent messages, and suggested actions.
 2. Surface priorities: `get_needs_response(days_back=2, max_results=10)` for likely replies; optionally `get_awaiting_reply(days_back=7)` for follow-ups you sent. Use keyword `search_emails` only when the user names a topic.
 3. Drill down: after list/search returns a `message_id`, use `get_email_by_id(message_id=...)` for full content — do not re-search by subject.
-3. Decide per message using the four-option rule: respond, defer, file, or delete.
-   - For responses, use compose MCP tools (`reply_to_email`, `compose_email`, `create_rich_email_draft`).
+4. Decide per message using the four-option rule: respond, defer, file, or delete.
+   - For responses, defer to **`email-drafting`** (compose MCP stack).
    - To defer, flag with `update_email_status(action="flag", subject_keyword="...")`.
    - To file, use `move_email(to_mailbox="...", max_moves=1)`.
    - To delete, use `manage_trash(action="move_to_trash")` with an explicit cap.
-4. Mark processed batches read: `update_email_status(action="mark_read", ...)`.
-5. End the session by re-running `get_inbox_overview()` to confirm the queue is drained.
+5. Mark processed batches read: `update_email_status(action="mark_read", ...)`.
+6. End the session by re-running `get_inbox_overview()` to confirm the queue is drained.
 
 Tips:
 
@@ -91,8 +96,8 @@ Goal: keep folder structure healthy and archive aging messages.
 
 1. Review structure: `list_mailboxes(include_counts=True)`.
 2. Identify clutter: mailboxes with more than 1,000 messages or with a high unread ratio.
-3. Analyze patterns: `get_statistics(scope="account_overview")` plus `get_top_senders()`. Full guidance lives in `references/analytics.md`.
-4. Adjust folders: create or rename mailboxes inside Apple Mail (the MCP cannot create folders via AppleScript reliably; `create_mailbox` works for nested mailboxes but confirm with the user first).
+3. Analyze patterns: `get_statistics(scope="account_overview")` plus `get_top_senders()`. For per-folder volume, prefer `list_mailboxes(include_counts=True)`; when calling `get_statistics(scope="mailbox_breakdown")`, pass explicit `mailbox=` — omitting it scopes to the default Inbox in code. Full guidance lives in `references/analytics.md`.
+4. Adjust folders: collaborate with **`mailbox-taxonomy`** for naming; create net-new folders with `create_mailbox` after explicit confirmation (rename/delete heavy work still occurs in Mail UI when needed).
 5. Bulk-organize by sender or date:
    - `search_emails(sender="...", recent_days=0)` then `move_email(sender="...", to_mailbox="...", max_moves=N)`.
    - `search_emails(date_to="YYYY-MM-DD", recent_days=0)` then move to an archive folder.
@@ -107,9 +112,9 @@ Goal: drain the inbox by processing every message exactly once.
 1. Survey: `get_inbox_overview()` and `get_statistics(scope="account_overview")` to size the problem.
 2. Process top-down with the five-D framework on each message:
    - Delete: spam, expired notifications — `manage_trash(action="move_to_trash")`.
-   - Delegate: forward via `forward_email`.
+   - Delegate: forward — use **`email-drafting`** (`forward_email` tool) after user confirms recipients.
    - Defer: flag and move to a "Follow Up" mailbox.
-   - Do: respond now if under two minutes (`reply_to_email` or `compose_email`).
+   - Do: respond now if under two minutes — use **`email-drafting`** (compose stack); never auto-send under `--draft-safe`.
    - File: `move_email(to_mailbox="...")` for reference material.
 3. Keep folders sparing: an "Action Required", "Waiting For", and "Reference" trio handles most cases.
 4. Maintain daily — Inbox Zero is a habit, not a one-time event.
@@ -135,7 +140,7 @@ Mindset:
 | Search email bodies | `search_emails(body_text="...", include_content=True)` | Slower; use when subject is unknown |
 | Cross-account search | `search_emails(account=None, all_accounts=True)` | Costly on Exchange; use sparingly |
 | Recent inbox listing | `list_inbox_emails(max_emails=50)` | Default cap is 50 |
-| View a conversation | `get_email_thread(subject_keyword="...")` | See `references/thread-management.md` |
+| View a conversation | `get_email_thread(account="...", subject_keyword="...", mailbox="INBOX", recent_days=2)` — `account` required; widen `mailbox`/`recent_days` only when needed |
 | Move messages | `move_email(..., max_moves=N)` | Default cap is 1 |
 | Flag / mark read | `update_email_status(action="...", max_updates=N)` | Default cap is 10 |
 | Move to trash / delete | `manage_trash(action="...", max_deletes=N)` | See `references/bulk-cleanup.md` |
