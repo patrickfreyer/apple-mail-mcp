@@ -23,7 +23,9 @@ claude plugin marketplace add .
 claude plugin install apple-mail@apple-mail-mcp
 ```
 
-After edits: `plugin-dev:plugin-validator` + `tools/validate_manifests.sh`.
+Installs the MCP server (27 tools, **`--draft-safe`** by default) plus **nine** auto-discovered workflow skills under `plugin/skills/` — see [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md).
+
+After edits: `plugin-dev:plugin-validator` + `tools/validate_manifests.sh` (+ `plugin-dev:skill-reviewer` when skills change).
 
 ## Related
 

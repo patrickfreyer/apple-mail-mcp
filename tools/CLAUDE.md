@@ -50,7 +50,7 @@ bash tools/pre-commit-validate.sh
 
 `.github/workflows/ci.yml` (Ubuntu, Python 3.10): `validate_manifests.sh` then `pytest tests/ -q`. Same gate as pre-commit; live Mail is manual ([`docs/AGENT_LIVE_TESTING.md`](../docs/AGENT_LIVE_TESTING.md)).
 
-Run after tool add/remove, version bump, or mcpb `tools[]` edit. Supplement with **`plugin-dev:plugin-validator`** when available.
+Run after tool add/remove, version bump, mcpb `tools[]` edit, or plugin skill marketing copy in manifests. Supplement with **`plugin-dev:plugin-validator`** when available; add **`plugin-dev:skill-reviewer`** when editing `plugin/skills/*/SKILL.md`.
 
 ## Related
 

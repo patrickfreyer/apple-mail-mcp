@@ -86,7 +86,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 ## Maintenance
 
 - After `tools/*.py`: `.venv/bin/pytest tests/ -q` (221 tests).
-- After manifests/skills: `tools/validate_manifests.py` + `plugin-dev:plugin-validator`.
+- After manifests/skills: `bash tools/validate_manifests.sh` + `plugin-dev:plugin-validator` (+ `plugin-dev:skill-reviewer` for skill body/frontmatter).
 - Live gate: `export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"` then `perf-test --include-analysis --json`.
 
 ---
@@ -95,7 +95,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 
 See [`archive/2026-05-21/README.md`](archive/2026-05-21/README.md). Highlights:
 
-- [x] 27 tools, 206 tests at 3.1.6 archive *(217 tests now)*, manifest CI guards, ToolAnnotations on all tools.
+- [x] 27 tools, 206 tests at 3.1.6 archive *(221 tests now)*, manifest CI guards, ToolAnnotations on all tools.
 - [x] `quick-check` / `perf-test` / `smoke-test` CLI + `docs/AGENT_LIVE_TESTING.md`.
 - [x] `inbox_dashboard` async fix, account validation, scan caps (Phase 2).
 - [x] Compose → `run_applescript()`, address dedup, `SENSITIVE_DIRS` in core.

@@ -1,6 +1,6 @@
 # Phase Plan — 3.1.7
 
-**Branch:** `improve-speed-and-tools` · **Tests:** 217 *(baseline doc: 206)* · **Version:** 3.1.5 (bump to 3.1.6/3.1.7 at release)  
+**Branch:** `improve-speed-and-tools` · **Tests:** 221 *(baseline doc: 206)* · **Version:** 3.1.5 (bump to 3.1.6/3.1.7 at release)
 **Baseline:** [`live-test-baseline-2026-05-21.md`](live-test-baseline-2026-05-21.md) · root [`LIVE_MCP_CLI_TESTING_REPORT_2026-05-21.md`](../LIVE_MCP_CLI_TESTING_REPORT_2026-05-21.md)  
 **Backlog:** [`todo.md`](todo.md) · **Archive:** [`archive/2026-05-21/`](archive/2026-05-21/)
 
@@ -14,7 +14,7 @@
 2. **Production-scale accounts** (`cayman@agenticassets.ai`, 194 mailboxes) — metadata and overview breach thresholds; functional behavior is correct.
 3. **Analysis / triage tools** — `needs-response`, `awaiting-reply`, `top-senders`, `get_statistics account_overview` are 6–24s and **not covered by `perf-test`**, so regressions slip through.
 
-Do **not** start hybrid SQLite, sibling skills, or id-first destructive refactors until analysis perf is benchmarked and gated.
+Do **not** start hybrid SQLite or id-first destructive refactors until analysis perf is benchmarked and gated. **Plugin workflow skills** (nine under `plugin/skills/`) shipped — see [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md).
 
 ## Sequence
 
@@ -123,7 +123,7 @@ Parallel OK within a phase for **different modules** (e.g. `list_mailboxes` vs `
 - [ ] **`id-first-refactor-spec.md`** — schedule as 3.1.8 (not blocking release).
 - [x] **`inbox-triage` skill** — shipped (`plugin/skills/inbox-triage/`).
 - [x] **Plugin `--draft-safe` default** — `plugin.json` `mcpServers` args include `--draft-safe`.
-- [ ] Sibling skills **`email-drafting`**, **`email-attachments`** — still paused until Phase 2 green.
+- [x] **Plugin workflow skill suite** — nine skills under `plugin/skills/` (operator, triage, management, taxonomy, archive, rules advisor, drafting, style profile, attachments).
 
 **Done when:** `plugin-validator` green · live production perf-test green · CI green.
 
@@ -135,7 +135,7 @@ Parallel OK within a phase for **different modules** (e.g. `list_mailboxes` vs `
 2. `pytest tests/ -q` after every tool change
 3. `apple-mail --help` command-surface check before closing Phase 1
 4. `perf-test --include-analysis --account cayman@agenticassets.ai --json` before closing Phase 2
-5. `plugin-dev:plugin-validator` after manifest/skill changes
+5. `plugin-dev:plugin-validator` after manifest/skill marketing copy changes; `plugin-dev:skill-reviewer` after skill body/frontmatter edits
 
 ## Quick commands
 
@@ -149,5 +149,5 @@ export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"
 apple-mail --help                                                  # wrapper command-surface check
 .venv/bin/apple-mail needs-response --days 2
 .venv/bin/apple-mail statistics --scope account_overview --days 2 --json
-tools/validate_manifests.py
+tools/validate_manifests.sh
 ```

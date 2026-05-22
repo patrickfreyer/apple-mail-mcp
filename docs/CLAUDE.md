@@ -5,14 +5,14 @@ Human- and agent-facing docs that survive outside the codebase. Plugin skills an
 ## Agent orchestration
 
 - Use **subagents** for research **and** implementation (not research-only).
-- Use **plugin-dev experts** (`plugin-dev:plugin-validator`, `plugin-dev:plugin-architect`) whenever docs or conventions touch manifests, skills, or MCP integration.
+- Use **plugin-dev experts** (`plugin-dev:plugin-validator`, `plugin-dev:plugin-architect`, `plugin-dev:skill-reviewer`) whenever docs or conventions touch manifests, skills, or MCP integration.
 
 ## Files
 
 | Doc | Audience | Purpose |
 |-----|----------|---------|
 | [`AGENT_LIVE_TESTING.md`](AGENT_LIVE_TESTING.md) | Coding agents, maintainers | Live Mail verification via repo `.venv/bin/apple-mail` CLI |
-| [`CLAUDE-conventions.md`](CLAUDE-conventions.md) | All agents editing Python/tools | Deep rules: perf, escaping, versioning, skills, plugin-dev agents |
+| [`CLAUDE-conventions.md`](CLAUDE-conventions.md) | All agents editing Python/tools/skills | Deep rules: perf, escaping, versioning, skill authoring, plugin-dev agents |
 
 ## Who reads what
 
@@ -20,9 +20,29 @@ Human- and agent-facing docs that survive outside the codebase. Plugin skills an
 
 **Verifying against real Mail.app** → [`AGENT_LIVE_TESTING.md`](AGENT_LIVE_TESTING.md): setup, permissions, `quick-check` / `perf-test` batteries, safe probes, MCP env vars (`DEFAULT_MAIL_ACCOUNT`, `USER_EMAIL_PREFERENCES`).
 
-**Plugin shell / manifests / skills** → [`plugin/CLAUDE.md`](../plugin/CLAUDE.md), [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md), [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md). Run `plugin-dev:plugin-validator` after manifest edits.
+**Plugin shell / manifests / skills** → [`plugin/CLAUDE.md`](../plugin/CLAUDE.md), [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md), [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md), [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md). Run `plugin-dev:plugin-validator` after manifest edits; `plugin-dev:skill-reviewer` after skill edits.
 
 **Planning / backlog** → [`tasks/CLAUDE.md`](../tasks/CLAUDE.md) and [`tasks/todo.md`](../tasks/todo.md).
+
+## Plugin workflow skills (Claude Code)
+
+Nine skills ship under [`plugin/skills/`](../plugin/skills/) and auto-load with the Claude Code plugin install. They teach **when** and **how** to call the 27 MCP tools — they do not implement tool logic.
+
+| Skill | Use when the user wants… |
+|-------|---------------------------|
+| [`apple-mail-operator`](../plugin/skills/apple-mail-operator/) | MCP setup, accounts/mailboxes, safe read/search, performance troubleshooting |
+| [`inbox-triage`](../plugin/skills/inbox-triage/) | 5–10 min read-first scan (needs-response, awaiting-reply) |
+| [`email-management`](../plugin/skills/email-management/) | Sustained Inbox Zero habits and cross-cutting programs |
+| [`mailbox-taxonomy`](../plugin/skills/mailbox-taxonomy/) | Folder strategy, noise diagnosis, structural `create_mailbox` |
+| [`email-archive-cleanup`](../plugin/skills/email-archive-cleanup/) | Staged archive / bulk move / trash with dry runs + exports |
+| [`mail-rules-advisor`](../plugin/skills/mail-rules-advisor/) | Mail filter / rule **proposals** (manual apply in Mail.app — no rule API) |
+| [`email-drafting`](../plugin/skills/email-drafting/) | Compose, reply, forward, rich drafts (`--draft-safe` aware) |
+| [`email-style-profile`](../plugin/skills/email-style-profile/) | Voice from Sent mail + `USER_EMAIL_PREFERENCES` before drafting |
+| [`email-attachments`](../plugin/skills/email-attachments/) | List and save attachments with path safety |
+
+**Routing index:** [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md) (sibling cheat sheet). **Authoring rules:** [`CLAUDE-conventions.md`](CLAUDE-conventions.md) § Skill authoring. **User install blurb:** root [`README.md`](../README.md) § Claude Code Skills.
+
+Legacy slash command: `/email-management` only — all new entry points are skills-only ([`plugin/commands/CLAUDE.md`](../plugin/commands/CLAUDE.md)).
 
 ## AGENT_LIVE_TESTING.md structure
 

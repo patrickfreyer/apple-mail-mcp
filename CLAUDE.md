@@ -31,7 +31,7 @@ Do not solo large plugin or perf workstreams without at least one plugin-dev exp
 | Plugin wrapper, `start_mcp.sh`, manifests | [`plugin/CLAUDE.md`](plugin/CLAUDE.md) |
 | Package entry, `core.py`, `server.py`, CLI | [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) |
 | Individual MCP tools | [`plugin/apple_mail_mcp/tools/CLAUDE.md`](plugin/apple_mail_mcp/tools/CLAUDE.md) |
-| Skills (`email-management`, …) | [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) |
+| Skills (9 workflow skills) | [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) |
 | Legacy slash commands | [`plugin/commands/CLAUDE.md`](plugin/commands/CLAUDE.md) |
 | Tests & mocking AppleScript | [`tests/CLAUDE.md`](tests/CLAUDE.md) |
 | Manifest validation, pre-commit | [`tools/CLAUDE.md`](tools/CLAUDE.md) |
