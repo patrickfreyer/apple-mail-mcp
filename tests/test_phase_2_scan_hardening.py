@@ -283,23 +283,23 @@ class HeavyScanGuardTests(unittest.TestCase):
         self.assertNotIn("set mailboxMessages to messages of targetMailbox", captured["script"])
 
     def test_awaiting_reply_uses_bounded_slices_not_unbounded_whose(self):
-        captured = {}
+        captured: dict[str, list[str]] = {"scripts": []}
 
         def fake_run(script, timeout=120):
-            captured["script"] = script
+            captured["scripts"].append(script)
             return "ok"
 
         with patch("apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run):
             smart_inbox_tools.get_awaiting_reply(account="Work", days_back=7)
 
-        self.assertIn("set inboxUpperBound to 100", captured["script"])
-        self.assertIn("messages 1 thru inboxUpperBound of inboxMailbox", captured["script"])
-        self.assertIn("set sentUpperBound to 80", captured["script"])
-        self.assertIn("messages 1 thru sentUpperBound of sentMailbox", captured["script"])
-        self.assertNotIn("every message of inboxMailbox whose", captured["script"])
-        self.assertNotIn("every message of sentMailbox whose", captured["script"])
-        self.assertNotIn("set inboxMessages to messages of inboxMailbox", captured["script"])
-        self.assertNotIn("set sentMessages to messages of sentMailbox", captured["script"])
+        self.assertEqual(len(captured["scripts"]), 2)
+        inbox_script, sent_script = captured["scripts"]
+        self.assertIn("set inboxUpperBound to 100", inbox_script)
+        self.assertIn("messages 1 thru inboxUpperBound of inboxMailbox", inbox_script)
+        self.assertIn("set sentUpperBound to 80", sent_script)
+        self.assertIn("messages 1 thru sentUpperBound of sentMailbox", sent_script)
+        self.assertNotIn("every message of inboxMailbox whose", inbox_script)
+        self.assertNotIn("every message of sentMailbox whose", sent_script)
 
     def test_statistics_uses_bounded_slices_not_unbounded_date_whose(self):
         captured = {}

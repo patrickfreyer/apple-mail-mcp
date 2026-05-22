@@ -1,6 +1,8 @@
 """Smart inbox tools: follow-up tracking, actionable email detection, and sender analytics."""
 
+import asyncio
 from collections import Counter
+from dataclasses import dataclass
 from typing import Optional
 
 from apple_mail_mcp import server as _server
@@ -70,6 +72,258 @@ def _newsletter_filter_condition(sender_var: str = "messageSender") -> str:
     return f"({platform_checks} or {keyword_checks})"
 
 
+def _strip_subject_prefixes(subject: str) -> str:
+    base = subject.strip()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in THREAD_PREFIXES:
+            if base.casefold().startswith(prefix.casefold()):
+                base = base[len(prefix) :].lstrip()
+                changed = True
+                break
+    return base
+
+
+def _is_noreply_recipient(address: str) -> bool:
+    lower = address.casefold()
+    return any(
+        token in lower
+        for token in ("noreply", "no-reply", "do-not-reply", "donotreply")
+    )
+
+
+def _sent_mailbox_script(var_name: str, account_var: str) -> str:
+    return f'''
+            set {var_name} to missing value
+            try
+                set {var_name} to mailbox "Sent Messages" of {account_var}
+            on error
+                try
+                    set {var_name} to mailbox "Sent" of {account_var}
+                on error
+                    try
+                        set {var_name} to mailbox "Sent Items" of {account_var}
+                    on error
+                        return "Error: Could not find Sent mailbox"
+                    end try
+                end try
+            end try
+    '''
+
+
+@dataclass(frozen=True)
+class _AwaitingReplyInboxRow:
+    subject: str
+    sender: str
+
+
+@dataclass(frozen=True)
+class _AwaitingReplySentRow:
+    subject: str
+    recipient_address: str
+    recipient_name: str
+    sent_at: str
+
+
+def _subjects_likely_match(sent_subject: str, inbox_subject: str) -> bool:
+    sent_base = _strip_subject_prefixes(sent_subject)
+    inbox_base = _strip_subject_prefixes(inbox_subject)
+    sent_fold = sent_base.casefold()
+    inbox_fold = inbox_base.casefold()
+    return inbox_fold in sent_fold or sent_fold in inbox_fold
+
+
+def _inbox_sender_matches_recipient(inbox_sender: str, recipient_address: str) -> bool:
+    return recipient_address.casefold() in inbox_sender.casefold()
+
+
+def _parse_awaiting_reply_inbox_rows(raw: str) -> list[_AwaitingReplyInboxRow]:
+    rows: list[_AwaitingReplyInboxRow] = []
+    for line in raw.splitlines():
+        if not line.startswith("INBOX|||"):
+            continue
+        parts = line.split("|||", 2)
+        if len(parts) == 3:
+            rows.append(_AwaitingReplyInboxRow(subject=parts[1], sender=parts[2]))
+    return rows
+
+
+def _parse_awaiting_reply_sent_rows(raw: str) -> list[_AwaitingReplySentRow]:
+    rows: list[_AwaitingReplySentRow] = []
+    for line in raw.splitlines():
+        if not line.startswith("SENT|||"):
+            continue
+        parts = line.split("|||", 4)
+        if len(parts) == 5:
+            rows.append(
+                _AwaitingReplySentRow(
+                    subject=parts[1],
+                    recipient_address=parts[2],
+                    recipient_name=parts[3],
+                    sent_at=parts[4],
+                )
+            )
+    return rows
+
+
+def _has_reply_in_inbox(
+    sent_row: _AwaitingReplySentRow,
+    inbox_rows: list[_AwaitingReplyInboxRow],
+) -> bool:
+    for inbox_row in inbox_rows:
+        if not _subjects_likely_match(sent_row.subject, inbox_row.subject):
+            continue
+        if _inbox_sender_matches_recipient(
+            inbox_row.sender, sent_row.recipient_address
+        ):
+            return True
+    return False
+
+
+def _format_awaiting_reply_results(
+    *,
+    account: str,
+    days_back: int,
+    sent_rows: list[_AwaitingReplySentRow],
+    inbox_rows: list[_AwaitingReplyInboxRow],
+    exclude_noreply: bool,
+    max_results: int,
+) -> str:
+    lines = [
+        "EMAILS AWAITING REPLY",
+        f"Account: {account} | Last {days_back} days",
+        "========================================",
+        "",
+    ]
+    awaiting: list[_AwaitingReplySentRow] = []
+    for sent_row in sent_rows:
+        if len(awaiting) >= max_results:
+            break
+        if exclude_noreply and _is_noreply_recipient(sent_row.recipient_address):
+            continue
+        if _has_reply_in_inbox(sent_row, inbox_rows):
+            continue
+        awaiting.append(sent_row)
+
+    for index, sent_row in enumerate(awaiting, start=1):
+        if sent_row.recipient_name:
+            display_recip = (
+                f"{sent_row.recipient_name} <{sent_row.recipient_address}>"
+            )
+        else:
+            display_recip = sent_row.recipient_address
+        lines.append(f"{index}. {sent_row.subject}")
+        lines.append(f"   To: {display_recip}")
+        lines.append(f"   Sent: {sent_row.sent_at}")
+        lines.append("")
+
+    lines.append("========================================")
+    lines.append(f"Found {len(awaiting)} sent email(s) awaiting reply.")
+    return "\n".join(lines)
+
+
+def _build_awaiting_reply_inbox_script(
+    *,
+    escaped_account: str,
+    inbox_cap: int,
+    days_back: int,
+) -> str:
+    inbox_date_check = (
+        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    )
+    return f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{escaped_account}"
+            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
+            {date_cutoff_script(days_back, "cutoffDate")}
+
+            set inboxMessages to {{}}
+            set inboxCount to count of messages of inboxMailbox
+            if inboxCount > {inbox_cap} then
+                set inboxUpperBound to {inbox_cap}
+            else
+                set inboxUpperBound to inboxCount
+            end if
+            if inboxUpperBound > 0 then
+                set inboxMessages to messages 1 thru inboxUpperBound of inboxMailbox
+            end if
+
+            set outputLines to {{}}
+            repeat with aMessage in inboxMessages
+                try
+                    set messageDate to date received of aMessage
+                    {inbox_date_check}
+                    set msgSubject to subject of aMessage
+                    set msgSender to sender of aMessage
+                    set end of outputLines to "INBOX|||" & msgSubject & "|||" & msgSender
+                end try
+            end repeat
+
+            set AppleScript's text item delimiters to linefeed
+            return outputLines as string
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+    end tell
+    '''
+
+
+def _build_awaiting_reply_sent_script(
+    *,
+    escaped_account: str,
+    sent_cap: int,
+    days_back: int,
+) -> str:
+    sent_date_check = (
+        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    )
+    return f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{escaped_account}"
+            {_sent_mailbox_script("sentMailbox", "targetAccount")}
+            {date_cutoff_script(days_back, "cutoffDate")}
+
+            set sentMessages to {{}}
+            set sentCount to count of messages of sentMailbox
+            if sentCount > {sent_cap} then
+                set sentUpperBound to {sent_cap}
+            else
+                set sentUpperBound to sentCount
+            end if
+            if sentUpperBound > 0 then
+                set sentMessages to messages 1 thru sentUpperBound of sentMailbox
+            end if
+
+            set outputLines to {{}}
+            repeat with aMessage in sentMessages
+                try
+                    set messageDate to date sent of aMessage
+                    {sent_date_check}
+                    set messageSubject to subject of aMessage
+                    set messageRecipients to every to recipient of aMessage
+                    if (count of messageRecipients) > 0 then
+                        set recipAddr to address of item 1 of messageRecipients
+                        set recipName to ""
+                        try
+                            set recipName to name of item 1 of messageRecipients
+                        end try
+                        set end of outputLines to "SENT|||" & messageSubject & "|||" & recipAddr & "|||" & recipName & "|||" & (messageDate as string)
+                    end if
+                end try
+            end repeat
+
+            set AppleScript's text item delimiters to linefeed
+            return outputLines as string
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+    end tell
+    '''
+
+
 @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_awaiting_reply(
@@ -108,180 +362,50 @@ def get_awaiting_reply(
 
     escaped_account = escape_applescript(account)
 
-    # Cap collection sizes using direct newest-first slices. Avoid broad
-    # `every message ... whose date ...` filters: Mail.app may materialize
-    # deep remote mailboxes before applying the filter, which can trigger
-    # large background downloads.
     sent_cap = min(max(max_results * 4, 50), 100)
     inbox_cap = 100
-    inbox_date_check = (
-        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    inbox_script = _build_awaiting_reply_inbox_script(
+        escaped_account=escaped_account,
+        inbox_cap=inbox_cap,
+        days_back=days_back,
     )
-    sent_date_check = (
-        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    sent_script = _build_awaiting_reply_sent_script(
+        escaped_account=escaped_account,
+        sent_cap=sent_cap,
+        days_back=days_back,
     )
+    effective_timeout = timeout if timeout is not None else 120
 
-    noreply_filter = ""
-    if exclude_noreply:
-        # A4c: case-insensitive substring checks via `ignoring case`, no
-        # per-message shell-out for lowercasing.
-        noreply_filter = '''
-                            ignoring case
-                                if recipAddr contains "noreply" or recipAddr contains "no-reply" or recipAddr contains "do-not-reply" or recipAddr contains "donotreply" then
-                                    set skipThis to true
-                                end if
-                            end ignoring
-'''
-
-    script = f'''
-    tell application "Mail"
-        set outputText to "EMAILS AWAITING REPLY" & return
-        set outputText to outputText & "Account: {escaped_account} | Last {days_back} days" & return
-        set outputText to outputText & "========================================" & return & return
-
-        {date_cutoff_script(days_back, "cutoffDate")}
-
-        try
-            set targetAccount to account "{escaped_account}"
-
-            -- Get Sent mailbox
-            set sentMailbox to missing value
-            try
-                set sentMailbox to mailbox "Sent Messages" of targetAccount
-            on error
-                try
-                    set sentMailbox to mailbox "Sent" of targetAccount
-                on error
-                    try
-                        set sentMailbox to mailbox "Sent Items" of targetAccount
-                    on error
-                        return "Error: Could not find Sent mailbox for account {escaped_account}"
-                    end try
-                end try
-            end try
-
-            -- Get Inbox mailbox
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-
-            -- Collect subjects from a bounded newest-first inbox slice.
-            set inboxSubjects to {{}}
-            set inboxSenders to {{}}
-            set inboxMessages to {{}}
-            set inboxCount to count of messages of inboxMailbox
-            if inboxCount > {inbox_cap} then
-                set inboxUpperBound to {inbox_cap}
-            else
-                set inboxUpperBound to inboxCount
-            end if
-            if inboxUpperBound > 0 then
-                set inboxMessages to messages 1 thru inboxUpperBound of inboxMailbox
-            end if
-
-            repeat with aMessage in inboxMessages
-                try
-                    set messageDate to date received of aMessage
-                    {inbox_date_check}
-                    set msgSubject to subject of aMessage
-                    set msgSender to sender of aMessage
-                    set baseSubject to my stripPrefixes(msgSubject)
-                    set end of inboxSubjects to baseSubject
-                    set end of inboxSenders to msgSender
-                end try
-            end repeat
-
-            -- Now scan a bounded newest-first sent slice.
-            set sentMessages to {{}}
-            set sentCount to count of messages of sentMailbox
-            if sentCount > {sent_cap} then
-                set sentUpperBound to {sent_cap}
-            else
-                set sentUpperBound to sentCount
-            end if
-            if sentUpperBound > 0 then
-                set sentMessages to messages 1 thru sentUpperBound of sentMailbox
-            end if
-
-            set resultCount to 0
-            set checkedCount to 0
-
-            repeat with aMessage in sentMessages
-                if resultCount >= {max_results} then exit repeat
-
-                try
-                    set messageDate to date sent of aMessage
-                    {sent_date_check}
-                    set messageSubject to subject of aMessage
-                    set messageRecipients to every to recipient of aMessage
-
-                    if (count of messageRecipients) > 0 then
-                        set recipAddr to address of item 1 of messageRecipients
-                        set recipName to ""
-                        try
-                            set recipName to name of item 1 of messageRecipients
-                        end try
-
-                        set skipThis to false
-                        {noreply_filter}
-
-                        if not skipThis then
-                            -- Strip prefixes from sent subject and check inbox
-                            set baseSubject to my stripPrefixes(messageSubject)
-
-                            -- Check if there is a reply in inbox from this recipient about this subject.
-                            -- A4c: case-insensitive matching via `ignoring case`, not per-message
-                            -- shell lowercase.
-                            set foundReply to false
-                            set idx to 1
-                            ignoring case
-                                repeat with inboxSubj in inboxSubjects
-                                    set inboxSubjText to inboxSubj as string
-                                    if inboxSubjText contains baseSubject or baseSubject contains inboxSubjText then
-                                        set inboxSender to item idx of inboxSenders as string
-                                        if inboxSender contains recipAddr then
-                                            set foundReply to true
-                                            exit repeat
-                                        end if
-                                    end if
-                                    set idx to idx + 1
-                                end repeat
-                            end ignoring
-
-                            if not foundReply then
-                                set resultCount to resultCount + 1
-                                set displayRecip to recipAddr
-                                if recipName is not "" then
-                                    set displayRecip to recipName & " <" & recipAddr & ">"
-                                end if
-                                set outputText to outputText & resultCount & ". " & messageSubject & return
-                                set outputText to outputText & "   To: " & displayRecip & return
-                                set outputText to outputText & "   Sent: " & (messageDate as string) & return & return
-                            end if
-                        end if
-                    end if
-                end try
-            end repeat
-
-            set outputText to outputText & "========================================" & return
-            set outputText to outputText & "Found " & resultCount & " sent email(s) awaiting reply." & return
-
-        on error errMsg
-            return "Error: " & errMsg
-        end try
-
-        return outputText
-    end tell
-
-    {_strip_subject_prefixes_script()}
-    '''
+    async def _fetch_rows() -> tuple[str, str]:
+        return await asyncio.gather(
+            asyncio.to_thread(
+                run_applescript, inbox_script, timeout=effective_timeout
+            ),
+            asyncio.to_thread(
+                run_applescript, sent_script, timeout=effective_timeout
+            ),
+        )
 
     try:
-        return run_applescript(script, timeout=timeout)
+        inbox_raw, sent_raw = asyncio.run(_fetch_rows())
     except AppleScriptTimeout:
-        wait_s = timeout if timeout is not None else 120
         return (
             f"Error: get_awaiting_reply timed out on account '{account}' after "
-            f"{wait_s}s — try increasing timeout or reducing days_back"
+            f"{effective_timeout}s — try increasing timeout or reducing days_back"
         )
+
+    for raw in (inbox_raw, sent_raw):
+        if raw.startswith("Error:"):
+            return raw
+
+    return _format_awaiting_reply_results(
+        account=account,
+        days_back=days_back,
+        sent_rows=_parse_awaiting_reply_sent_rows(sent_raw),
+        inbox_rows=_parse_awaiting_reply_inbox_rows(inbox_raw),
+        exclude_noreply=exclude_noreply,
+        max_results=max_results,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)

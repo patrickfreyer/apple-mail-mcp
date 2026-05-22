@@ -42,7 +42,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 
 ### `get_awaiting_reply` / `get_top_senders`
 
-- [ ] Async dual-script pattern for awaiting-reply.
+- [x] Async dual-script pattern for awaiting-reply.
 - [x] Finish Python-side aggregation for top-senders (`Counter` + lower `scan_cap`).
 
 **Verify:** `.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account cayman@agenticassets.ai --json` all green.
