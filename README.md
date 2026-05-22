@@ -38,6 +38,34 @@ Then restart Claude Code.
 ### Other Install Methods
 
 <details>
+<summary><strong>Repo CLI + MCP runtime</strong></summary>
+
+This fork includes a maintained `apple-mail` CLI that wraps the same Python
+tool code as the MCP server. It is meant for humans, shell scripts, smoke
+tests, and agents on another Mac.
+
+```bash
+git clone https://github.com/agenticassets/apple-mail-mcp.git
+cd apple-mail-mcp
+python3 -m venv .venv
+.venv/bin/pip install -e .
+
+.venv/bin/apple-mail accounts --json
+.venv/bin/apple-mail search --account "Gmail" --query "invoice" --limit 10 --json
+.venv/bin/apple-mail show --account "Gmail" --id 12345 --json
+.venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
+.venv/bin/apple-mail smoke-test --account "Gmail" --json
+```
+
+Generate draft-safe Claude/OpenClaw MCP config from the same checkout:
+
+```bash
+.venv/bin/apple-mail mcp-config --repo "$(pwd)"
+```
+
+</details>
+
+<details>
 <summary><strong>uvx (zero install, MCP server only)</strong></summary>
 
 ```bash
@@ -223,6 +251,32 @@ Move emails with "invoice" in the subject to my Archive folder
 Show me email statistics for the last 30 days
 Create a rich HTML draft for a weekly update and open it in Mail
 ```
+
+## CLI
+
+Install from a repo checkout:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
+
+Common commands:
+
+```bash
+apple-mail accounts --json
+apple-mail addresses --json
+apple-mail inbox --account "Gmail" --limit 10 --json
+apple-mail search --account "Gmail" --query "invoice" --limit 10 --json
+apple-mail show --account "Gmail" --id 12345 --json
+apple-mail mailboxes --account "Gmail" --json
+apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
+apple-mail mcp-config --repo "$(pwd)"
+apple-mail smoke-test --account "Gmail" --json
+```
+
+The CLI keeps write operations draft-first. It intentionally does not expose
+send/delete shortcuts; use the MCP tools with `--draft-safe` for shared agents.
 
 ### Rich HTML Drafts
 
