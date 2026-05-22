@@ -30,7 +30,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 
 ### `get_statistics` / `account_overview` (~24s → target &lt;12s)
 
-- [ ] Lower scan defaults for short `days_back` (10 mailboxes × 100 messages).
+- [x] Lower scan defaults for short `days_back` (10 mailboxes × 100 messages when `days_back <= 7`; else 20 × 500).
 - [ ] Prefer **`unread count of aMailbox`** over per-message unread scan where scope allows.
 - [ ] Replace silent `on error` skips with **`errors[]`** in response.
 

@@ -320,6 +320,13 @@ def _statistics_json_error(
     return payload
 
 
+def _statistics_scan_caps(days_back: int) -> tuple[int, int]:
+    """Return (max_mailboxes, max_messages_per_mailbox) for overview/sender scans."""
+    if days_back > 0 and days_back <= 7:
+        return 10, 100
+    return 20, 500
+
+
 @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_statistics(
@@ -334,11 +341,12 @@ def get_statistics(
     """
     Get comprehensive email statistics and analytics.
 
-    For ``account_overview`` and ``sender_stats``, scans the 20 largest
-    mailboxes on the account, up to 500 most-recent messages each, to keep
-    AppleScript wall time predictable on Exchange / Gmail accounts with deep
-    history. ``mailbox_breakdown`` is bounded by Mail.app's own count APIs
-    and is not capped.
+    For ``account_overview`` and ``sender_stats``, scans a bounded slice of
+    mailboxes and newest messages (``days_back <= 7``: 10 mailboxes × 100
+    messages; longer windows: 20 × 500) so AppleScript wall time stays
+    predictable on Exchange / Gmail accounts with deep history.
+    ``mailbox_breakdown`` is bounded by Mail.app's own count APIs and is not
+    capped.
 
     Args:
         account: Account name (e.g., "Gmail", "Work"). Falls back to
@@ -387,9 +395,7 @@ def get_statistics(
     escaped_sender = escape_applescript(sender) if sender else None
     escaped_mailbox = escape_applescript(mailbox) if mailbox else None
 
-    # Caps for the triple-nested scan. See module docstring above.
-    max_mailboxes = 20
-    max_messages_per_mailbox = 500
+    max_mailboxes, max_messages_per_mailbox = _statistics_scan_caps(days_back)
 
     # Calculate date threshold if days_back > 0
     date_filter = ""
@@ -441,11 +447,16 @@ def get_statistics(
                             -- `every message ... whose date ...` filters:
                             -- Mail.app may materialize remote mailboxes before
                             -- filtering and trigger large downloads.
-                            try
-                                set mailboxMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
-                            on error
-                                set mailboxMessages to messages of aMailbox
-                            end try
+                            set mailboxMessages to {{}}
+                            set mailboxMessageCount to count of messages of aMailbox
+                            if mailboxMessageCount > {max_messages_per_mailbox} then
+                                set mailboxUpperBound to {max_messages_per_mailbox}
+                            else
+                                set mailboxUpperBound to mailboxMessageCount
+                            end if
+                            if mailboxUpperBound > 0 then
+                                set mailboxMessages to messages 1 thru mailboxUpperBound of aMailbox
+                            end if
                             set mailboxTotal to 0
 
                             repeat with aMessage in mailboxMessages
@@ -595,11 +606,16 @@ def get_statistics(
                         -- Skip system folders
                         if {skip_folder_checks} then
 
-                            try
-                                set matchedMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
-                            on error
-                                set matchedMessages to messages of aMailbox
-                            end try
+                            set matchedMessages to {{}}
+                            set mailboxMessageCount to count of messages of aMailbox
+                            if mailboxMessageCount > {max_messages_per_mailbox} then
+                                set mailboxUpperBound to {max_messages_per_mailbox}
+                            else
+                                set mailboxUpperBound to mailboxMessageCount
+                            end if
+                            if mailboxUpperBound > 0 then
+                                set matchedMessages to messages 1 thru mailboxUpperBound of aMailbox
+                            end if
 
                             repeat with aMessage in matchedMessages
                                 try

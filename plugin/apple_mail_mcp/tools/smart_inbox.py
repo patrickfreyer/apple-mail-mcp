@@ -166,11 +166,16 @@ def get_awaiting_reply(
             -- Collect subjects from a bounded newest-first inbox slice.
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
-            try
-                set inboxMessages to messages 1 thru {inbox_cap} of inboxMailbox
-            on error
-                set inboxMessages to messages of inboxMailbox
-            end try
+            set inboxMessages to {{}}
+            set inboxCount to count of messages of inboxMailbox
+            if inboxCount > {inbox_cap} then
+                set inboxUpperBound to {inbox_cap}
+            else
+                set inboxUpperBound to inboxCount
+            end if
+            if inboxUpperBound > 0 then
+                set inboxMessages to messages 1 thru inboxUpperBound of inboxMailbox
+            end if
 
             repeat with aMessage in inboxMessages
                 try
@@ -185,11 +190,16 @@ def get_awaiting_reply(
             end repeat
 
             -- Now scan a bounded newest-first sent slice.
-            try
-                set sentMessages to messages 1 thru {sent_cap} of sentMailbox
-            on error
-                set sentMessages to messages of sentMailbox
-            end try
+            set sentMessages to {{}}
+            set sentCount to count of messages of sentMailbox
+            if sentCount > {sent_cap} then
+                set sentUpperBound to {sent_cap}
+            else
+                set sentUpperBound to sentCount
+            end if
+            if sentUpperBound > 0 then
+                set sentMessages to messages 1 thru sentUpperBound of sentMailbox
+            end if
 
             set resultCount to 0
             set checkedCount to 0
@@ -375,11 +385,16 @@ def get_needs_response(
             end try
 
             if sentMailbox is not missing value then
-                try
-                    set sentMessages to messages 1 thru {sent_cap} of sentMailbox
-                on error
-                    set sentMessages to messages of sentMailbox
-                end try
+                set sentMessages to {{}}
+                set sentCount to count of messages of sentMailbox
+                if sentCount > {sent_cap} then
+                    set sentUpperBound to {sent_cap}
+                else
+                    set sentUpperBound to sentCount
+                end if
+                if sentUpperBound > 0 then
+                    set sentMessages to messages 1 thru sentUpperBound of sentMailbox
+                end if
                 repeat with aMessage in sentMessages
                     try
                         set sentSubj to subject of aMessage
@@ -392,11 +407,16 @@ def get_needs_response(
             -- Scan a bounded newest-first slice. Do not use a broad `whose`
             -- filter here; Mail.app can materialize deep remote mailboxes
             -- before filtering and start large background downloads.
-            try
-                set mailboxMessages to messages 1 thru {inbox_cap} of targetMailbox
-            on error
-                set mailboxMessages to messages of targetMailbox
-            end try
+            set mailboxMessages to {{}}
+            set mailboxCount to count of messages of targetMailbox
+            if mailboxCount > {inbox_cap} then
+                set mailboxUpperBound to {inbox_cap}
+            else
+                set mailboxUpperBound to mailboxCount
+            end if
+            if mailboxUpperBound > 0 then
+                set mailboxMessages to messages 1 thru mailboxUpperBound of targetMailbox
+            end if
 
             set highPriority to {{}}
             set normalPriority to {{}}

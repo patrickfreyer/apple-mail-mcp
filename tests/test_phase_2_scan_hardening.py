@@ -277,8 +277,10 @@ class HeavyScanGuardTests(unittest.TestCase):
         with patch("apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run):
             smart_inbox_tools.get_needs_response(account="Work", days_back=7)
 
-        self.assertIn("messages 1 thru 100 of targetMailbox", captured["script"])
+        self.assertIn("set mailboxUpperBound to 100", captured["script"])
+        self.assertIn("messages 1 thru mailboxUpperBound of targetMailbox", captured["script"])
         self.assertNotIn("every message of targetMailbox whose", captured["script"])
+        self.assertNotIn("set mailboxMessages to messages of targetMailbox", captured["script"])
 
     def test_awaiting_reply_uses_bounded_slices_not_unbounded_whose(self):
         captured = {}
@@ -290,10 +292,14 @@ class HeavyScanGuardTests(unittest.TestCase):
         with patch("apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run):
             smart_inbox_tools.get_awaiting_reply(account="Work", days_back=7)
 
-        self.assertIn("messages 1 thru 100 of inboxMailbox", captured["script"])
-        self.assertIn("messages 1 thru 80 of sentMailbox", captured["script"])
+        self.assertIn("set inboxUpperBound to 100", captured["script"])
+        self.assertIn("messages 1 thru inboxUpperBound of inboxMailbox", captured["script"])
+        self.assertIn("set sentUpperBound to 80", captured["script"])
+        self.assertIn("messages 1 thru sentUpperBound of sentMailbox", captured["script"])
         self.assertNotIn("every message of inboxMailbox whose", captured["script"])
         self.assertNotIn("every message of sentMailbox whose", captured["script"])
+        self.assertNotIn("set inboxMessages to messages of inboxMailbox", captured["script"])
+        self.assertNotIn("set sentMessages to messages of sentMailbox", captured["script"])
 
     def test_statistics_uses_bounded_slices_not_unbounded_date_whose(self):
         captured = {}
@@ -309,8 +315,11 @@ class HeavyScanGuardTests(unittest.TestCase):
                 days_back=2,
             )
 
-        self.assertIn("messages 1 thru 500 of aMailbox", captured["script"])
+        self.assertIn("set mailboxUpperBound to 100", captured["script"])
+        self.assertIn("1 thru 10", captured["script"])
+        self.assertIn("messages 1 thru mailboxUpperBound of aMailbox", captured["script"])
         self.assertNotIn("every message of aMailbox whose date received", captured["script"])
+        self.assertNotIn("set mailboxMessages to messages of aMailbox", captured["script"])
 
 
 if __name__ == "__main__":

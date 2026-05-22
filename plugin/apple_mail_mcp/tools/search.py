@@ -219,51 +219,23 @@ def _build_search_script(
     escaped_sender = escape_applescript(sender) if sender else None
     use_body_search = body_text is not None
 
-    # Build whose-clause filter conditions (only used when NOT doing body search)
-    filter_conditions: List[str] = []
-    if not use_body_search:
-        if subject_terms:
-            filter_conditions.append(contains_any_condition("subject", subject_terms))
-        if sender:
-            filter_conditions.append(f'sender contains "{escaped_sender}"')
-        if has_attachments is not None:
-            if has_attachments:
-                filter_conditions.append("(count of mail attachments) > 0")
-            else:
-                filter_conditions.append("(count of mail attachments) = 0")
-        if read_status == "read":
-            filter_conditions.append("read status is true")
-        elif read_status == "unread":
-            filter_conditions.append("read status is false")
-        if date_from:
-            filter_conditions.append("date received >= fromDate")
-        if date_to:
-            filter_conditions.append("date received <= toDate")
-
     collect_limit = limit + 1  # +1 for has_more probe; offset is decremented separately
     # A1 cap includes offset because matching messages are skipped *after* binding.
     scan_cap = collect_limit + offset
 
-    if filter_conditions:
-        # A1: bind the whose-filtered list once, then immediately cap to
-        # scanCap so subsequent field access doesn't materialize every
-        # remaining matching message in a 24K-message Exchange mailbox.
-        matching_messages_script = (
-            f"set matchingMessages to (every message of currentMailbox whose "
-            f"{' and '.join(filter_conditions)})\n"
-            f"                                if (count of matchingMessages) > {scan_cap} then "
-            f"set matchingMessages to items 1 thru {scan_cap} of matchingMessages"
-        )
-    else:
-        # A1: no filter — still cap by binding messages 1 thru N rather than
-        # `every message`, which forces Mail to enumerate the whole mailbox.
-        matching_messages_script = (
-            f"if (count of messages of currentMailbox) > {scan_cap} then\n"
-            f"                                    set matchingMessages to messages 1 thru {scan_cap} of currentMailbox\n"
-            f"                                else\n"
-            f"                                    set matchingMessages to messages of currentMailbox\n"
-            f"                                end if"
-        )
+    bounded_candidate_script = f'''
+                            set matchingMessages to {{}}
+                            set candidateMessages to {{}}
+                            set messageCount to count of messages of currentMailbox
+                            if messageCount > {scan_cap} then
+                                set scanUpperBound to {scan_cap}
+                            else
+                                set scanUpperBound to messageCount
+                            end if
+                            if scanUpperBound > 0 then
+                                set candidateMessages to messages 1 thru scanUpperBound of currentMailbox
+                            end if
+    '''
 
     if mailbox == "All":
         mailbox_script = """
@@ -302,49 +274,46 @@ def _build_search_script(
                 set searchAccounts to {{account "{escaped_account}"}}
         '''
 
-    # Build body search per-message filter block
+    # Build per-message filter block. Avoid broad `every message ... whose`
+    # filters because Mail.app can materialize remote mailboxes before applying
+    # them. We bind a bounded newest-first slice, then filter in that slice.
+    escaped_body = escape_applescript(body_text.lower()) if body_text else ""
+    per_msg_conditions: List[str] = []
+    if subject_terms:
+        subject_checks = " or ".join(
+            f'messageSubject contains "{escape_applescript(t)}"'
+            for t in subject_terms
+        )
+        per_msg_conditions.append(f"({subject_checks})")
+    if sender:
+        per_msg_conditions.append(
+            f'messageSender contains "{escape_applescript(sender)}"'
+        )
+    if read_status == "read":
+        per_msg_conditions.append("messageRead is true")
+    elif read_status == "unread":
+        per_msg_conditions.append("messageRead is false")
+    if date_from:
+        per_msg_conditions.append("messageDate >= fromDate")
+    if date_to:
+        per_msg_conditions.append("messageDate <= toDate")
+    if has_attachments is True:
+        per_msg_conditions.append("(count of mail attachments of aMessage) > 0")
+    elif has_attachments is False:
+        per_msg_conditions.append("(count of mail attachments of aMessage) = 0")
     if use_body_search:
-        escaped_body = escape_applescript(body_text.lower()) if body_text else ""
-        # A4c: case-insensitive checks via `ignoring case`, no shell handler.
-        per_msg_conditions: List[str] = []
-        if subject_terms:
-            subject_checks = " or ".join(
-                f'messageSubject contains "{escape_applescript(t)}"'
-                for t in subject_terms
-            )
-            per_msg_conditions.append(f"({subject_checks})")
-        if sender:
-            per_msg_conditions.append(
-                f'messageSender contains "{escape_applescript(sender)}"'
-            )
-        if read_status == "read":
-            per_msg_conditions.append("messageRead is true")
-        elif read_status == "unread":
-            per_msg_conditions.append("messageRead is false")
-        if date_from:
-            per_msg_conditions.append("messageDate >= fromDate")
-        if date_to:
-            per_msg_conditions.append("messageDate <= toDate")
-        if has_attachments is True:
-            per_msg_conditions.append("(count of mail attachments of aMessage) > 0")
-        elif has_attachments is False:
-            per_msg_conditions.append("(count of mail attachments of aMessage) = 0")
-
-        # Body text condition is always present in body search mode
         per_msg_conditions.append(f'msgContent contains "{escaped_body}"')
 
+    if per_msg_conditions:
         combined_condition = " and ".join(per_msg_conditions)
-
-        # A1 + A4c: cap the candidate set via `messages 1 thru collectLimit`
-        # so body search on a 24K-mailbox doesn't enumerate every message,
-        # and use `ignoring case` instead of an O(N) shell-out per message.
-        body_search_loop = f'''
-                            set matchingMessages to {{}}
-                            if (count of messages of currentMailbox) > {scan_cap} then
-                                set candidateMessages to messages 1 thru {scan_cap} of currentMailbox
-                            else
-                                set candidateMessages to messages of currentMailbox
-                            end if
+        content_read_block = """
+                                        set msgContent to ""
+                                        try
+                                            set msgContent to content of aMessage
+                                        end try
+        """ if use_body_search else ""
+        message_collection = f'''
+                                {bounded_candidate_script}
                             ignoring case
                                 repeat with aMessage in candidateMessages
                                     if (count of matchingMessages) >= {scan_cap} then exit repeat
@@ -353,10 +322,7 @@ def _build_search_script(
                                         set messageSender to sender of aMessage
                                         set messageRead to read status of aMessage
                                         set messageDate to date received of aMessage
-                                        set msgContent to ""
-                                        try
-                                            set msgContent to content of aMessage
-                                        end try
+                                        {content_read_block}
                                         if {combined_condition} then
                                             set end of matchingMessages to aMessage
                                         end if
@@ -365,13 +331,10 @@ def _build_search_script(
                             end ignoring
         '''
     else:
-        body_search_loop = ""
-
-    # Choose the message collection strategy
-    if use_body_search:
-        message_collection = body_search_loop
-    else:
-        message_collection = f"                                {matching_messages_script}"
+        message_collection = f'''
+                                {bounded_candidate_script}
+                            set matchingMessages to candidateMessages
+        '''
 
     script = f'''
     on sanitize_field(value)
@@ -1136,13 +1099,14 @@ def get_email_thread(
     max_messages: int = 50,
     recent_days: float = 2.0,
     timeout: Optional[int] = None,
+    allow_full_scan: bool = False,
 ) -> str:
     """
     Get an email conversation thread - all messages with the same or similar subject.
 
-    Defaults to the last 48 hours. Pass ``recent_days=0`` to scan the capped
-    head of the mailbox without a date window. Subject matching is
-    case-insensitive.
+    Defaults to the last 48 hours. ``recent_days=0`` requires
+    ``allow_full_scan=True`` and scans only the capped newest-message head
+    without a date window. Subject matching is case-insensitive.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
@@ -1150,8 +1114,9 @@ def get_email_thread(
         mailbox: Mailbox to search in (default: "INBOX", use "All" for all mailboxes)
         max_messages: Maximum number of thread messages to return (default: 50)
         recent_days: Only scan messages received within this many days (default: 2.0
-            = 48h). Set to 0 to disable the date window.
+            = 48h). Set to 0 only with allow_full_scan=True.
         timeout: Optional AppleScript timeout in seconds (default: 120).
+        allow_full_scan: Required explicit opt-in for `recent_days=0`.
 
     Returns:
         Formatted thread view with all related messages sorted by date
@@ -1165,6 +1130,11 @@ def get_email_thread(
         return "Error: max_messages must be > 0"
 
     effective_recent_days = float(recent_days) if recent_days else 0.0
+    if effective_recent_days <= 0 and not allow_full_scan:
+        return (
+            "Error: recent_days=0 requires allow_full_scan=True. "
+            "Unbounded thread scans can make Mail.app fetch a large message backlog."
+        )
     effective_timeout = timeout if timeout is not None else 120
 
     # Escape user inputs for AppleScript
@@ -1189,21 +1159,19 @@ def get_email_thread(
         window_line = f"Window: last {effective_recent_days}d"
 
     scan_cap = max_messages
-    if effective_recent_days > 0:
-        candidate_collection = f'''
-                                set candidateMessages to (every message of currentMailbox whose date received >= cutoffDate)
-                                if (count of candidateMessages) > {scan_cap} then
-                                    set candidateMessages to items 1 thru {scan_cap} of candidateMessages
-                                end if
-        '''
-    else:
-        candidate_collection = f'''
-                                if (count of messages of currentMailbox) > {scan_cap} then
-                                    set candidateMessages to messages 1 thru {scan_cap} of currentMailbox
+    date_check = "if messageDate < cutoffDate then exit repeat" if effective_recent_days > 0 else ""
+    candidate_collection = f'''
+                                set candidateMessages to {{}}
+                                set messageCount to count of messages of currentMailbox
+                                if messageCount > {scan_cap} then
+                                    set scanUpperBound to {scan_cap}
                                 else
-                                    set candidateMessages to messages of currentMailbox
+                                    set scanUpperBound to messageCount
                                 end if
-        '''
+                                if scanUpperBound > 0 then
+                                    set candidateMessages to messages 1 thru scanUpperBound of currentMailbox
+                                end if
+    '''
 
     mailbox_script = f'''
         try
@@ -1253,6 +1221,8 @@ def get_email_thread(
 
                             try
                                 set messageSubject to subject of aMessage
+                                set messageDate to date received of aMessage
+                                {date_check}
                                 set cleanSubject to my stripThreadPrefixes(messageSubject)
                                 if cleanSubject contains "{escaped_keyword}" or messageSubject contains "{escaped_keyword}" then
                                     set end of threadMessages to aMessage

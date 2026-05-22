@@ -271,14 +271,14 @@ class WhoseAndCapTests(unittest.TestCase):
                 account="X", days_back=7, max_results=5
             )
         script = cap.last_script
-        self.assertIn("messages 1 thru 100 of inboxMailbox", script)
-        self.assertIn("messages 1 thru 50 of sentMailbox", script)
+        self.assertIn("set inboxUpperBound to 100", script)
+        self.assertIn("messages 1 thru inboxUpperBound of inboxMailbox", script)
+        self.assertIn("set sentUpperBound to 50", script)
+        self.assertIn("messages 1 thru sentUpperBound of sentMailbox", script)
         self.assertNotIn("every message of inboxMailbox whose", script)
         self.assertNotIn("every message of sentMailbox whose", script)
 
-    def test_manage_move_email_emits_whose_and_cap(self):
-        # Dry-run move_email delegates to the search helper; capture the
-        # script there. The search helper builds the same whose+cap shape.
+    def test_manage_move_email_dry_run_uses_bounded_search(self):
         cap = _ScriptCapture(return_value="ok")
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=cap):
             manage_tools.move_email(
@@ -289,11 +289,8 @@ class WhoseAndCapTests(unittest.TestCase):
                 dry_run=True,
             )
         script = cap.last_script
-        self.assertIn("whose", script)
-        # Search helper applies a script-side cap derived from
-        # limit=max_moves+1=6 (plus its own offset/collectLimit overhead).
-        # Just verify a cap appears.
-        self.assertRegex(script, r"items 1 thru \d+")
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", script)
+        self.assertNotIn("every message of currentMailbox whose", script)
 
     def test_analytics_get_statistics_uses_documented_caps(self):
         cap = _ScriptCapture(return_value="ok")
@@ -304,10 +301,20 @@ class WhoseAndCapTests(unittest.TestCase):
                 account="X", scope="account_overview", days_back=30
             )
         script = cap.last_script
-        # 20-mailbox cap and 500-message-per-mailbox cap are the documented
-        # ceilings; both must appear verbatim in the generated AppleScript.
         self.assertIn("1 thru 20", script)
-        self.assertIn("1 thru 500", script)
+        self.assertIn("set mailboxUpperBound to 500", script)
+
+    def test_analytics_get_statistics_short_window_uses_tighter_caps(self):
+        cap = _ScriptCapture(return_value="ok")
+        with patch(
+            "apple_mail_mcp.tools.analytics.run_applescript", side_effect=cap
+        ):
+            analytics_tools.get_statistics(
+                account="X", scope="account_overview", days_back=2
+            )
+        script = cap.last_script
+        self.assertIn("1 thru 10", script)
+        self.assertIn("set mailboxUpperBound to 100", script)
 
 
 class NoAccountErrorTests(unittest.TestCase):

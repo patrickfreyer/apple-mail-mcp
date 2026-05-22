@@ -122,7 +122,7 @@ class SearchToolTests(unittest.TestCase):
 
         self.assertEqual(len(response["items"]), 1)
         self.assertFalse(response["items"][0]["is_read"])
-        self.assertIn("read status is false", captured["script"])
+        self.assertIn("messageRead is false", captured["script"])
 
     def test_search_emails_builds_real_date_filters(self):
         captured = {}
@@ -153,14 +153,13 @@ class SearchToolTests(unittest.TestCase):
         self.assertEqual(response["items"][0]["message_id"], "301")
         self.assertIn("set year of fromDate to 2026", captured["script"])
         self.assertIn("set month of fromDate to March", captured["script"])
-        self.assertIn("date received >= fromDate", captured["script"])
-        self.assertIn("date received <= toDate", captured["script"])
+        self.assertIn("messageDate >= fromDate", captured["script"])
+        self.assertIn("messageDate <= toDate", captured["script"])
 
     def test_large_mailbox_search_uses_applescript_cap(self):
-        """A1: when subject/sender filters are supplied, the script must use
-        the `whose` clause AND immediately cap the matching list to
-        `items 1 thru N` so a 24K-message Exchange mailbox doesn't
-        materialize every match."""
+        """A1: when subject/sender filters are supplied, the script must bind
+        a bounded newest-message slice and filter inside it so a 24K-message
+        Exchange mailbox doesn't materialize every match."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -182,18 +181,15 @@ class SearchToolTests(unittest.TestCase):
             )
 
         self.assertEqual(response["items"], [])
-        self.assertIn(
-            "set matchingMessages to (every message of currentMailbox whose",
-            captured["script"],
-        )
         # A1 cap: limit+1 = 51 (offset=0)
-        self.assertIn("set matchingMessages to items 1 thru 51 of matchingMessages",
-                      captured["script"])
+        self.assertIn("set scanUpperBound to 51", captured["script"])
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", captured["script"])
         # The old, unfiltered enumeration must not appear.
         self.assertNotIn(
             "set matchingMessages to every message of currentMailbox\n",
             captured["script"],
         )
+        self.assertNotIn("every message of currentMailbox whose", captured["script"])
 
     def test_no_filter_caps_via_messages_1_thru_n(self):
         """A1: with no filter conditions, the script should bind
@@ -216,14 +212,15 @@ class SearchToolTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("messages 1 thru 11 of currentMailbox", captured["script"])
+        self.assertIn("set scanUpperBound to 11", captured["script"])
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", captured["script"])
         # `every message` should not appear as the binding source (the helper
         # functions don't reference it either in this branch).
         self.assertNotIn("set matchingMessages to every message", captured["script"])
 
     def test_date_only_filter_uses_whose_clause(self):
-        """A2: a date-only call must still route through the `whose` filter
-        path so we don't fall back to the full-scan branch."""
+        """A2: a date-only call still filters inside the bounded slice so it
+        doesn't fall back to a full-scan branch."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -241,11 +238,9 @@ class SearchToolTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn(
-            "set matchingMessages to (every message of currentMailbox whose",
-            captured["script"],
-        )
-        self.assertIn("date received >= fromDate", captured["script"])
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", captured["script"])
+        self.assertIn("messageDate >= fromDate", captured["script"])
+        self.assertNotIn("every message of currentMailbox whose", captured["script"])
 
     def test_search_emails_returns_mail_link_from_internet_message_id(self):
         def fake_run(script, timeout=120):
@@ -504,7 +499,7 @@ class SearchToolTests(unittest.TestCase):
             )
 
         self.assertIn("set year of fromDate to", captured["script"])
-        self.assertIn("date received >= fromDate", captured["script"])
+        self.assertIn("messageDate >= fromDate", captured["script"])
         self.assertEqual(response["recent_days_applied"], 2.0)
         self.assertIsNotNone(response["searched_from"])
 
@@ -852,8 +847,9 @@ class GetEmailThreadTests(unittest.TestCase):
         script = captured["script"]
         self.assertIn("EMAIL THREAD VIEW", result)
         self.assertIn("set cutoffDate to current date", script)
-        self.assertIn("date received >= cutoffDate", script)
-        self.assertIn("items 1 thru 25", script)
+        self.assertIn("messageDate < cutoffDate", script)
+        self.assertIn("set scanUpperBound to 25", script)
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", script)
         self.assertIn("ignoring case", script)
         self.assertIn("Window: last 48h", script)
         self.assertEqual(captured["timeout"], 120)
@@ -866,17 +862,37 @@ class GetEmailThreadTests(unittest.TestCase):
             return "ok"
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
-            search_tools.get_email_thread(
+            result = search_tools.get_email_thread(
                 account="Work",
                 subject_keyword="Budget",
                 max_messages=10,
                 recent_days=0,
             )
 
+        self.assertIn("allow_full_scan=True", result)
+        self.assertNotIn("script", captured)
+
+    def test_get_email_thread_recent_days_zero_allows_explicit_full_scan(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Budget",
+                max_messages=10,
+                recent_days=0,
+                allow_full_scan=True,
+            )
+
         script = captured["script"]
         self.assertNotIn("cutoffDate", script)
-        self.assertNotIn("date received >= cutoffDate", script)
-        self.assertIn("messages 1 thru 10", script)
+        self.assertNotIn("messageDate < cutoffDate", script)
+        self.assertIn("set scanUpperBound to 10", script)
+        self.assertIn("messages 1 thru scanUpperBound of currentMailbox", script)
         self.assertIn("Window: full inbox", script)
 
     def test_get_email_thread_no_bare_every_message_enumeration(self):

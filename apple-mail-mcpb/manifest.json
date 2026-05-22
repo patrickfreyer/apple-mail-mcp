@@ -50,7 +50,7 @@
     },
     {
       "name": "list_inbox_emails",
-      "description": "List inbox emails across all accounts or a single account. Defaults to 50 most-recent. Async parallel per-account dispatch; returns {emails, errors} JSON."
+      "description": "List inbox emails across all accounts or a single account. Defaults to 50 most-recent; max_emails=0 requires allow_full_scan=True. Async parallel per-account dispatch; returns {emails, errors} JSON."
     },
     {
       "name": "get_mailbox_unread_counts",
@@ -102,7 +102,7 @@
     },
     {
       "name": "search_emails",
-      "description": "Unified email search across 16 filter parameters: subject, body, sender, date range, attachments, flagged, newsletter detection, threads. Defaults to last 48 hours and the default account (DEFAULT_MAIL_ACCOUNT). Pass recent_days=0 for full-inbox sweeps, all_accounts=True to override default account."
+      "description": "Unified email search across 16 filter parameters: subject, body, sender, date range, attachments, flagged, newsletter detection, threads. Defaults to last 48 hours and the default account (DEFAULT_MAIL_ACCOUNT). recent_days=0 requires allow_full_scan=True; all_accounts=True overrides default account."
     },
     {
       "name": "get_email_by_id",
@@ -110,7 +110,7 @@
     },
     {
       "name": "get_email_thread",
-      "description": "Return the full conversation thread for an email, grouped by subject across Inbox + Sent."
+      "description": "Return the full conversation thread for an email, grouped by subject across Inbox + Sent. Defaults to last 48 hours; recent_days=0 requires allow_full_scan=True."
     },
     {
       "name": "update_email_status",
@@ -126,7 +126,7 @@
     },
     {
       "name": "synchronize_account",
-      "description": "Trigger Mail.app to fetch new messages for a single account or all accounts. Useful before time-sensitive searches."
+      "description": "Explicitly confirmed Mail.app sync for a single account or all accounts. Requires confirm_sync=True because syncing may fetch a large remote backlog."
     },
     {
       "name": "get_awaiting_reply",
