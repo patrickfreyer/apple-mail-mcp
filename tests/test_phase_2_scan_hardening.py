@@ -8,6 +8,8 @@ from apple_mail_mcp.tools import compose as compose_tools
 from apple_mail_mcp.tools import inbox as inbox_tools
 from apple_mail_mcp.tools import manage as manage_tools
 from apple_mail_mcp.tools import search as search_tools
+from apple_mail_mcp.tools import smart_inbox as smart_inbox_tools
+from apple_mail_mcp.tools import analytics as analytics_tools
 
 
 def _make_subprocess_result(returncode=0, stdout=b"ok", stderr=b""):
@@ -262,6 +264,53 @@ class TimeoutForwardingTests(unittest.TestCase):
             result = inbox_tools.get_mailbox_unread_counts(summary_only=True)
 
         self.assertEqual(result.get("error"), "timed_out")
+
+
+class HeavyScanGuardTests(unittest.TestCase):
+    def test_needs_response_uses_bounded_slice_not_unbounded_whose(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run):
+            smart_inbox_tools.get_needs_response(account="Work", days_back=7)
+
+        self.assertIn("messages 1 thru 100 of targetMailbox", captured["script"])
+        self.assertNotIn("every message of targetMailbox whose", captured["script"])
+
+    def test_awaiting_reply_uses_bounded_slices_not_unbounded_whose(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run):
+            smart_inbox_tools.get_awaiting_reply(account="Work", days_back=7)
+
+        self.assertIn("messages 1 thru 100 of inboxMailbox", captured["script"])
+        self.assertIn("messages 1 thru 80 of sentMailbox", captured["script"])
+        self.assertNotIn("every message of inboxMailbox whose", captured["script"])
+        self.assertNotIn("every message of sentMailbox whose", captured["script"])
+
+    def test_statistics_uses_bounded_slices_not_unbounded_date_whose(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.analytics.run_applescript", side_effect=fake_run):
+            analytics_tools.get_statistics(
+                account="Work",
+                scope="account_overview",
+                days_back=2,
+            )
+
+        self.assertIn("messages 1 thru 500 of aMailbox", captured["script"])
+        self.assertNotIn("every message of aMailbox whose date received", captured["script"])
 
 
 if __name__ == "__main__":

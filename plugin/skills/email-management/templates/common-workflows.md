@@ -85,7 +85,7 @@ search_emails(
     account="Work",
     sender="colleague@company.com",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -103,7 +103,7 @@ search_emails(
     sender="colleague@company.com",
     has_attachments=True,
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 ```
@@ -147,7 +147,7 @@ search_emails(
     sender="supplier@example.com",
     has_attachments=True,
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 
@@ -193,7 +193,7 @@ search_emails(
     account="Work",
     sender="client@example.com",
     mailbox="INBOX",
-    recent_days=0
+    recent_days=30
 )
 
 move_email(
@@ -233,7 +233,7 @@ search_emails(
     account="Work",
     sender="bigclient@example.com",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -423,7 +423,7 @@ search_emails(
     account="Personal",
     sender="newsletter@unwanted.com",
     mailbox="INBOX",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -441,7 +441,7 @@ search_emails(
     account="Personal",
     sender="newsletter@unwanted.com",
     mailbox="Trash",
-    recent_days=0
+    recent_days=30
 )
 
 # 5. Permanently delete if confirmed (optional)
@@ -492,7 +492,7 @@ move_email(
 search_emails(
     account="Work",
     mailbox="Trash",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 
@@ -620,7 +620,7 @@ search_emails(
     account="Work",
     sender="automated-reports@company.com",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -643,7 +643,7 @@ search_emails(
     account="Work",
     subject_keyword="Q4 Review",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 
@@ -687,7 +687,7 @@ search_emails(
     account="Work",
     sender="project-team@company.com",
     mailbox="INBOX",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -713,7 +713,7 @@ move_email(
 search_emails(
     account="Work",
     mailbox="Important Project",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 

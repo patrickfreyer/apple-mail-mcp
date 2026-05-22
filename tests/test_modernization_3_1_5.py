@@ -259,10 +259,10 @@ class DefaultAccountFallbackTests(unittest.TestCase):
 
 
 class WhoseAndCapTests(unittest.TestCase):
-    """Group B: spot-check that whose+cap pattern reaches AppleScript in
+    """Group B: spot-check that bounded scan patterns reach AppleScript in
     each modernized module."""
 
-    def test_smart_inbox_get_awaiting_reply_emits_whose_and_cap(self):
+    def test_smart_inbox_get_awaiting_reply_emits_bounded_slices(self):
         cap = _ScriptCapture(return_value="ok")
         with patch(
             "apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=cap
@@ -271,8 +271,10 @@ class WhoseAndCapTests(unittest.TestCase):
                 account="X", days_back=7, max_results=5
             )
         script = cap.last_script
-        self.assertIn("whose", script)
-        self.assertIn("items 1 thru", script)
+        self.assertIn("messages 1 thru 100 of inboxMailbox", script)
+        self.assertIn("messages 1 thru 50 of sentMailbox", script)
+        self.assertNotIn("every message of inboxMailbox whose", script)
+        self.assertNotIn("every message of sentMailbox whose", script)
 
     def test_manage_move_email_emits_whose_and_cap(self):
         # Dry-run move_email delegates to the search helper; capture the

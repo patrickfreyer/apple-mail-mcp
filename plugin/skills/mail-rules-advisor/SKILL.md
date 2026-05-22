@@ -20,7 +20,7 @@ Focus on recurring automated domains versus human counterparts.
 ### 2. Drill Candidates
 
 ```
-search_emails(sender="...", recent_days=0, limit=20, include_content=false)
+search_emails(sender="...", recent_days=30, limit=20, include_content=false)
 get_statistics(scope="sender_stats", sender="...")
 ```
 

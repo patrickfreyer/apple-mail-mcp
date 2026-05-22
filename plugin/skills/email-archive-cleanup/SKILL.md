@@ -40,7 +40,7 @@ Discuss raising `max_moves` / `max_deletes`; defaults protect against catastroph
 | File / archive batch | `move_email(dry_run=False, subject_keyword | sender | message_ids ..., max_moves=50)` |
 | Mark processed | `update_email_status(action="mark_read"|"unflag", max_updates≤50 after confirmation)` |
 | Remove noise | Prefer trash soft-delete with caps; escalate `delete_permanent` only post-export + verbal/written affirmation |
-| Hydrate caches | `synchronize_account()` after large moves |
+| Hydrate caches | `synchronize_account(account="...", confirm_sync=True)` only after explicit user approval; it can fetch large remote backlogs |
 
 Re-run narrower searches between batches until stop conditions.
 

@@ -14,9 +14,9 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 - [x] **Add wrapper command-surface smoke check** — `tools/check_wrapper_surface.py` + `tests/test_wrapper_surface.py`.
 - [x] **Document repo CLI vs wrapper flags** — `docs/AGENT_LIVE_TESTING.md` (profiles, regen, naming table).
 - [x] **Scale `perf-test` metadata threshold** — `2000 + max(0, mailbox_count - 20) × 35` ms in `cli.py`.
-- [x] **Add `perf-test --include-analysis`** — needs-response, awaiting-reply, top-senders, statistics cases.
+- [x] **Add `perf-test --include-analysis --allow-heavy-mail-scan`** — needs-response, awaiting-reply, top-senders, statistics cases behind explicit heavy-scan opt-in.
 - [x] **Overview threshold** — `--profile light` (10s) vs `production` (15s).
-- [x] **Update `docs/AGENT_LIVE_TESTING.md`** — light vs production profiles; `--include-analysis`.
+- [x] **Update `docs/AGENT_LIVE_TESTING.md`** — light vs production profiles; heavy analysis opt-in.
 - [ ] **Push `.github/workflows/ci.yml`** — blocked on GitHub OAuth `workflow` scope from Cursor; push from local terminal.
 
 ---
@@ -45,7 +45,7 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 - [ ] Async dual-script pattern for awaiting-reply.
 - [x] Finish Python-side aggregation for top-senders (`Counter` + lower `scan_cap`).
 
-**Verify:** `.venv/bin/apple-mail perf-test --include-analysis --account cayman@agenticassets.ai --json` all green.
+**Verify:** `.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account cayman@agenticassets.ai --json` all green.
 
 **Also done (Phase 2 partial / ship prep):**
 
@@ -87,7 +87,8 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 
 - After `tools/*.py`: `.venv/bin/pytest tests/ -q` (221 tests).
 - After manifests/skills: `bash tools/validate_manifests.sh` + `plugin-dev:plugin-validator` (+ `plugin-dev:skill-reviewer` for skill body/frontmatter).
-- Live gate: `export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"` then `perf-test --include-analysis --json`.
+- Routine live gate: `export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"` then `quick-check --json` or `perf-test --json`.
+- Heavy analysis gate requires explicit opt-in: `perf-test --include-analysis --allow-heavy-mail-scan --json`. Do not run this during routine agent testing because it can make Mail.app fetch remote message state on large accounts.
 
 ---
 

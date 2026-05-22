@@ -20,13 +20,13 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 
 ## Performance (summary)
 
-- Default `recent_days=2.0` (48h); `0` disables. Cap in AppleScript (`whose` + `items 1 thru N`), not Python slicing.
+- Default `recent_days=2.0` (48h); `recent_days=0` now requires `allow_full_scan=True`. `list_inbox_emails(max_emails=0)` also requires `allow_full_scan=True`. Prefer bounded newest-message slices (`messages 1 thru N`) over broad `whose` clauses on large remote mailboxes.
 - Pass `timeout` through to `run_applescript`; catch `AppleScriptTimeout` → structured error with account name.
 - Mutations: `normalize_message_ids` / `message_ids` for targeted ops. Detail: `docs/CLAUDE-conventions.md`.
 
 ## Account scoping
 
-`account: Optional[str] = None` → `server.DEFAULT_MAIL_ACCOUNT`; error if unset. Exceptions: `synchronize_account` (None = all accounts), `inbox_dashboard` (always cross-account). `all_accounts=True` overrides default scoping.
+`account: Optional[str] = None` → `server.DEFAULT_MAIL_ACCOUNT`; error if unset. Exceptions: `synchronize_account` (None = all accounts, but requires `confirm_sync=True`), `inbox_dashboard` (always cross-account). `all_accounts=True` overrides default scoping.
 
 ## JSON `output_format`
 

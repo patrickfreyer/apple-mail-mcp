@@ -33,6 +33,31 @@ class InboxToolTests(unittest.TestCase):
         # max_emails=5 should appear as a cap inside the script.
         self.assertIn("1 thru 5", captured["script"])
 
+    def test_list_inbox_rejects_unbounded_scan_without_opt_in(self):
+        with patch("apple_mail_mcp.tools.inbox.run_applescript") as mock_run:
+            result = _run(inbox_tools.list_inbox_emails(account="Work", max_emails=0))
+
+        self.assertIn("allow_full_scan=True", result)
+        mock_run.assert_not_called()
+
+    def test_list_inbox_allows_unbounded_scan_with_explicit_opt_in(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            _run(
+                inbox_tools.list_inbox_emails(
+                    account="Work",
+                    max_emails=0,
+                    allow_full_scan=True,
+                )
+            )
+
+        self.assertIn("messages of inboxMailbox", captured["script"])
+
     def test_json_list_inbox_can_include_content_preview(self):
         # The JSON-format inbox listing should request a content preview when
         # include_content=True and parse the pipe-delimited script output.

@@ -37,7 +37,7 @@ Operational guide for using the Apple Mail MCP safely and quickly. Focus on boot
 | Locate a needle | Narrow `search_emails(...)` (`recent_days=2` unless user insists on widening) → `get_email_by_id(message_id=...)` |
 | Conversation context | `get_email_thread(...)` instead of chained subject guesses |
 | Mailbox map | `list_mailboxes(include_counts=true)` |
-| Idle mail fetch | `synchronize_account()` when results look stale |
+| Idle mail fetch | `synchronize_account(account="...", confirm_sync=True)` only after the user accepts that Mail may download a large backlog |
 
 ## Performance Rules
 

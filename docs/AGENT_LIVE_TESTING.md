@@ -50,11 +50,13 @@ export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"   # production gate
 | `quick-check` | metadata + no-hit search + inbox (~30s target) |
 | `perf-test --quick` | same as `quick-check` |
 | `perf-test` | full battery: dry-run move/trash, overview, bad-account fast-fail, dashboard metadata |
-| `perf-test --include-analysis` | full battery + needs-response, awaiting-reply, top-senders, statistics |
+| `perf-test --include-analysis --allow-heavy-mail-scan` | heavy opt-in battery + needs-response, awaiting-reply, top-senders, statistics |
 | `perf-test --profile production` | production overview threshold (15s); metadata scales with mailbox count |
 | `smoke-test` | accounts, inbox, no-hit search, invalid-account error, draft-safe send block |
 
 Add `--verbose-sensitive` to `perf-test` / `quick-check` to include account names in perf samples (default output redacts them).
+
+`--include-analysis` is intentionally blocked unless paired with `--allow-heavy-mail-scan`. Those probes are bounded in code, but they still touch enough Mail.app message headers that a large account may fetch remote state. Routine agent testing should use `quick-check`, `smoke-test`, or individual probes with small limits.
 
 ### Individual safe probes
 
@@ -141,7 +143,7 @@ python /path/to/apple-mail-mcp/tools/check_wrapper_surface.py
 **Honest analysis gate (expect failures until Phase 2 speed work):**
 
 ```bash
-.venv/bin/apple-mail perf-test --include-analysis --account "$DEFAULT_MAIL_ACCOUNT" --profile production --json
+.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account "$DEFAULT_MAIL_ACCOUNT" --profile production --json
 ```
 
 Exit code is non-zero if any threshold is breached.
@@ -159,7 +161,7 @@ Exit code is non-zero if any threshold is breached.
 | bad_account (invalid name fast-fail) | < 2s |
 | dashboard_metadata (unread + recent, no preview) | < 5s |
 
-**With `--include-analysis`:**
+**With `--include-analysis --allow-heavy-mail-scan`:**
 
 | Case | Threshold |
 |------|-----------|

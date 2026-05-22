@@ -437,25 +437,24 @@ def get_statistics(
                         -- Skip system folders
                         if {skip_folder_checks} then
 
-                            -- Use whose clause for date pre-filtering when days_back > 0;
-                            -- otherwise bind `messages 1 thru N` so Mail never
-                            -- materializes the full message list of a deep mailbox.
-                            if {days_back} > 0 then
-                                set mailboxMessages to (every message of aMailbox whose date received > targetDate)
-                                if (count of mailboxMessages) > {max_messages_per_mailbox} then
-                                    set mailboxMessages to items 1 thru {max_messages_per_mailbox} of mailboxMessages
-                                end if
-                            else
-                                if (count of messages of aMailbox) > {max_messages_per_mailbox} then
-                                    set mailboxMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
-                                else
-                                    set mailboxMessages to messages of aMailbox
-                                end if
-                            end if
+                            -- Bind a bounded newest-first slice. Avoid broad
+                            -- `every message ... whose date ...` filters:
+                            -- Mail.app may materialize remote mailboxes before
+                            -- filtering and trigger large downloads.
+                            try
+                                set mailboxMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
+                            on error
+                                set mailboxMessages to messages of aMailbox
+                            end try
                             set mailboxTotal to 0
 
                             repeat with aMessage in mailboxMessages
                                 try
+                                    if {days_back} > 0 then
+                                        set messageDate to date received of aMessage
+                                        if messageDate < targetDate then exit repeat
+                                    end if
+
                                     set totalEmails to totalEmails + 1
                                     set mailboxTotal to mailboxTotal + 1
 
@@ -569,12 +568,6 @@ def get_statistics(
                 )
             return "Error: 'sender' parameter required for sender_stats scope"
 
-        # Build whose clause for fast app-level filtering
-        whose_parts = [f'sender contains "{escaped_sender}"']
-        if days_back > 0:
-            whose_parts.append('date received > targetDate')
-        whose_clause = ' and '.join(whose_parts)
-
         script = f'''
         tell application "Mail"
             set outputText to "SENDER STATISTICS" & return & return
@@ -602,23 +595,35 @@ def get_statistics(
                         -- Skip system folders
                         if {skip_folder_checks} then
 
-                            -- Use whose clause for fast app-level filtering
-                            set matchedMessages to (every message of aMailbox whose {whose_clause})
-                            -- Cap to most-recent {max_messages_per_mailbox} matched messages
-                            if (count of matchedMessages) > {max_messages_per_mailbox} then
-                                set matchedMessages to items 1 thru {max_messages_per_mailbox} of matchedMessages
-                            end if
+                            try
+                                set matchedMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
+                            on error
+                                set matchedMessages to messages of aMailbox
+                            end try
 
                             repeat with aMessage in matchedMessages
                                 try
-                                    set totalFromSender to totalFromSender + 1
-
-                                    if not (read status of aMessage) then
-                                        set unreadFromSender to unreadFromSender + 1
+                                    if {days_back} > 0 then
+                                        set messageDate to date received of aMessage
+                                        if messageDate < targetDate then exit repeat
                                     end if
 
-                                    if (count of mail attachments of aMessage) > 0 then
-                                        set withAttachments to withAttachments + 1
+                                    set messageSender to sender of aMessage
+                                    set senderMatches to false
+                                    ignoring case
+                                        if messageSender contains "{escaped_sender}" then set senderMatches to true
+                                    end ignoring
+
+                                    if senderMatches then
+                                        set totalFromSender to totalFromSender + 1
+
+                                        if not (read status of aMessage) then
+                                            set unreadFromSender to unreadFromSender + 1
+                                        end if
+
+                                        if (count of mail attachments of aMessage) > 0 then
+                                            set withAttachments to withAttachments + 1
+                                        end if
                                     end if
                                 end try
                             end repeat

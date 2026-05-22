@@ -33,14 +33,14 @@ Before deleting a large mailbox, export it: `export_emails(scope="entire_mailbox
 ### Purge old read newsletters
 
 ```text
-search_emails(sender="newsletter@example.com", read_status="read", recent_days=0)
+search_emails(sender="newsletter@example.com", read_status="read", recent_days=30)
 manage_trash(action="move_to_trash", sender="newsletter@example.com", max_deletes=200)
 ```
 
 ### Archive everything older than 90 days
 
 ```text
-search_emails(date_to="2025-02-20", read_status="read", recent_days=0)
+search_emails(date_from="2025-01-01", date_to="2025-02-20", read_status="read")
 move_email(to_mailbox="Archive/2025", date_to="2025-02-20", max_moves=500)
 ```
 

@@ -761,8 +761,9 @@ async def search_emails(
     limit: Optional[int] = None,
     sort: str = "date_desc",
     timeout: Optional[int] = None,
+    allow_full_scan: bool = False,
 ) -> str:
-    """Defaults to the last 48 hours and the configured default account. Pass `recent_days=7` for the past week, `recent_days=0` for the full inbox, `all_accounts=True` to search every account.
+    """Defaults to the last 48 hours and the configured default account. Pass `recent_days=7` for the past week; `recent_days=0` requires `allow_full_scan=True`.
 
     Unified search tool with JSON output, pagination, and real date filtering.
 
@@ -771,8 +772,9 @@ async def search_emails(
 
     Smart defaults:
         - When `date_from` is None and `recent_days > 0`, an effective window
-          of `now - recent_days` days is applied. Set `recent_days=0` for an
-          unbounded full-inbox sweep. An explicit `date_from` always wins.
+          of `now - recent_days` days is applied. Set `recent_days=0` only with
+          `allow_full_scan=True` for an unbounded sweep. An explicit
+          `date_from` always wins.
         - When `account` is None and `all_accounts` is False, the tool falls
           back to the ``DEFAULT_MAIL_ACCOUNT`` env-configured account if one
           is set. Pass `all_accounts=True` to opt back into multi-account
@@ -817,6 +819,8 @@ async def search_emails(
         timeout: Optional per-account AppleScript timeout in seconds. Defaults
             to 180s. Raise this for known-slow accounts (e.g. large Exchange
             inboxes) when the default times out.
+        allow_full_scan: Required explicit opt-in for `recent_days=0` when
+            `date_from` is omitted.
 
     Returns:
         Formatted list of matching emails or JSON payload with stable message
@@ -829,6 +833,25 @@ async def search_emails(
 
     if limit is None:
         limit = max_results if max_results is not None else 100
+
+    effective_recent_days = float(recent_days) if recent_days else 0.0
+    if date_from is None and effective_recent_days <= 0 and not allow_full_scan:
+        message = (
+            "recent_days=0 requires allow_full_scan=True. "
+            "Unbounded searches can make Mail.app fetch a large message backlog."
+        )
+        if output_format == "json":
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "full_scan_requires_opt_in",
+                    "message": message,
+                    "results": [],
+                    "total": 0,
+                },
+                indent=2,
+            )
+        return f"Error: {message}"
 
     # Smart default: fall back to the configured default account when neither
     # `account` nor `all_accounts` is set. Lazy attribute read so tests can
@@ -856,7 +879,6 @@ async def search_emails(
             return account_err
 
     # Smart default: 48h window when no explicit start date was passed.
-    effective_recent_days = float(recent_days) if recent_days else 0.0
     searched_from: Optional[str] = None
     if date_from is None and effective_recent_days > 0:
         cutoff = datetime.now() - timedelta(days=effective_recent_days)

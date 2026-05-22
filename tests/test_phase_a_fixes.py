@@ -92,6 +92,15 @@ class AccountValidationTests(unittest.TestCase):
 
         self.assertIn("account_not_found", result)
 
+    def test_synchronize_known_account_requires_explicit_confirm(self):
+        with patch(
+            "apple_mail_mcp.tools.manage.validate_account_name",
+            return_value=None,
+        ):
+            result = manage_tools.synchronize_account(account="Work")
+
+        self.assertIn("requires confirm_sync=True", result)
+
     def test_get_top_senders_unknown_account_returns_fast_error(self):
         with patch(
             "apple_mail_mcp.tools.smart_inbox.validate_account_name",

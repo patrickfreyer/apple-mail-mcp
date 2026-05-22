@@ -54,11 +54,11 @@ Parallel OK within a phase for **different modules** (e.g. `list_mailboxes` vs `
 - [x] **Document repo CLI vs wrapper flags** — profiles, regen steps, naming table in `AGENT_LIVE_TESTING.md`.
 - [x] **Scale metadata threshold** — formula in `cli.py`; production cayman metadata ~5.8s passes 8090ms gate.
 - [x] **Overview threshold** — `--profile production` (15s); cayman overview ~9.5s passes.
-- [x] **`perf-test --include-analysis`** — 4 analysis cases; honest fail on `top_senders` (~15.6s) until Phase 2.
+- [x] **`perf-test --include-analysis --allow-heavy-mail-scan`** — 4 analysis cases behind explicit heavy-scan opt-in; honest fail on `top_senders` (~15.6s) until Phase 2.
 - [x] **Document two profiles** in `AGENT_LIVE_TESTING.md`.
 - [ ] **Push `.github/workflows/ci.yml`** from developer terminal (OAuth `workflow` scope).
 
-**Done when:** `apple-mail --help` includes `get-email-by-id`; repo `perf-test --include-analysis` reports analysis cases with clear pass/fail; docs show both repo CLI and wrapper examples.
+**Done when:** `apple-mail --help` includes `get-email-by-id`; repo `perf-test --include-analysis --allow-heavy-mail-scan` reports analysis cases with clear pass/fail; docs show both repo CLI and wrapper examples.
 
 ---
 
@@ -93,7 +93,7 @@ Parallel OK within a phase for **different modules** (e.g. `list_mailboxes` vs `
 - [ ] **Awaiting reply** — parallel inbox/sent scripts via `asyncio.to_thread` (pattern from `inbox_dashboard`).
 - [x] **Top senders** — move aggregation fully to Python (`Counter`); reduce `scan_cap` when `days_back` small.
 
-**Done when:** `perf-test --include-analysis --account cayman@agenticassets.ai` all green.
+**Done when:** `perf-test --include-analysis --allow-heavy-mail-scan --account cayman@agenticassets.ai` all green.
 
 ---
 
@@ -134,7 +134,7 @@ Parallel OK within a phase for **different modules** (e.g. `list_mailboxes` vs `
 1. Live baseline before/after: `tasks/live-test-baseline-2026-05-21.md`
 2. `pytest tests/ -q` after every tool change
 3. `apple-mail --help` command-surface check before closing Phase 1
-4. `perf-test --include-analysis --account cayman@agenticassets.ai --json` before closing Phase 2
+4. `perf-test --include-analysis --allow-heavy-mail-scan --account cayman@agenticassets.ai --json` before closing Phase 2
 5. `plugin-dev:plugin-validator` after manifest/skill marketing copy changes; `plugin-dev:skill-reviewer` after skill body/frontmatter edits
 
 ## Quick commands
@@ -145,7 +145,7 @@ export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"
 .venv/bin/pytest tests/ -q
 .venv/bin/apple-mail quick-check --json
 .venv/bin/apple-mail perf-test --json                              # core battery
-.venv/bin/apple-mail perf-test --include-analysis --json           # after Phase 1
+.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --json  # heavy opt-in
 apple-mail --help                                                  # wrapper command-surface check
 .venv/bin/apple-mail needs-response --days 2
 .venv/bin/apple-mail statistics --scope account_overview --days 2 --json

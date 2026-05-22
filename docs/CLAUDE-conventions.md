@@ -12,14 +12,14 @@ The anti-patterns below caused real production timeouts on a 24K-message Exchang
 
 ### Performance defaults
 
-- **Recent-window default**: any tool that searches or lists takes `recent_days: float = 2.0` (48h). Translate to a `date received >= cutoffDate` clause inside the `whose` filter. Pass `recent_days=0` to disable. `list_inbox_emails` uses `max_emails: int = 50` instead of `0` (unbounded).
-- **AppleScript-side caps, not Python-side slicing.** Never write `every message of mailbox` and then `items startIndex thru endIndex` in Python. Either build a `whose` clause and `items 1 thru N of (every message of mailbox whose …)`, or use `messages 1 thru N of mailbox` directly. Mail returns inbox messages newest-first.
+- **Recent-window default**: any tool that searches or lists takes `recent_days: float = 2.0` (48h). `recent_days=0` or `list_inbox_emails(max_emails=0)` must require `allow_full_scan=True` and must not be used by routine tests or skills.
+- **AppleScript-side caps, not Python-side slicing.** Avoid broad `every message of mailbox whose …` scans on remote mailboxes; Mail may materialize/fetch before filtering. Prefer direct newest-first slices (`messages 1 thru N of mailbox`) and filter inside the bounded loop.
 - **`ignoring case … end ignoring`** for case-insensitive comparisons. Never call out to `do shell script "echo … | tr '[:upper:]' '[:lower:]'"` per message — the deprecated `LOWERCASE_HANDLER` was removed in 3.1.5 for that exact reason.
 - **Push date filters unconditionally** into the `whose` clause when the caller provides `date_from`/`date_to`. Don't gate them on the presence of other filters.
 
 ### Account scoping
 
-- **`DEFAULT_MAIL_ACCOUNT`**: every tool that takes an `account` parameter must (a) default it to `Optional[str] = None`, (b) at the top fall back to `_server.DEFAULT_MAIL_ACCOUNT` if `account is None`, (c) return a structured error if neither is set. Exceptions: `synchronize_account` (`account=None` means all accounts); `inbox_dashboard` (always cross-account).
+- **`DEFAULT_MAIL_ACCOUNT`**: every tool that takes an `account` parameter must (a) default it to `Optional[str] = None`, (b) at the top fall back to `_server.DEFAULT_MAIL_ACCOUNT` if `account is None`, (c) return a structured error if neither is set. Exceptions: `synchronize_account` requires `confirm_sync=True` before any account/all-account sync; `inbox_dashboard` is always cross-account.
 - **`all_accounts: bool = False`** is the explicit override for tools that need every configured account even when `DEFAULT_MAIL_ACCOUNT` is set.
 
 ### Async + per-account isolation

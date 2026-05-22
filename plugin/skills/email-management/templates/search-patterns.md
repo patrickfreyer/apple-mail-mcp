@@ -9,7 +9,7 @@ The MCP provides two main search tools:
 1. **`search_emails()`** - Advanced filtering with multiple criteria, optionally with content preview via `include_content=True`
 2. **`get_email_thread()`** - Best for viewing conversation threads
 
-Note: `search_emails` defaults to the last 48 hours and the configured default account. To scan the full inbox, pass `recent_days=0` and/or `all_accounts=True`. When you pass an explicit `date_from`, `recent_days` does not apply.
+Note: `search_emails` defaults to the last 48 hours and the configured default account. Prefer widening to `recent_days=7` or `recent_days=30`; full scans require `recent_days=0, allow_full_scan=True` and user approval. When you pass an explicit `date_from`, `recent_days` does not apply.
 
 ## Search Pattern Cheat Sheet
 
@@ -45,7 +45,7 @@ search_emails(
     account="Work",
     sender="colleague@company.com",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=50
 )
 
@@ -54,7 +54,7 @@ search_emails(
     account="Work",
     sender="@company.com",  # All from company domain
     mailbox="All",
-    recent_days=0
+    recent_days=30
 )
 
 # Sender + subject
@@ -63,7 +63,7 @@ search_emails(
     sender="boss@company.com",
     subject_keyword="review",
     mailbox="All",
-    recent_days=0
+    recent_days=30
 )
 ```
 
@@ -147,7 +147,7 @@ search_emails(
     sender="vendor@example.com",
     has_attachments=True,
     mailbox="All",
-    recent_days=0
+    recent_days=30
 )
 ```
 
@@ -159,7 +159,7 @@ search_emails(
     account="Work",
     mailbox="Projects/Alpha",
     subject_keyword="update",
-    recent_days=0
+    recent_days=30
 )
 
 # Search across all mailboxes
@@ -167,7 +167,7 @@ search_emails(
     account="Work",
     mailbox="All",
     subject_keyword="important",
-    recent_days=0
+    recent_days=30
 )
 
 # Search in inbox only (default)
@@ -190,7 +190,7 @@ search_emails(
     has_attachments=True,
     read_status="unread",
     mailbox="All",
-    recent_days=0,
+    recent_days=30,
     max_results=20
 )
 

@@ -30,7 +30,9 @@ Use **`cayman@agenticassets.ai`** for perf gates (194 mailboxes). **`ai.openclaw
 
 ```bash
 export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"
-.venv/bin/apple-mail perf-test --json   # add --include-analysis after Phase 1
+.venv/bin/apple-mail perf-test --json   # routine core battery
+# Heavy analysis only with explicit opt-in:
+.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --json
 ```
 
 ## Maintenance

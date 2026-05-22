@@ -1260,7 +1260,7 @@ def create_mailbox(
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE_TOOL_ANNOTATIONS)
 @inject_preferences
-def synchronize_account(account: Optional[str] = None) -> str:
+def synchronize_account(account: Optional[str] = None, confirm_sync: bool = False) -> str:
     """
     Force Mail.app to synchronize an account (or every account) with its
     IMAP / Exchange server right now. Equivalent to clicking the
@@ -1293,6 +1293,9 @@ def synchronize_account(account: Optional[str] = None) -> str:
     Args:
         account: Account name (e.g., "Gmail", "Work"). Omit to sync every
                  configured account.
+        confirm_sync: Required explicit opt-in. Synchronizing can make Mail.app
+                 download a large backlog of messages, so agents and test
+                 batteries must not trigger it implicitly.
 
     Returns:
         Confirmation string with the account(s) synced or queued.
@@ -1303,6 +1306,12 @@ def synchronize_account(account: Optional[str] = None) -> str:
     PER_ACCOUNT_TIMEOUT_S = 8
 
     if account is None or not account.strip():
+        if not confirm_sync:
+            return (
+                "Error: synchronize_account requires confirm_sync=True. "
+                "Synchronizing can trigger Mail.app to download a large message backlog; "
+                "do not call it from routine tests."
+            )
         script = f'''
         tell application "Mail"
             set acctNames to {{}}
@@ -1334,6 +1343,11 @@ def synchronize_account(account: Optional[str] = None) -> str:
     account_err = validate_account_name(account, timeout=PER_ACCOUNT_TIMEOUT_S)
     if account_err:
         return account_err
+    if not confirm_sync:
+        return (
+            f"Error: synchronize_account for '{account}' requires confirm_sync=True. "
+            "Synchronizing can trigger Mail.app to download a large message backlog."
+        )
 
     acct_escaped = escape_applescript(account)
     script = f'''

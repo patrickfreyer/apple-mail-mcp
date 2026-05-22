@@ -440,10 +440,26 @@ def run_perf_battery(
     *,
     quick: bool = False,
     include_analysis: bool = False,
+    allow_heavy_mail_scan: bool = False,
     profile: str = DEFAULT_PERF_PROFILE,
     verbose_sensitive: bool = False,
 ) -> dict[str, Any]:
     thresholds = resolve_perf_thresholds(profile)
+    if include_analysis and not allow_heavy_mail_scan:
+        return {
+            "ok": False,
+            "account": account,
+            "quick": quick,
+            "include_analysis": include_analysis,
+            "profile": profile,
+            "thresholds_ms": thresholds,
+            "cases": [],
+            "error": (
+                "--include-analysis requires --allow-heavy-mail-scan. "
+                "Analysis probes can touch many message headers and may cause "
+                "Mail.app to fetch remote messages on large accounts."
+            ),
+        }
     selected_account, account_error = _resolve_test_account(account)
     if not selected_account:
         return {
@@ -698,6 +714,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--include-analysis",
         action="store_true",
         help="Add analysis cases (needs-response, awaiting-reply, top-senders, statistics)",
+    )
+    perf.add_argument(
+        "--allow-heavy-mail-scan",
+        action="store_true",
+        help=(
+            "Required with --include-analysis. This opt-in acknowledges the "
+            "analysis probes may touch many message headers on large accounts."
+        ),
     )
     perf.add_argument(
         "--profile",
@@ -1109,6 +1133,7 @@ def _cmd_perf_test(args: argparse.Namespace) -> int:
         args.account,
         quick=args.quick,
         include_analysis=args.include_analysis,
+        allow_heavy_mail_scan=args.allow_heavy_mail_scan,
         profile=args.profile,
         verbose_sensitive=args.verbose_sensitive,
     )
@@ -1121,6 +1146,7 @@ def _cmd_quick_check(args: argparse.Namespace) -> int:
         args.account,
         quick=True,
         include_analysis=False,
+        allow_heavy_mail_scan=False,
         profile=DEFAULT_PERF_PROFILE,
         verbose_sensitive=args.verbose_sensitive,
     )

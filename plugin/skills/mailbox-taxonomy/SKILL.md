@@ -22,7 +22,7 @@ Run in order, stopping if latency spikes:
 1. `list_mailboxes(include_counts=true)` — capture depth, orphan folders, hotspots.
 2. `get_statistics(scope="account_overview", days_back=30)` plus `get_statistics(scope="mailbox_breakdown", mailbox="...")` **per folder under review** — omitting `mailbox` on `mailbox_breakdown` scopes to the default Inbox in code, so always pass the folder name when assessing non-Inbox clutter.
 3. `get_top_senders(limit=25, days_back=30, group_by_domain=true)` — map noise domains vs humans.
-4. `synchronize_account()` if counts look stale vs Mail UI.
+4. If counts look stale vs Mail UI, ask first; only then use `synchronize_account(account="...", confirm_sync=True)` because it may fetch a large backlog.
 
 ## Design Principles
 

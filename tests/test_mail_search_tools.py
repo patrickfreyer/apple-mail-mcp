@@ -212,6 +212,7 @@ class SearchToolTests(unittest.TestCase):
                     limit=10,
                     max_results=None,
                     recent_days=0,
+                    allow_full_scan=True,
                 )
             )
 
@@ -524,6 +525,7 @@ class SearchToolTests(unittest.TestCase):
                         output_format="json",
                         limit=5,
                         recent_days=0,
+                        allow_full_scan=True,
                     )
                 )
             )
@@ -531,6 +533,23 @@ class SearchToolTests(unittest.TestCase):
         self.assertNotIn("set year of fromDate to", captured["script"])
         self.assertEqual(response["recent_days_applied"], 0.0)
         self.assertIsNone(response["searched_from"])
+
+    def test_search_emails_rejects_full_scan_without_opt_in(self):
+        with patch("apple_mail_mcp.tools.search.run_applescript") as mock_run:
+            result = _run(
+                search_tools.search_emails(
+                    account="Work",
+                    output_format="json",
+                    limit=5,
+                    recent_days=0,
+                )
+            )
+
+        payload = json.loads(result)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "full_scan_requires_opt_in")
+        self.assertIn("allow_full_scan=True", payload["message"])
+        mock_run.assert_not_called()
 
     def test_search_emails_explicit_date_from_overrides_default_window(self):
         """A0a: an explicit `date_from` overrides the 48h default — the script

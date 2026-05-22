@@ -108,18 +108,18 @@ def get_awaiting_reply(
 
     escaped_account = escape_applescript(account)
 
-    # A1: cap collection sizes so a 24K Sent / Inbox doesn't materialize fully.
-    sent_cap = max(max_results * 4, 50)
-    inbox_cap = 500
-
-    # Build the "whose" date filter for both Sent and Inbox bindings. When
-    # days_back<=0 we skip the date filter entirely.
-    if days_back > 0:
-        sent_whose = "whose date sent >= cutoffDate"
-        inbox_whose = "whose date received >= cutoffDate"
-    else:
-        sent_whose = ""
-        inbox_whose = ""
+    # Cap collection sizes using direct newest-first slices. Avoid broad
+    # `every message ... whose date ...` filters: Mail.app may materialize
+    # deep remote mailboxes before applying the filter, which can trigger
+    # large background downloads.
+    sent_cap = min(max(max_results * 4, 50), 100)
+    inbox_cap = 100
+    inbox_date_check = (
+        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    )
+    sent_date_check = (
+        "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
+    )
 
     noreply_filter = ""
     if exclude_noreply:
@@ -163,22 +163,19 @@ def get_awaiting_reply(
             -- Get Inbox mailbox
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
 
-            -- Collect subjects from inbox for matching. A1: bind a date-
-            -- filtered slice and cap at {inbox_cap} so we don't enumerate
-            -- a 24K-message inbox just to build the lookup table.
+            -- Collect subjects from a bounded newest-first inbox slice.
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
             try
-                set inboxMessages to (every message of inboxMailbox {inbox_whose})
+                set inboxMessages to messages 1 thru {inbox_cap} of inboxMailbox
             on error
-                set inboxMessages to {{}}
+                set inboxMessages to messages of inboxMailbox
             end try
-            if (count of inboxMessages) > {inbox_cap} then
-                set inboxMessages to items 1 thru {inbox_cap} of inboxMessages
-            end if
 
             repeat with aMessage in inboxMessages
                 try
+                    set messageDate to date received of aMessage
+                    {inbox_date_check}
                     set msgSubject to subject of aMessage
                     set msgSender to sender of aMessage
                     set baseSubject to my stripPrefixes(msgSubject)
@@ -187,15 +184,12 @@ def get_awaiting_reply(
                 end try
             end repeat
 
-            -- Now scan sent emails. A1: same whose+cap pattern.
+            -- Now scan a bounded newest-first sent slice.
             try
-                set sentMessages to (every message of sentMailbox {sent_whose})
+                set sentMessages to messages 1 thru {sent_cap} of sentMailbox
             on error
-                set sentMessages to {{}}
+                set sentMessages to messages of sentMailbox
             end try
-            if (count of sentMessages) > {sent_cap} then
-                set sentMessages to items 1 thru {sent_cap} of sentMessages
-            end if
 
             set resultCount to 0
             set checkedCount to 0
@@ -205,6 +199,7 @@ def get_awaiting_reply(
 
                 try
                     set messageDate to date sent of aMessage
+                    {sent_date_check}
                     set messageSubject to subject of aMessage
                     set messageRecipients to every to recipient of aMessage
 
@@ -341,11 +336,6 @@ def get_needs_response(
         else ""
     )
 
-    if days_back > 0:
-        unread_whose = "whose read status is false and date received >= cutoffDate"
-    else:
-        unread_whose = "whose read status is false"
-
     script = f'''
     tell application "Mail"
         set outputText to "EMAILS NEEDING RESPONSE" & return
@@ -385,11 +375,11 @@ def get_needs_response(
             end try
 
             if sentMailbox is not missing value then
-                if (count of messages of sentMailbox) > {sent_cap} then
+                try
                     set sentMessages to messages 1 thru {sent_cap} of sentMailbox
-                else
+                on error
                     set sentMessages to messages of sentMailbox
-                end if
+                end try
                 repeat with aMessage in sentMessages
                     try
                         set sentSubj to subject of aMessage
@@ -399,16 +389,14 @@ def get_needs_response(
                 end repeat
             end if
 
-            -- Scan target mailbox. A1: bind unread+date-filtered slice once,
-            -- cap to inbox_cap, so unread-heavy mailboxes don't blow up wall time.
+            -- Scan a bounded newest-first slice. Do not use a broad `whose`
+            -- filter here; Mail.app can materialize deep remote mailboxes
+            -- before filtering and start large background downloads.
             try
-                set mailboxMessages to (every message of targetMailbox {unread_whose})
+                set mailboxMessages to messages 1 thru {inbox_cap} of targetMailbox
             on error
-                set mailboxMessages to {{}}
+                set mailboxMessages to messages of targetMailbox
             end try
-            if (count of mailboxMessages) > {inbox_cap} then
-                set mailboxMessages to items 1 thru {inbox_cap} of mailboxMessages
-            end if
 
             set highPriority to {{}}
             set normalPriority to {{}}

@@ -75,7 +75,7 @@ python3 -m venv .venv
 .venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
 .venv/bin/apple-mail quick-check --account "Gmail" --json
 .venv/bin/apple-mail perf-test --account "Gmail" --json
-.venv/bin/apple-mail perf-test --include-analysis --account "Gmail" --json
+.venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account "Gmail" --json
 .venv/bin/apple-mail smoke-test --account "Gmail" --json
 ```
 
@@ -166,7 +166,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `move_email` | Move emails with filters (subject, sender, date, read status, dry-run). Default max 50 |
 | `update_email_status` | Mark read/unread, flag/unflag — by filters or message IDs. Default max 10 |
 | `manage_trash` | Soft delete, permanent delete, empty trash. Default max 5 |
-| `synchronize_account` | Trigger Mail.app to fetch new messages for an account (or all) |
+| `synchronize_account` | Explicitly confirmed Mail.app sync for an account (can fetch large backlogs) |
 
 ### Composition
 | Tool | Description |
@@ -335,13 +335,13 @@ apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --b
 apple-mail mcp-config --repo "$(pwd)"
 apple-mail quick-check --account "Gmail" --json
 apple-mail perf-test --account "Gmail" --json
-apple-mail perf-test --include-analysis --account "Gmail" --json
+apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account "Gmail" --json
 apple-mail smoke-test --account "Gmail" --json
 ```
 
 Live verification guide: [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md).
 
-Use `perf-test --include-analysis` to gate triage tools (`needs-response`, `awaiting-reply`, `top-senders`, `statistics`) in addition to the core battery.
+Use `perf-test --include-analysis --allow-heavy-mail-scan` only when you explicitly want the heavy analysis gate (`needs-response`, `awaiting-reply`, `top-senders`, `statistics`). Routine validation should use `quick-check`, `smoke-test`, or `perf-test` without analysis.
 
 The CLI keeps write operations draft-first. It intentionally does not expose
 send/delete shortcuts; use the MCP tools with `--draft-safe` for shared agents.

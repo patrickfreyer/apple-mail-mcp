@@ -265,21 +265,42 @@ class PerfCliCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         mock_run.assert_called_once_with(
-            "Work", quick=True, include_analysis=False, profile="production", verbose_sensitive=False
+            "Work",
+            quick=True,
+            include_analysis=False,
+            allow_heavy_mail_scan=False,
+            profile="production",
+            verbose_sensitive=False,
         )
 
-    def test_perf_test_include_analysis_flag(self):
+    def test_perf_test_include_analysis_requires_heavy_scan_opt_in(self):
+        with patch("builtins.print"):
+            code = cli.main(["perf-test", "--include-analysis", "--profile", "light", "--json"])
+
+        self.assertEqual(code, 1)
+
+    def test_perf_test_include_analysis_flag_with_heavy_scan_opt_in(self):
         with (
             patch.object(cli, "run_perf_battery", return_value={"ok": True, "cases": []}) as mock_run,
             patch("builtins.print"),
         ):
-            code = cli.main(["perf-test", "--include-analysis", "--profile", "light", "--json"])
+            code = cli.main(
+                [
+                    "perf-test",
+                    "--include-analysis",
+                    "--allow-heavy-mail-scan",
+                    "--profile",
+                    "light",
+                    "--json",
+                ]
+            )
 
         self.assertEqual(code, 0)
         mock_run.assert_called_once_with(
             None,
             quick=False,
             include_analysis=True,
+            allow_heavy_mail_scan=True,
             profile="light",
             verbose_sensitive=False,
         )

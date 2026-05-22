@@ -273,6 +273,7 @@ async def list_inbox_emails(
     include_content: bool = False,
     output_format: str = "text",
     timeout: Optional[int] = None,
+    allow_full_scan: bool = False,
 ) -> str:
     """Defaults to 50 most-recent emails from the default account.
 
@@ -286,7 +287,9 @@ async def list_inbox_emails(
           back to the ``DEFAULT_MAIL_ACCOUNT`` env-configured account if one
           is set. Pass `all_accounts=True` to opt back into multi-account
           dispatch even when a default is configured.
-        - `max_emails` defaults to 50; pass `0` for unbounded.
+        - `max_emails` defaults to 50. `max_emails=0` is blocked unless
+          `allow_full_scan=True` because it can force Mail.app to walk a
+          large remote inbox.
 
     Performance guidance:
         - On multi-account setups with a 10K+ Exchange/Gmail inbox, prefer
@@ -301,13 +304,14 @@ async def list_inbox_emails(
 
     Args:
         account: Optional account name to filter (e.g., "Gmail", "Work"). If None, shows all accounts.
-        max_emails: Maximum number of emails to return per account (0 = all)
+        max_emails: Maximum number of emails to return per account.
         include_read: Whether to include read emails (default: True)
         include_content: Whether to include a content preview for each email (slower, default: False)
         output_format: "text" (default, human-readable) or "json" (structured list of email dicts)
         timeout: Optional per-account AppleScript timeout in seconds (default: 120s).
             Raise this for known-slow accounts (large Exchange inboxes) when
             the default budget is too tight.
+        allow_full_scan: Required explicit opt-in for `max_emails=0`.
 
     Returns:
         Formatted list of emails with subject, sender, date, and read status.
@@ -318,6 +322,12 @@ async def list_inbox_emails(
 
     if output_format not in {"text", "json"}:
         return "Error: Invalid output_format. Use: text, json"
+
+    if max_emails <= 0 and not allow_full_scan:
+        return (
+            "Error: max_emails=0 requires allow_full_scan=True. "
+            "Unbounded inbox scans can make Mail.app fetch a large message backlog."
+        )
 
     # Smart default: fall back to the configured default account when neither
     # `account` nor `all_accounts` is set. Lazy attribute read so tests can

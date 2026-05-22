@@ -25,8 +25,8 @@ For finding a single specific email, call `search_emails()` directly without inv
 
 Internalize these before constructing any tool call. The defaults exist to keep AppleScript queries fast on large Exchange inboxes.
 
-- `search_emails` defaults to the last 48 hours on the configured default account. Pass `recent_days=7` or `recent_days=30` to widen, and `recent_days=0` to search the full inbox.
-- `list_inbox_emails` defaults to the 50 most-recent emails. Pass `max_emails=0` to disable the cap.
+- `search_emails` defaults to the last 48 hours on the configured default account. Pass `recent_days=7` or `recent_days=30` to widen. `recent_days=0` requires `allow_full_scan=True`; ask before using it.
+- `list_inbox_emails` defaults to the 50 most-recent emails. `max_emails=0` requires `allow_full_scan=True`; do not use it for routine triage.
 - Cross-account scans cost time on large Exchange inboxes. Pass `all_accounts=True` only when truly needed; otherwise let the `DEFAULT_MAIL_ACCOUNT` environment variable keep things scoped.
 
 When in doubt, run a narrow query first and widen only if results are insufficient.
@@ -99,8 +99,8 @@ Goal: keep folder structure healthy and archive aging messages.
 3. Analyze patterns: `get_statistics(scope="account_overview")` plus `get_top_senders()`. For per-folder volume, prefer `list_mailboxes(include_counts=True)`; when calling `get_statistics(scope="mailbox_breakdown")`, pass explicit `mailbox=` — omitting it scopes to the default Inbox in code. Full guidance lives in `references/analytics.md`.
 4. Adjust folders: collaborate with **`mailbox-taxonomy`** for naming; create net-new folders with `create_mailbox` after explicit confirmation (rename/delete heavy work still occurs in Mail UI when needed).
 5. Bulk-organize by sender or date:
-   - `search_emails(sender="...", recent_days=0)` then `move_email(sender="...", to_mailbox="...", max_moves=N)`.
-   - `search_emails(date_to="YYYY-MM-DD", recent_days=0)` then move to an archive folder.
+   - `search_emails(sender="...", recent_days=30)` then `move_email(sender="...", to_mailbox="...", max_moves=N)`.
+   - `search_emails(date_to="YYYY-MM-DD", date_from="YYYY-MM-DD")` then move to an archive folder.
 6. Archive read mail older than 30 days into `Archive/<year>`.
 
 Detailed safe bulk operations are documented in `references/bulk-cleanup.md`.
@@ -146,7 +146,7 @@ Mindset:
 | Move to trash / delete | `manage_trash(action="...", max_deletes=N)` | See `references/bulk-cleanup.md` |
 | Analytics | `get_statistics()` and `get_top_senders()` | See `references/analytics.md` |
 | Export for backup | `export_emails(scope="...", mailbox="...")` | Run before any large delete |
-| Sync stale account | `synchronize_account(account="...")` | When recent messages appear missing |
+| Sync stale account | `synchronize_account(account="...", confirm_sync=True)` | Only after the user explicitly accepts that Mail may fetch a large backlog |
 
 ## Common Scenarios
 
@@ -162,17 +162,17 @@ Mindset:
 ### "I can't find an important email"
 
 1. Start with `search_emails(subject_keyword="...")` on the default account and default 48-hour window.
-2. Widen the time window: add `recent_days=30` or `recent_days=0` (full inbox).
+2. Widen the time window: add `recent_days=30`; use `recent_days=0, allow_full_scan=True` only after asking.
 3. Widen the scope: add `all_accounts=True` to search every configured account.
-4. Search the body: `search_emails(body_text="...", include_content=True, recent_days=0)`.
+4. Search the body: `search_emails(body_text="...", include_content=True, recent_days=30)` before asking to run a full scan.
 5. Filter by attachment if relevant: `search_emails(has_attachments=True, ...)`.
-6. Check Trash explicitly: `search_emails(mailbox="Trash", recent_days=0, ...)`.
+6. Check Trash explicitly: `search_emails(mailbox="Trash", recent_days=30, ...)`; full-scan only with `allow_full_scan=True`.
 
 ### "I want to organize emails by project"
 
 1. Review current layout: `list_mailboxes(include_counts=True)`.
 2. Create project folders in Apple Mail (or via `create_mailbox` if the user confirms).
-3. Find project messages: `search_emails(subject_keyword="ProjectName", recent_days=0)`.
+3. Find project messages: `search_emails(subject_keyword="ProjectName", recent_days=30)`, widening only after review.
 4. Bulk move: `move_email(subject_keyword="ProjectName", to_mailbox="Projects/ProjectName", max_moves=50)` after previewing.
 5. Add sender-based moves for team members on the same project.
 
@@ -180,13 +180,13 @@ Mindset:
 
 1. Flag the message: `update_email_status(action="flag", subject_keyword="...", max_updates=1)`.
 2. Optionally move flagged items into a dedicated "Follow Up" mailbox for visibility.
-3. Schedule a recurring weekly review of the flagged set: `search_emails(flagged=True, recent_days=0)`.
+3. Schedule a recurring weekly review of the flagged set with a bounded date window; do not use full scans in recurring workflows.
 4. Clear the flag once handled: `update_email_status(action="unflag", subject_keyword="...")`.
 
 ### "Too many emails from one sender"
 
 1. Confirm volume: `get_statistics(scope="sender_stats", sender="...")`.
-2. Find the messages: `search_emails(sender="...", recent_days=0)`.
+2. Find the messages: `search_emails(sender="...", recent_days=30)`; ask before any full-scan opt-in.
 3. If unwanted, run the cleanup sequence from `references/bulk-cleanup.md`.
 4. If wanted but noisy, create a dedicated folder and bulk-move with `move_email(sender="...", to_mailbox="...", max_moves=N)`.
 5. If the sender is a newsletter, surface it via `get_top_senders()` and unsubscribe in Apple Mail.

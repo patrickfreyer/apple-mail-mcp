@@ -79,7 +79,7 @@ The latest generated-wrapper sweep saw the same pattern:
 |------|---------|---------|
 | Fast post-edit | `quick-check --json` | `cayman@agenticassets.ai` (after threshold fix) |
 | Core perf | `perf-test --json` | `cayman@agenticassets.ai` |
-| Analysis perf | `perf-test --include-analysis --json` *(to build)* | `cayman@agenticassets.ai` |
+| Analysis perf | `perf-test --include-analysis --allow-heavy-mail-scan --json` *(heavy opt-in)* | `cayman@agenticassets.ai` |
 | Wrapper parity | `apple-mail --help` includes `get-email-by-id` *(to automate)* | n/a |
 | Functional smoke | `smoke-test --json` | either account |
 
