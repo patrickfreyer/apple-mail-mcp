@@ -408,18 +408,26 @@ def list_account_addresses() -> Dict[str, List[str]]:
 
 @mcp.tool()
 @inject_preferences
-def list_mailboxes(account: Optional[str] = None, include_counts: bool = True) -> str:
+def list_mailboxes(
+    account: Optional[str] = None,
+    include_counts: bool = True,
+    output_format: str = "text",
+) -> str:
     """
     List all mailboxes (folders) for a specific account or all accounts.
 
     Args:
         account: Optional account name to filter (e.g., "Gmail", "Work"). If None, shows all accounts.
         include_counts: Whether to include message counts for each mailbox (default: True)
+        output_format: "text" (default, human-readable) or "json" (structured list of mailbox dicts)
 
     Returns:
         Formatted list of mailboxes with optional message counts.
         For nested mailboxes, shows both indented format and path format (e.g., "Projects/Amplify Impact")
     """
+
+    if output_format == "json":
+        return _list_mailboxes_json(account, include_counts)
 
     count_script = (
         """
@@ -499,6 +507,81 @@ def list_mailboxes(account: Optional[str] = None, include_counts: bool = True) -
 
     result = run_applescript(script)
     return result
+
+
+def _list_mailboxes_json(account: Optional[str], include_counts: bool = True) -> str:
+    """Return mailboxes as a JSON list."""
+    escaped_account = escape_applescript(account) if account else None
+    account_filter = (
+        f'if accountName is "{escaped_account}" then'
+        if account
+        else ""
+    )
+    account_filter_end = "end if" if account else ""
+    def count_fields(var_name: str) -> str:
+        if not include_counts:
+            return """
+        set msgCount to -1
+        set unreadCount to -1
+        """
+        return f"""
+        set msgCount to -1
+        set unreadCount to -1
+        try
+            set msgCount to count of messages of {var_name}
+            set unreadCount to unread count of {var_name}
+        end try
+        """
+
+    script = f"""
+    tell application "Mail"
+        set resultLines to {{}}
+        set allAccounts to every account
+        repeat with anAccount in allAccounts
+            set accountName to name of anAccount
+            {account_filter}
+            try
+                set accountMailboxes to every mailbox of anAccount
+                repeat with currentMailbox in accountMailboxes
+                    try
+                        set mailboxName to name of currentMailbox
+                        {count_fields("currentMailbox")}
+                        set end of resultLines to accountName & "|||" & mailboxName & "|||" & mailboxName & "|||" & msgCount & "|||" & unreadCount
+                        try
+                            set childMailboxes to every mailbox of currentMailbox
+                            repeat with childMailbox in childMailboxes
+                                set childName to name of childMailbox
+                                {count_fields("childMailbox")}
+                                set end of resultLines to accountName & "|||" & childName & "|||" & mailboxName & "/" & childName & "|||" & msgCount & "|||" & unreadCount
+                            end repeat
+                        end try
+                    end try
+                end repeat
+            end try
+            {account_filter_end}
+        end repeat
+        set AppleScript's text item delimiters to linefeed
+        return resultLines as string
+    end tell
+    """
+    raw = run_applescript(script)
+    mailboxes = []
+    for line in raw.splitlines():
+        parts = line.split("|||")
+        if len(parts) != 5:
+            continue
+        msg_count = int(parts[3]) if parts[3].lstrip("-").isdigit() else -1
+        unread_count = int(parts[4]) if parts[4].lstrip("-").isdigit() else -1
+        item = {
+            "account": parts[0],
+            "name": parts[1],
+            "path": parts[2],
+        }
+        if include_counts:
+            item["message_count"] = msg_count
+            item["unread_count"] = unread_count
+        mailboxes.append(item)
+    return json.dumps(mailboxes, indent=2)
 
 
 @mcp.tool()

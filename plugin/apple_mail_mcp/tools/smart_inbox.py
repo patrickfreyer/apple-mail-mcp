@@ -127,7 +127,11 @@ def get_awaiting_reply(
             -- Collect subjects from inbox for matching
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
-            set inboxMessages to every message of inboxMailbox
+            if {days_back} > 0 then
+                set inboxMessages to every message of inboxMailbox whose date received > cutoffDate
+            else
+                set inboxMessages to every message of inboxMailbox
+            end if
 
             repeat with aMessage in inboxMessages
                 try
@@ -141,7 +145,11 @@ def get_awaiting_reply(
             end repeat
 
             -- Now scan sent emails
-            set sentMessages to every message of sentMailbox
+            if {days_back} > 0 then
+                set sentMessages to every message of sentMailbox whose date sent > cutoffDate
+            else
+                set sentMessages to every message of sentMailbox
+            end if
             set resultCount to 0
             set checkedCount to 0
 
@@ -150,8 +158,6 @@ def get_awaiting_reply(
 
                 try
                     set messageDate to date sent of aMessage
-                    {"if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""}
-
                     set messageSubject to subject of aMessage
                     set messageRecipients to every to recipient of aMessage
 

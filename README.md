@@ -159,6 +159,27 @@ Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_
 }
 ```
 
+### Draft-Safe Mode
+
+Pass `--draft-safe` to keep read, search, draft, and open-for-review workflows available while blocking actual sends. This is the recommended mode for shared agent workspaces.
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/plugin/start_mcp.sh",
+      "args": ["--draft-safe"]
+    }
+  }
+}
+```
+
+In draft-safe mode:
+
+- `compose_email`, `reply_to_email`, and `forward_email` default to draft behavior
+- explicit `mode="send"` calls return an error
+- `manage_drafts action="send"` returns an error
+
 ### User Preferences (Optional)
 
 Set the `USER_EMAIL_PREFERENCES` environment variable to give the assistant context about your workflow:

@@ -261,6 +261,52 @@ class SearchToolTests(unittest.TestCase):
 
 
 class ManageToolTests(unittest.TestCase):
+    def test_move_email_dry_run_uses_search_helper(self):
+        with patch(
+            "apple_mail_mcp.tools.manage._search_mail_records",
+            return_value=[
+                {
+                    "subject": "Ticket",
+                    "sender": "sender@example.com",
+                    "received_date": "2026-03-07T10:00:00",
+                }
+            ],
+        ) as mock_search, patch(
+            "apple_mail_mcp.tools.manage.run_applescript"
+        ) as mock_run:
+            result = manage_tools.move_email(
+                account="Work",
+                to_mailbox="Archive",
+                subject_keyword="Ticket",
+                dry_run=True,
+                max_moves=1,
+            )
+
+        mock_search.assert_called_once()
+        mock_run.assert_not_called()
+        self.assertIn("DRY RUN - PREVIEW MOVE", result)
+        self.assertIn("Would move: Ticket", result)
+
+    def test_manage_trash_dry_run_uses_search_helper(self):
+        with patch(
+            "apple_mail_mcp.tools.manage._search_mail_records",
+            return_value=[],
+        ) as mock_search, patch(
+            "apple_mail_mcp.tools.manage.run_applescript"
+        ) as mock_run:
+            result = manage_tools.manage_trash(
+                account="Work",
+                action="move_to_trash",
+                subject_keyword="Ticket",
+                dry_run=True,
+                max_deletes=1,
+            )
+
+        mock_search.assert_called_once()
+        mock_run.assert_not_called()
+        self.assertIn("DRY RUN - PREVIEW TRASH", result)
+        self.assertIn("TOTAL: 0", result)
+
     def test_update_email_status_with_message_ids_uses_exact_id_condition(self):
         captured = {}
 
