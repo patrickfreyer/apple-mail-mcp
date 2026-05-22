@@ -1,345 +1,202 @@
 ---
-name: email-management-expert
-description: Expert email management assistant for Apple Mail. Use this when the user mentions inbox management, email organization, email triage, inbox zero, organizing emails, managing mail folders, email productivity, checking emails, or email workflow optimization. Provides intelligent workflows and best practices for efficient email handling.
+name: email-management
+description: This skill should be used when the user asks to "help me get to inbox zero", "clean up my inbox", "organize my email", "set up folders", "I'm drowning in email", or otherwise wants to triage, organize, or reduce volume in their Apple Mail inbox. Covers daily triage routines, folder structure design, bulk cleanup with safety limits, and Inbox Zero methodology using the apple-mail MCP tools (get_inbox_overview, search_emails, move_email, update_email_status, manage_trash, get_statistics). Do NOT use for composing or replying to a specific message (see email-drafting), one-off triage runs over a specific time window (see inbox-triage), or attachment handling (see email-attachments).
 ---
 
-# Email Management Expert Skill
+# Email Management
 
-You are an expert email management assistant with deep knowledge of productivity workflows and the Apple Mail MCP tools. Your role is to help users efficiently manage their inbox, organize emails, and maintain email productivity.
+Sustained inbox organization for Apple Mail: daily triage routines, folder structure design, bulk cleanup, and Inbox Zero methodology. This skill is about ongoing habits and structural cleanup, not one-off message actions.
+
+## When To Use This Skill
+
+Use when the request is about reducing inbox volume, designing or reshaping a folder layout, building a sustainable triage habit, or running a safe bulk cleanup.
+
+Do NOT use for:
+
+- Composing or replying to a specific message — see `email-drafting`.
+- A one-off pass over the last N hours of mail — see `inbox-triage`.
+- Downloading or saving attachments — see `email-attachments`.
+
+For finding a single specific email, call `search_emails()` directly without invoking this skill.
+
+## Performance Defaults To Know
+
+Internalize these before constructing any tool call. The defaults exist to keep AppleScript queries fast on large Exchange inboxes.
+
+- `search_emails` defaults to the last 48 hours on the configured default account. Pass `recent_days=7` or `recent_days=30` to widen, and `recent_days=0` to search the full inbox.
+- `list_inbox_emails` defaults to the 50 most-recent emails. Pass `max_emails=0` to disable the cap.
+- Cross-account scans cost time on large Exchange inboxes. Pass `all_accounts=True` only when truly needed; otherwise let the `DEFAULT_MAIL_ACCOUNT` environment variable keep things scoped.
+
+When in doubt, run a narrow query first and widen only if results are insufficient.
+
+## Decision Tree
+
+| Request signal | Route to |
+|----------------|----------|
+| "Help me get to inbox zero" / "clean up my inbox" / "organize email" | This skill |
+| "Write an email to..." / "reply to..." / "draft a..." | `email-drafting` |
+| "Triage what came in today" / "what needs my attention right now" | `inbox-triage` |
+| "Save the attachment from..." | `email-attachments` |
+| "Find the email about X" | Call `search_emails()` directly |
+| "Delete all emails from..." / "archive everything older than..." | This skill, Cleanup section |
+
+## Destructive Operations — Safety Caps
+
+The MCP server enforces conservative defaults. Confirm with the user before raising any cap.
+
+| Operation | Default cap | When to confirm with user |
+|-----------|-------------|---------------------------|
+| `manage_trash(action="move_to_trash")` | 5 messages | Any time `max_deletes` exceeds 20 |
+| `manage_trash(action="delete_permanent")` | 5 messages | Always — this is irreversible |
+| `manage_trash(action="empty_trash")` | hard confirm via `confirm=True` | Always |
+| `move_email` | 1 message | Any bulk move (`max_moves` > 10) |
+| `update_email_status` | 10 messages | Any bulk update (`max_updates` > 50) |
+
+Pattern: identify candidates with `search_emails()`, preview the count and sample, confirm the user's intent, then run the destructive call with an explicit cap.
 
 ## Core Principles
 
-1. **Start with Overview**: Always begin with `get_inbox_overview()` to understand the current state
-2. **Batch Operations**: Use batch operations when possible (e.g., `update_email_status` with filters)
-3. **Safety First**: Respect safety limits (max_moves, max_deletes) to prevent accidental data loss
-4. **User Preferences**: Check for user preferences in tool descriptions before taking actions
-5. **Progressive Actions**: Confirm destructive actions (delete, empty trash) before executing
+- Start every workflow with `get_inbox_overview()` to understand current state before acting.
+- Prefer batch operations with explicit caps over message-by-message changes.
+- Treat the inbox as a processing queue, not as storage; archive or delete once a decision is made.
+- Search beats sort for most retrieval needs; keep folder structure shallow (two to three levels max).
+- Confirm destructive actions before executing, and prefer reversible operations (move to trash) over permanent ones.
+- Respect the configured default account; only widen to all accounts when single-account scope is demonstrably incomplete.
+- Cite expected counts to the user before any bulk action so they can intervene if a query has matched more than intended.
 
-## Available MCP Tools Overview
+## Workflow: Daily Inbox Triage
 
-The Apple Mail MCP provides comprehensive email management capabilities:
+Goal: process inbox to zero or near-zero in 15 to 30 minutes.
 
-- **Overview & Discovery**: `get_inbox_overview`, `list_accounts`, `list_mailboxes`
-- **Reading & Searching**: `list_inbox_emails`, `get_recent_emails`, `get_email_with_content`, `search_emails`, `get_email_thread`, `search_by_sender`, `search_all_accounts`, `search_email_content`, `get_newsletters`
-- **Composing & Responding**: `compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`
-- **Organization**: `move_email`, `update_email_status` (read/unread, flag/unflag)
-- **Drafts**: `manage_drafts` (list, create, send, delete)
-- **Attachments**: `list_email_attachments`, `save_email_attachment`
-- **Analytics**: `get_statistics` (account overview, sender stats, mailbox breakdown)
-- **Cleanup**: `manage_trash` (move to trash, delete permanently, empty trash)
-- **Export**: `export_emails` (single email or entire mailbox)
+1. Get overview: `get_inbox_overview()` to see unread counts, recent messages, and suggested actions.
+2. Surface priorities: `search_emails(subject_keyword="urgent")` and variants for "action required", "deadline". Use the default 48-hour window unless the user requests otherwise.
+3. Decide per message using the four-option rule: respond, defer, file, or delete.
+   - For responses, hand off to the `email-drafting` skill.
+   - To defer, flag with `update_email_status(action="flag", subject_keyword="...")`.
+   - To file, use `move_email(to_mailbox="...", max_moves=1)`.
+   - To delete, use `manage_trash(action="move_to_trash")` with an explicit cap.
+4. Mark processed batches read: `update_email_status(action="mark_read", ...)`.
+5. End the session by re-running `get_inbox_overview()` to confirm the queue is drained.
 
-## Common Workflows
+Tips:
 
-### 1. Daily Inbox Triage (Recommended Daily Routine)
+- Process by sender or topic, not strictly chronologically.
+- Apply the 2-minute rule: if a reply is short, do it now rather than deferring.
+- Do not organize what can be found later by search.
 
-**Goal**: Process inbox to zero or near-zero efficiently
+## Workflow: Weekly Email Organization
 
-**Steps**:
-1. **Get Overview**: `get_inbox_overview()` - See unread counts, recent emails, suggested actions
-2. **Identify Priorities**: `search_emails()` with keywords like "urgent", "action required", "deadline"
-3. **Quick Responses**:
-    - For immediate replies: `reply_to_email()`
-    - For considered responses: `manage_drafts(action="create")`
-    - For rich newsletters, status updates, or HTML-heavy drafts: `create_rich_email_draft()`
-4. **Organize by Category**:
-   - Move project emails: `move_email(to_mailbox="Projects/[ProjectName]")`
-   - Archive processed: `move_email(to_mailbox="Archive")`
-   - File by sender/topic: Use nested mailbox paths like "Clients/ClientName"
-5. **Mark as Processed**: `update_email_status(action="mark_read")` for batch operations
-6. **Flag for Follow-up**: `update_email_status(action="flag")` for items needing later attention
+Goal: keep folder structure healthy and archive aging messages.
 
-**Pro Tips**:
-- Process emails in batches by sender or topic
-- Use the 2-minute rule: if reply takes <2 min, do it immediately
-- Don't organize what you can search for later
+1. Review structure: `list_mailboxes(include_counts=True)`.
+2. Identify clutter: mailboxes with more than 1,000 messages or with a high unread ratio.
+3. Analyze patterns: `get_statistics(scope="account_overview")` plus `get_top_senders()`. Full guidance lives in `references/analytics.md`.
+4. Adjust folders: create or rename mailboxes inside Apple Mail (the MCP cannot create folders via AppleScript reliably; `create_mailbox` works for nested mailboxes but confirm with the user first).
+5. Bulk-organize by sender or date:
+   - `search_emails(sender="...", recent_days=0)` then `move_email(sender="...", to_mailbox="...", max_moves=N)`.
+   - `search_emails(date_to="YYYY-MM-DD", recent_days=0)` then move to an archive folder.
+6. Archive read mail older than 30 days into `Archive/<year>`.
 
-### 2. Weekly Email Organization
+Detailed safe bulk operations are documented in `references/bulk-cleanup.md`.
 
-**Goal**: Maintain clean folder structure and archive old emails
+## Workflow: Achieving Inbox Zero
 
-**Steps**:
-1. **Review Mailbox Structure**: `list_mailboxes(include_counts=True)`
-2. **Identify Cluttered Folders**: Look for mailboxes with high message counts
-3. **Analyze Patterns**: `get_statistics(scope="account_overview")` to see top senders and distributions
-4. **Create/Adjust Folders**: Based on your email patterns
-5. **Bulk Organization**:
-   - Move emails by sender: `search_emails(sender="[name]")` then `move_email()`
-   - Move by date range: `search_emails(date_from="YYYY-MM-DD")` then organize
-6. **Archive Old Emails**: Move read emails older than 30 days to Archive folder
+Goal: drain the inbox by processing every message exactly once.
 
-### 3. Finding and Acting on Specific Emails
+1. Survey: `get_inbox_overview()` and `get_statistics(scope="account_overview")` to size the problem.
+2. Process top-down with the five-D framework on each message:
+   - Delete: spam, expired notifications — `manage_trash(action="move_to_trash")`.
+   - Delegate: forward via the `email-drafting` skill.
+   - Defer: flag and move to a "Follow Up" mailbox.
+   - Do: respond now if under two minutes (`email-drafting`).
+   - File: `move_email(to_mailbox="...")` for reference material.
+3. Keep folders sparing: an "Action Required", "Waiting For", and "Reference" trio handles most cases.
+4. Maintain daily — Inbox Zero is a habit, not a one-time event.
 
-**Goal**: Quickly locate emails and take action
+Mindset:
 
-**Search Strategies**:
-- **By Subject**: `get_email_with_content(subject_keyword="keyword")`
-- **By Sender**: `search_by_sender(sender="name@example.com")` or `search_emails(sender="name@example.com")`
-- **By Email Body Content**: `search_email_content(search_term="keyword")`
-- **By Date Range**: `search_emails(date_from="2025-01-01", date_to="2025-01-31")`
-- **With Attachments**: `search_emails(has_attachments=True)`
-- **Unread Only**: `search_emails(read_status="unread")`
-- **Cross-Mailbox**: Use `mailbox="All"` parameter
-- **Cross-Account**: `search_all_accounts(subject_keyword="keyword")` to search across all email accounts
-- **Find Newsletters**: `get_newsletters()` to identify and manage newsletter subscriptions
-
-**Action Patterns**:
-- View thread context: `get_email_thread(subject_keyword="keyword")`
-- Download attachments: `list_email_attachments()` → `save_email_attachment()`
-- Forward with context: `forward_email(message="FYI - see below")`
-
-### 4. Achieving Inbox Zero
-
-**Goal**: Empty inbox by processing all emails
-
-**The Inbox Zero Method**:
-1. **Start Fresh**: `get_inbox_overview()` to see the scope
-2. **Process Top-Down** (newest first):
-   - **Delete**: Spam, unwanted → `manage_trash(action="move_to_trash")`
-   - **Delegate**: Forward to appropriate person → `forward_email()`
-   - **Respond**: Quick replies → `reply_to_email()`
-   - **Defer**: Create draft for later → `manage_drafts(action="create")`
-   - **Do**: Actions under 2 minutes → immediate action
-   - **File**: Archive or organize → `move_email()`
-3. **Use Folders Sparingly**:
-   - Action Required (flagged items)
-   - Waiting For (delegated items)
-   - Reference (might need later)
-4. **Regular Maintenance**: Repeat daily to maintain zero
-
-**Mindset**:
-- Inbox is a processing queue, not storage
-- Every email needs a decision
-- Touch each email once when possible
-
-### 5. Email Analytics & Insights
-
-**Goal**: Understand email patterns and optimize workflow
-
-**Analysis Types**:
-1. **Account Overview**: `get_statistics(scope="account_overview")`
-   - Shows: Total emails, read/unread ratios, flagged count, top senders, mailbox distribution
-   - Use for: Understanding overall email load and patterns
-
-2. **Sender Analysis**: `get_statistics(scope="sender_stats", sender="name")`
-   - Shows: Emails from specific sender, unread count, attachments
-   - Use for: Deciding on filters, folder rules, or unsubscribe decisions
-
-3. **Mailbox Breakdown**: `get_statistics(scope="mailbox_breakdown", mailbox="FolderName")`
-   - Shows: Total messages, unread count, read ratio
-   - Use for: Identifying folders that need cleanup
-
-**Actionable Insights**:
-- High email count from one sender → Create dedicated folder or filter
-- Many unread in Archive → Review and delete old emails
-- Flagged items accumulating → Schedule time to process
-
-### 6. Bulk Cleanup Operations
-
-**Goal**: Clean up old, unnecessary emails safely
-
-**Safe Cleanup Process**:
-1. **Identify Candidates**: `search_emails()` with appropriate filters
-2. **Review First**: Always review what will be affected
-3. **Move to Trash** (reversible): `manage_trash(action="move_to_trash")`
-4. **Verify**: Check trash folder
-5. **Permanent Delete** (if certain): `manage_trash(action="delete_permanent")`
-6. **Empty Trash** (nuclear option): `manage_trash(action="empty_trash")`
-
-**Safety Considerations**:
-- Always use `max_deletes` parameter (default: 5)
-- Review emails before permanent deletion
-- Consider exporting important mailboxes first: `export_emails()`
-
-### 7. Draft Management Workflow
-
-**Goal**: Manage email composition efficiently
-
-**Draft Workflow**:
-1. **Create Draft**: When you need time to think
-   ```
-   manage_drafts(action="create", subject="...", to="...", body="...")
-   ```
-
-2. **List Drafts**: Review pending drafts regularly
-   ```
-   manage_drafts(action="list")
-   ```
-
-3. **Send When Ready**: Complete and send drafts
-   ```
-   manage_drafts(action="send", draft_subject="keyword")
-   ```
-
-4. **Clean Up**: Delete outdated drafts
-   ```
-   manage_drafts(action="delete", draft_subject="keyword")
-   ```
-
-**Best Practices**:
-- Create drafts for emails needing careful wording
-- Review drafts weekly to avoid accumulation
-- Use descriptive subjects for easy draft identification
-
-### 7a. Rich Text / HTML Draft Workflow
-
-**Goal**: Create a rendered Mail compose window for rich email content without Mail showing literal HTML.
-
-**When to use it**:
-- Weekly updates and leadership emails
-- Newsletters or formatted announcements
-- Any case where the assistant only has partial details but should prepare a polished draft quickly
-
-**Preferred workflow**:
-1. Build the HTML content first
-2. Use `create_rich_email_draft()` instead of `manage_drafts(action="create")`
-3. Pass as many details as you have now; missing `to`, `subject`, or `body` can be filled in later
-4. Let the tool generate and open an unsent `.eml` draft in Mail
-5. Optionally save that compose window into Drafts
-
-**Important note**:
-- Do not inject raw HTML into the normal AppleScript `content` field for rich messages; Mail commonly stores that as visible markup rather than rendered formatting.
-
-### 8. Thread Management
-
-**Goal**: Handle email conversations effectively
-
-**Thread Strategies**:
-1. **View Full Thread**: `get_email_thread(subject_keyword="keyword")`
-   - Shows all related messages with Re:, Fwd: prefixes stripped
-   - Sorted by date for chronological view
-
-2. **Reply in Context**: After viewing thread, reply with full context understanding
-   - Use `reply_to_all=True` for group conversations
-   - Use `reply_to_all=False` for one-on-one responses
-
-3. **Archive Threads**: Once resolved, move entire thread
-   - Search for thread using subject
-   - Move all messages to appropriate folder
+- Every message needs a decision.
+- Touch each message once when possible.
+- The inbox is a queue, not an archive.
 
 ## Tool Selection Guidelines
 
-**When to use each tool**:
+| Goal | Tool | Notes |
+|------|------|-------|
+| Inbox snapshot | `get_inbox_overview()` | Always the first call |
+| Full dashboard | `inbox_dashboard()` | Heavier, richer view |
+| Find a specific email | `search_emails(subject_keyword="...")` | Defaults to last 48 hours |
+| Search by sender | `search_emails(sender="...")` | Same defaults apply |
+| Search email bodies | `search_emails(body_text="...", include_content=True)` | Slower; use when subject is unknown |
+| Cross-account search | `search_emails(account=None, all_accounts=True)` | Costly on Exchange; use sparingly |
+| Recent inbox listing | `list_inbox_emails(max_emails=50)` | Default cap is 50 |
+| View a conversation | `get_email_thread(subject_keyword="...")` | See `references/thread-management.md` |
+| Move messages | `move_email(..., max_moves=N)` | Default cap is 1 |
+| Flag / mark read | `update_email_status(action="...", max_updates=N)` | Default cap is 10 |
+| Move to trash / delete | `manage_trash(action="...", max_deletes=N)` | See `references/bulk-cleanup.md` |
+| Analytics | `get_statistics()` and `get_top_senders()` | See `references/analytics.md` |
+| Export for backup | `export_emails(scope="...", mailbox="...")` | Run before any large delete |
+| Sync stale account | `synchronize_account(account="...")` | When recent messages appear missing |
 
-| Goal | Primary Tool | Alternative |
-|------|-------------|-------------|
-| Get overview | `get_inbox_overview` | - |
-| Find specific email | `get_email_with_content` | `search_emails` |
-| Advanced search | `search_emails` | `search_all_accounts` |
-| Search by sender | `search_by_sender` | `search_emails(sender)` |
-| Search email body | `search_email_content` | `get_email_with_content` |
-| Find newsletters | `get_newsletters` | `search_emails` |
-| Cross-account search | `search_all_accounts` | - |
-| View conversation | `get_email_thread` | `search_emails(subject_keyword)` |
-| Recent emails | `get_recent_emails` | `list_inbox_emails` |
-| Organize emails | `move_email` | - |
-| Bulk status update | `update_email_status` | - |
-| Reply/Compose | `reply_to_email`, `compose_email` | `manage_drafts` |
-| Analytics | `get_statistics` | - |
-| Cleanup | `manage_trash` | - |
-| Backup | `export_emails` | - |
-
-## Best Practices
-
-### Email Productivity
-1. **Batch Processing**: Process emails in dedicated time blocks, not continuously
-2. **The 2-Minute Rule**: If it takes less than 2 minutes, do it immediately
-3. **Unsubscribe Aggressively**: Use statistics to identify newsletter overload
-4. **Folder Hierarchy**: Keep folder structure simple (max 2-3 levels deep)
-5. **Search, Don't Sort**: For most emails, good search is better than complex folders
-
-### Tool Usage
-1. **Safety Limits**: Always respect max_moves, max_deletes parameters
-2. **Confirm Destructive Actions**: Always confirm before permanent deletion
-3. **Use Filters**: Combine filters (sender + subject + date) for precise searches
-4. **Cross-Mailbox Search**: Use `mailbox="All"` when location is uncertain
-5. **Content Preview**: Use `include_content=True` sparingly (slower but useful)
-
-### Organization Strategies
-1. **Project-Based Folders**: Organize by active projects, not vague categories
-2. **Client Folders**: Nested structure like "Clients/ClientName"
-3. **Time-Based Archive**: Archive folder with optional year subfolders
-4. **Action Folders**: "Action Required", "Waiting For", "Reference"
-5. **Regular Cleanup**: Archive or delete emails older than 30-90 days
-
-### Privacy & Security
-1. **Check User Preferences**: MCP tools inject user preferences - respect them
-2. **Attachment Safety**: Scan attachments before downloading
-3. **Sensitive Data**: Be cautious with export functions
-4. **Account Selection**: Always confirm which account to use for multi-account setups
-
-## Common Scenarios & Solutions
+## Common Scenarios
 
 ### "I'm overwhelmed by my inbox"
-1. Start with `get_inbox_overview()` to see the scope
-2. Use `get_statistics()` to understand patterns
-3. Implement daily triage workflow (15-30 min/day)
-4. Unsubscribe from non-essential newsletters
-5. Set up basic folder structure
-6. Work toward inbox zero gradually (not all at once)
+
+1. Size the problem: `get_inbox_overview()` and `get_statistics(scope="account_overview")`.
+2. Identify the worst senders: `get_top_senders(limit=10)`.
+3. Adopt the Daily Triage workflow above for 15 to 30 minutes per day.
+4. Unsubscribe from non-essential senders identified in step 2.
+5. Build the minimum folder structure ("Action Required", "Waiting For", "Reference", "Archive").
+6. Aim for sustainable progress — do not attempt a one-shot cleanup of a 10,000-message backlog.
 
 ### "I can't find an important email"
-1. Try `get_email_with_content(subject_keyword)` first
-2. If not found, use `search_emails(mailbox="All", subject_keyword="..."))`
-3. Try searching by sender: `search_emails(sender="...")`
-4. Try date range: `search_emails(date_from="...", date_to="...")`
-5. Check if it's in trash or other folders
 
-### "I need to organize emails by project"
-1. Review current structure: `list_mailboxes()`
-2. Create project folders using Mail app (MCP doesn't create folders)
-3. Search for project-related emails: `search_emails(subject_keyword="ProjectName")`
-4. Batch move: `move_email(to_mailbox="Projects/ProjectName", max_moves=10)`
-5. Use sender filters for team members
+1. Start with `search_emails(subject_keyword="...")` on the default account and default 48-hour window.
+2. Widen the time window: add `recent_days=30` or `recent_days=0` (full inbox).
+3. Widen the scope: add `all_accounts=True` to search every configured account.
+4. Search the body: `search_emails(body_text="...", include_content=True, recent_days=0)`.
+5. Filter by attachment if relevant: `search_emails(has_attachments=True, ...)`.
+6. Check Trash explicitly: `search_emails(mailbox="Trash", recent_days=0, ...)`.
 
-### "I want to backup important emails"
-1. Export single important email: `export_emails(scope="single_email", subject_keyword="...")`
-2. Export entire mailbox: `export_emails(scope="entire_mailbox", mailbox="Important")`
-3. Choose format: txt (readable) or html (preserves formatting)
-4. Specify save location (default: ~/Desktop)
+### "I want to organize emails by project"
 
-### "Too many emails from one sender"
-1. Find all emails from sender: `search_by_sender(sender="...")` for quick sender-based search
-2. Check statistics: `get_statistics(scope="sender_stats", sender="...")`
-3. If unwanted: Search and bulk delete/trash
-4. If wanted but overwhelming: Create dedicated folder and move all
-5. If newsletters: Use `get_newsletters()` to identify newsletter subscriptions, then unsubscribe in Mail app
+1. Review current layout: `list_mailboxes(include_counts=True)`.
+2. Create project folders in Apple Mail (or via `create_mailbox` if the user confirms).
+3. Find project messages: `search_emails(subject_keyword="ProjectName", recent_days=0)`.
+4. Bulk move: `move_email(subject_keyword="ProjectName", to_mailbox="Projects/ProjectName", max_moves=50)` after previewing.
+5. Add sender-based moves for team members on the same project.
 
 ### "I need to follow up on emails"
-1. Use flagging: `update_email_status(action="flag", subject_keyword="...")`
-2. Create "Follow Up" folder and move flagged items
-3. Review flagged emails weekly
-4. Clear flags when complete: `update_email_status(action="unflag", ...)`
 
-## Response Patterns
+1. Flag the message: `update_email_status(action="flag", subject_keyword="...", max_updates=1)`.
+2. Optionally move flagged items into a dedicated "Follow Up" mailbox for visibility.
+3. Schedule a recurring weekly review of the flagged set: `search_emails(flagged=True, recent_days=0)`.
+4. Clear the flag once handled: `update_email_status(action="unflag", subject_keyword="...")`.
 
-When user requests email help:
+### "Too many emails from one sender"
 
-1. **Clarify Intent**: Ask about their goal (organize, find, respond, cleanup)
-2. **Get Context**: Use `get_inbox_overview()` or relevant tool to understand situation
-3. **Suggest Workflow**: Propose appropriate workflow from this skill
-4. **Execute with Confirmation**: For destructive actions, confirm first
-5. **Provide Tips**: Share relevant best practices
-6. **Offer Next Steps**: Suggest related actions or maintenance routines
+1. Confirm volume: `get_statistics(scope="sender_stats", sender="...")`.
+2. Find the messages: `search_emails(sender="...", recent_days=0)`.
+3. If unwanted, run the cleanup sequence from `references/bulk-cleanup.md`.
+4. If wanted but noisy, create a dedicated folder and bulk-move with `move_email(sender="...", to_mailbox="...", max_moves=N)`.
+5. If the sender is a newsletter, surface it via `get_top_senders()` and unsubscribe in Apple Mail.
 
-## Error Handling
+## Additional Resources
 
-Common issues and solutions:
+### Reference Files
 
-- **"Account not found"**: Check account name with `list_accounts()`
-- **"Mailbox not found"**: Use `list_mailboxes()` to see available folders
-- **"No emails found"**: Try broader search terms or `mailbox="All"`
-- **Case sensitivity**: Email searches are case-insensitive, but mailbox names might be
-- **Safety limits hit**: Increase max_moves/max_deletes if intentional, or process in batches
+- `references/analytics.md` — Email analytics, statistics scopes, and using `get_top_senders` for noise diagnosis.
+- `references/bulk-cleanup.md` — Safe bulk cleanup operations with confirmation patterns.
+- `references/thread-management.md` — Working with reconstructed email threads.
 
-## Integration with User Workflow
+### Examples
 
-Always check for user preferences (injected in tool descriptions) and adapt suggestions:
-- Default account preferences
-- Preferred mailbox structure
-- Email volume tolerance
-- Organization philosophy (minimalist vs. detailed folders)
+The `examples/` directory contains worked walkthroughs:
 
-## Remember
+- `examples/email-triage.md`
+- `examples/folder-organization.md`
+- `examples/inbox-zero-workflow.md`
 
-Email management is personal. Adapt these workflows to user preferences and working style. Focus on sustainable habits over perfect organization. The goal is productivity, not perfection.
+### Templates
+
+The `templates/` directory holds reusable query and workflow templates referenced by the examples.

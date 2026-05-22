@@ -121,7 +121,7 @@ When inbox is empty (or contains only flagged future items), you're done!
 
 **Quick Triage**:
 ```
-get_recent_emails(count=20)
+list_inbox_emails(max_emails=20)
 ```
 - Process new arrivals
 - Quick wins (delete, respond)
@@ -221,7 +221,7 @@ Track these to measure success:
 
 1. **Unread Count**: Target: 0 daily
    ```
-   get_unread_count()
+   get_mailbox_unread_counts(summary_only=True)
    ```
 
 2. **Processing Time**: Target: <30 min/day

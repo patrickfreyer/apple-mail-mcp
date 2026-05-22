@@ -12,8 +12,8 @@
     {
       "name": "apple-mail",
       "source": "./plugin",
-      "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 24 MCP tools and an expert email management skill",
-      "version": "3.1.2",
+      "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 26 MCP tools and an expert email management skill",
+      "version": "3.1.5",
       "author": {
         "name": "Patrick Freyer"
       }

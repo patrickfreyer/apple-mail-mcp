@@ -1,19 +1,21 @@
 """Search tools: finding and filtering emails."""
 
+import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
+from apple_mail_mcp import server as _server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
+    AppleScriptTimeout,
     contains_any_condition,
     inject_preferences,
     escape_applescript,
     normalize_search_terms,
     run_applescript,
-    LOWERCASE_HANDLER,
 )
 
 
@@ -104,6 +106,8 @@ def _sort_search_records(
 def _format_search_records_text(
     records: List[Dict[str, Any]],
     subject_only: bool = False,
+    errors: Optional[List[str]] = None,
+    recent_days_applied: Optional[float] = None,
 ) -> str:
     """Format search records as human-readable text."""
     lines = []
@@ -115,9 +119,16 @@ def _format_search_records_text(
             lines.append(f"- {item['subject']}")
     else:
         lines.append("SEARCH RESULTS")
+        if recent_days_applied is not None:
+            if recent_days_applied <= 0:
+                lines.append("Window: full inbox")
+            elif recent_days_applied == 2.0:
+                lines.append("Window: last 48h")
+            else:
+                lines.append(f"Window: last {recent_days_applied}d")
         lines.append("")
         for item in records:
-            indicator = "\u2713" if item["is_read"] else "\u2709"
+            indicator = "✓" if item["is_read"] else "✉"
             lines.append(f"{indicator} {item['subject']}")
             lines.append(f"   From: {item['sender']}")
             lines.append(f"   Date: {item['received_date']}")
@@ -130,6 +141,8 @@ def _format_search_records_text(
 
     lines.append("========================================")
     lines.append(f"FOUND: {len(records)} matching email(s)")
+    if errors:
+        lines.append(f"PARTIAL: {len(errors)} account(s) timed out: {', '.join(errors)}")
     lines.append("========================================")
     return "\n".join(lines)
 
@@ -141,6 +154,9 @@ def _build_search_response(
     sort: str,
     output_format: str,
     subject_only: bool = False,
+    errors: Optional[List[str]] = None,
+    recent_days_applied: Optional[float] = None,
+    searched_from: Optional[str] = None,
 ) -> str:
     """Return either JSON or text for search results."""
     sorted_records = _sort_search_records(records, sort)
@@ -149,59 +165,56 @@ def _build_search_response(
     next_offset = offset + len(items) if has_more else None
 
     if output_format == "json":
-        return json.dumps(
-            {
-                "items": items,
-                "offset": offset,
-                "limit": limit,
-                "returned": len(items),
-                "has_more": has_more,
-                "next_offset": next_offset,
-                "sort": sort,
-            }
-        )
+        payload: Dict[str, Any] = {
+            "items": items,
+            "offset": offset,
+            "limit": limit,
+            "returned": len(items),
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "sort": sort,
+            "recent_days_applied": recent_days_applied if recent_days_applied is not None else 0.0,
+            "searched_from": searched_from,
+        }
+        if errors:
+            payload["errors"] = errors
+        return json.dumps(payload)
 
-    return _format_search_records_text(items, subject_only=subject_only)
+    return _format_search_records_text(
+        items,
+        subject_only=subject_only,
+        errors=errors,
+        recent_days_applied=recent_days_applied,
+    )
 
 
-def _search_mail_records(
-    account: Optional[str] = None,
-    mailbox: str = "INBOX",
-    subject_terms: Optional[List[str]] = None,
-    sender: Optional[str] = None,
-    has_attachments: Optional[bool] = None,
-    read_status: str = "all",
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    include_content: bool = False,
-    content_length: int = 300,
-    offset: int = 0,
-    limit: int = 100,
-    sort: str = "date_desc",
-    body_text: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Return structured search records from Apple Mail.
+def _build_search_script(
+    account: str,
+    mailbox: str,
+    subject_terms: Optional[List[str]],
+    sender: Optional[str],
+    has_attachments: Optional[bool],
+    read_status: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    include_content: bool,
+    content_length: int,
+    offset: int,
+    limit: int,
+    body_text: Optional[str],
+) -> str:
+    """Build the AppleScript for a single account's search.
 
-    When account is None, iterates all accounts.
-    When body_text is provided, uses per-message iteration with case-insensitive
-    content matching (slower than subject/sender-only searches).
+    The script caps message collection inside AppleScript via either a
+    ``whose`` clause sliced down to ``items 1 thru collectLimit`` or a
+    ``messages 1 thru collectLimit`` bound directly, so we never materialize
+    the full message list of a large (10K+) mailbox.
     """
-    if offset < 0:
-        raise ValueError("offset must be >= 0")
-    if limit <= 0:
-        return []
-    if sort not in {"date_desc", "date_asc"}:
-        raise ValueError("Invalid sort. Use: date_desc, date_asc")
-    if read_status not in {"all", "read", "unread"}:
-        raise ValueError("Invalid read_status. Use: all, read, unread")
-
     escaped_sender = escape_applescript(sender) if sender else None
-
-    # When body_text is provided, we must iterate per-message (can't use whose clause)
     use_body_search = body_text is not None
 
     # Build whose-clause filter conditions (only used when NOT doing body search)
-    filter_conditions = []
+    filter_conditions: List[str] = []
     if not use_body_search:
         if subject_terms:
             filter_conditions.append(contains_any_condition("subject", subject_terms))
@@ -221,11 +234,29 @@ def _search_mail_records(
         if date_to:
             filter_conditions.append("date received <= toDate")
 
+    collect_limit = limit + 1  # +1 for has_more probe; offset is decremented separately
+    # A1 cap includes offset because matching messages are skipped *after* binding.
+    scan_cap = collect_limit + offset
+
     if filter_conditions:
-        matching_messages_script = f"set matchingMessages to every message of currentMailbox whose {' and '.join(filter_conditions)}"
-    else:
+        # A1: bind the whose-filtered list once, then immediately cap to
+        # scanCap so subsequent field access doesn't materialize every
+        # remaining matching message in a 24K-message Exchange mailbox.
         matching_messages_script = (
-            "set matchingMessages to every message of currentMailbox"
+            f"set matchingMessages to (every message of currentMailbox whose "
+            f"{' and '.join(filter_conditions)})\n"
+            f"                                if (count of matchingMessages) > {scan_cap} then "
+            f"set matchingMessages to items 1 thru {scan_cap} of matchingMessages"
+        )
+    else:
+        # A1: no filter — still cap by binding messages 1 thru N rather than
+        # `every message`, which forces Mail to enumerate the whole mailbox.
+        matching_messages_script = (
+            f"if (count of messages of currentMailbox) > {scan_cap} then\n"
+            f"                                    set matchingMessages to messages 1 thru {scan_cap} of currentMailbox\n"
+            f"                                else\n"
+            f"                                    set matchingMessages to messages of currentMailbox\n"
+            f"                                end if"
         )
 
     if mailbox == "All":
@@ -260,31 +291,26 @@ def _search_mail_records(
     date_setup = _build_applescript_date("fromDate", date_from)
     date_setup += _build_applescript_date("toDate", date_to, end_of_day=True)
 
-    # Build account iteration
-    if account:
-        escaped_account = escape_applescript(account)
-        account_setup = f'''
+    escaped_account = escape_applescript(account)
+    account_setup = f'''
                 set searchAccounts to {{account "{escaped_account}"}}
         '''
-    else:
-        account_setup = """
-                set searchAccounts to every account
-        """
 
     # Build body search per-message filter block
     if use_body_search:
         escaped_body = escape_applescript(body_text.lower()) if body_text else ""
-        # Build per-message conditions for subject, sender, read_status, dates, attachments
-        per_msg_conditions = []
+        # A4c: case-insensitive checks via `ignoring case`, no shell handler.
+        per_msg_conditions: List[str] = []
         if subject_terms:
-            # Case-insensitive subject check
             subject_checks = " or ".join(
-                f'lowerSubject contains "{escape_applescript(t.lower())}"'
+                f'messageSubject contains "{escape_applescript(t)}"'
                 for t in subject_terms
             )
             per_msg_conditions.append(f"({subject_checks})")
         if sender:
-            per_msg_conditions.append(f'lowerSender contains "{escape_applescript(sender.lower())}"')
+            per_msg_conditions.append(
+                f'messageSender contains "{escape_applescript(sender)}"'
+            )
         if read_status == "read":
             per_msg_conditions.append("messageRead is true")
         elif read_status == "unread":
@@ -299,32 +325,38 @@ def _search_mail_records(
             per_msg_conditions.append("(count of mail attachments of aMessage) = 0")
 
         # Body text condition is always present in body search mode
-        per_msg_conditions.append(f'lowerContent contains "{escaped_body}"')
+        per_msg_conditions.append(f'msgContent contains "{escaped_body}"')
 
         combined_condition = " and ".join(per_msg_conditions)
 
+        # A1 + A4c: cap the candidate set via `messages 1 thru collectLimit`
+        # so body search on a 24K-mailbox doesn't enumerate every message,
+        # and use `ignoring case` instead of an O(N) shell-out per message.
         body_search_loop = f'''
                             set matchingMessages to {{}}
-                            set allMessages to every message of currentMailbox
-                            repeat with aMessage in allMessages
-                                if collectLimit <= 0 then exit repeat
-                                try
-                                    set messageSubject to subject of aMessage
-                                    set messageSender to sender of aMessage
-                                    set messageRead to read status of aMessage
-                                    set messageDate to date received of aMessage
-                                    set lowerSubject to my lowercase(messageSubject)
-                                    set lowerSender to my lowercase(messageSender)
-                                    set msgContent to ""
+                            if (count of messages of currentMailbox) > {scan_cap} then
+                                set candidateMessages to messages 1 thru {scan_cap} of currentMailbox
+                            else
+                                set candidateMessages to messages of currentMailbox
+                            end if
+                            ignoring case
+                                repeat with aMessage in candidateMessages
+                                    if (count of matchingMessages) >= {scan_cap} then exit repeat
                                     try
-                                        set msgContent to content of aMessage
+                                        set messageSubject to subject of aMessage
+                                        set messageSender to sender of aMessage
+                                        set messageRead to read status of aMessage
+                                        set messageDate to date received of aMessage
+                                        set msgContent to ""
+                                        try
+                                            set msgContent to content of aMessage
+                                        end try
+                                        if {combined_condition} then
+                                            set end of matchingMessages to aMessage
+                                        end if
                                     end try
-                                    set lowerContent to my lowercase(msgContent)
-                                    if {combined_condition} then
-                                        set end of matchingMessages to aMessage
-                                    end if
-                                end try
-                            end repeat
+                                end repeat
+                            end ignoring
         '''
     else:
         body_search_loop = ""
@@ -333,13 +365,9 @@ def _search_mail_records(
     if use_body_search:
         message_collection = body_search_loop
     else:
-        message_collection = f"                            {matching_messages_script}"
-
-    lowercase_handler = LOWERCASE_HANDLER if use_body_search else ""
+        message_collection = f"                                {matching_messages_script}"
 
     script = f'''
-    {lowercase_handler}
-
     on sanitize_field(value)
         try
             set valueText to value as string
@@ -391,7 +419,7 @@ def _search_mail_records(
             try
                 set recordLines to {{}}
                 set offsetRemaining to {offset}
-                set collectLimit to {limit + 1}
+                set collectLimit to {collect_limit}
                 {date_setup}
                 {account_setup}
 
@@ -495,17 +523,181 @@ def _search_mail_records(
     end tell
     '''
 
-    result = run_applescript(script, timeout=180)
+    return script
+
+
+def _list_accounts_script() -> str:
+    """Tiny AppleScript that returns one account name per line."""
+    return '''
+    tell application "Mail"
+        set acctNames to {}
+        repeat with anAccount in (every account)
+            set end of acctNames to (name of anAccount)
+        end repeat
+        set AppleScript's text item delimiters to linefeed
+        return acctNames as string
+    end tell
+    '''
+
+
+def _list_mail_accounts(timeout: Optional[int] = 30) -> List[str]:
+    """Return the list of Mail account names. Cheap (<1s) on any setup."""
+    raw = run_applescript(_list_accounts_script(), timeout=timeout)
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _search_one_account(
+    account: str,
+    mailbox: str,
+    subject_terms: Optional[List[str]],
+    sender: Optional[str],
+    has_attachments: Optional[bool],
+    read_status: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    include_content: bool,
+    content_length: int,
+    offset: int,
+    limit: int,
+    body_text: Optional[str],
+    timeout: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Run the search AppleScript for a single account synchronously."""
+    script = _build_search_script(
+        account=account,
+        mailbox=mailbox,
+        subject_terms=subject_terms,
+        sender=sender,
+        has_attachments=has_attachments,
+        read_status=read_status,
+        date_from=date_from,
+        date_to=date_to,
+        include_content=include_content,
+        content_length=content_length,
+        offset=offset,
+        limit=limit,
+        body_text=body_text,
+    )
+    result = run_applescript(script, timeout=timeout if timeout is not None else 180)
     if result.startswith("ERROR|||"):
         raise ValueError(result.split("|||", 1)[1])
-
     return _parse_search_records(result)
+
+
+async def _search_mail_records(
+    account: Optional[str] = None,
+    mailbox: str = "INBOX",
+    subject_terms: Optional[List[str]] = None,
+    sender: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+    read_status: str = "all",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    include_content: bool = False,
+    content_length: int = 300,
+    offset: int = 0,
+    limit: int = 100,
+    sort: str = "date_desc",
+    body_text: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """Return (records, error_account_names) from Apple Mail.
+
+    When account is None, dispatches one AppleScript per account in parallel
+    via ``asyncio.to_thread`` so wall time is bounded by the slowest single
+    account rather than the sum. A per-account ``AppleScriptTimeout`` becomes
+    an entry in the returned errors list — the call still returns whatever
+    other accounts produced.
+    """
+    if offset < 0:
+        raise ValueError("offset must be >= 0")
+    if limit <= 0:
+        return [], []
+    if sort not in {"date_desc", "date_asc"}:
+        raise ValueError("Invalid sort. Use: date_desc, date_asc")
+    if read_status not in {"all", "read", "unread"}:
+        raise ValueError("Invalid read_status. Use: all, read, unread")
+
+    # Single-account: short-circuit, no gather overhead.
+    if account:
+        try:
+            records = await asyncio.to_thread(
+                _search_one_account,
+                account,
+                mailbox,
+                subject_terms,
+                sender,
+                has_attachments,
+                read_status,
+                date_from,
+                date_to,
+                include_content,
+                content_length,
+                offset,
+                limit,
+                body_text,
+                timeout,
+            )
+            return records, []
+        except AppleScriptTimeout:
+            return [], [account]
+
+    # Multi-account: fetch account list cheaply, then dispatch in parallel.
+    try:
+        accounts = await asyncio.to_thread(_list_mail_accounts, timeout)
+    except AppleScriptTimeout:
+        raise ValueError("Mail account listing timed out")
+
+    if not accounts:
+        return [], []
+
+    async def run_one(acct: str) -> tuple[str, Any]:
+        try:
+            recs = await asyncio.to_thread(
+                _search_one_account,
+                acct,
+                mailbox,
+                subject_terms,
+                sender,
+                has_attachments,
+                read_status,
+                date_from,
+                date_to,
+                include_content,
+                content_length,
+                offset,
+                limit,
+                body_text,
+                timeout,
+            )
+            return acct, recs
+        except AppleScriptTimeout:
+            return acct, AppleScriptTimeout(acct)
+        except Exception as exc:
+            return acct, exc
+
+    results = await asyncio.gather(*(run_one(acct) for acct in accounts))
+
+    combined: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    for acct, outcome in results:
+        if isinstance(outcome, AppleScriptTimeout):
+            errors.append(acct)
+        elif isinstance(outcome, Exception):
+            # Treat unexpected per-account errors as soft failures too — caller
+            # still gets partial data plus the account name in errors.
+            errors.append(acct)
+        else:
+            combined.extend(outcome)
+
+    return combined, errors
 
 
 @mcp.tool()
 @inject_preferences
-def search_emails(
+async def search_emails(
     account: Optional[str] = None,
+    all_accounts: bool = False,
     mailbox: str = "INBOX",
     subject_keyword: Optional[str] = None,
     subject_keywords: Optional[List[str]] = None,
@@ -514,6 +706,7 @@ def search_emails(
     read_status: str = "all",
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    recent_days: float = 2.0,
     include_content: bool = False,
     max_content_length: int = 500,
     body_text: Optional[str] = None,
@@ -522,16 +715,42 @@ def search_emails(
     offset: int = 0,
     limit: Optional[int] = None,
     sort: str = "date_desc",
+    timeout: Optional[int] = None,
 ) -> str:
-    """
+    """Defaults to the last 48 hours and the configured default account. Pass `recent_days=7` for the past week, `recent_days=0` for the full inbox, `all_accounts=True` to search every account.
+
     Unified search tool with JSON output, pagination, and real date filtering.
 
     Consolidates subject search, sender search, body content search, and
     cross-account search into a single tool.
 
+    Smart defaults:
+        - When `date_from` is None and `recent_days > 0`, an effective window
+          of `now - recent_days` days is applied. Set `recent_days=0` for an
+          unbounded full-inbox sweep. An explicit `date_from` always wins.
+        - When `account` is None and `all_accounts` is False, the tool falls
+          back to the ``DEFAULT_MAIL_ACCOUNT`` env-configured account if one
+          is set. Pass `all_accounts=True` to opt back into multi-account
+          dispatch even when a default is configured.
+        - `recent_days` is applied BEFORE pagination, so `offset` counts
+          within the windowed result set.
+
+    Performance guidance (read before omitting filters on large mailboxes):
+        - Multi-account search (account=None) on a 10K+ inbox can be slow.
+          Prefer passing `account` plus `date_from` together when you know
+          which mailbox the messages are in.
+        - body_text=True is O(N x message-size) — pair it with tight other
+          filters (account, date_from, subject_keyword) to keep wall time
+          predictable on Exchange / Gmail accounts with deep history.
+        - When account is None each account runs in parallel; one slow
+          account no longer blocks the others, but its name will appear in
+          the response's `errors` field (JSON) or partial banner (text) so
+          you can retry it alone with a longer `timeout`.
+
     Args:
         account: Account name to search in (e.g., "Gmail", "Work").
-            If None, searches ALL accounts (slower).
+            If None, searches ALL accounts in parallel (slower wall time on
+            very large inboxes — prefer specifying account + date_from).
         mailbox: Mailbox to search (default: "INBOX", use "All" for all mailboxes, or specific folder name)
         subject_keyword: Optional keyword to search in subject
         subject_keywords: Optional list of subject keywords; matches any keyword
@@ -544,14 +763,21 @@ def search_emails(
         max_content_length: Maximum content length in characters when include_content=True (default: 500, 0 = unlimited)
         body_text: Optional text to search for in email body content (case-insensitive).
             WARNING: body search is significantly slower as it reads each message body.
+            Always combine with account + date_from for inboxes over a few thousand messages.
         max_results: Backward-compatible alias for limit
         output_format: Output format: "text" or "json" (default: "text")
         offset: Number of matching results to skip before returning data
         limit: Maximum number of results to return per page
         sort: Result sort order: "date_desc" or "date_asc"
+        timeout: Optional per-account AppleScript timeout in seconds. Defaults
+            to 180s. Raise this for known-slow accounts (e.g. large Exchange
+            inboxes) when the default times out.
 
     Returns:
-        Formatted list of matching emails or JSON payload with stable message metadata
+        Formatted list of matching emails or JSON payload with stable message
+        metadata. When one or more accounts time out during a multi-account
+        call, the response includes the slow account names so the caller can
+        retry them individually with a larger `timeout`.
     """
     if output_format not in {"text", "json"}:
         return "Error: Invalid output_format. Use: text, json"
@@ -559,10 +785,28 @@ def search_emails(
     if limit is None:
         limit = max_results if max_results is not None else 100
 
+    # Smart default: fall back to the configured default account when neither
+    # `account` nor `all_accounts` is set. Lazy attribute read so tests can
+    # monkeypatch `apple_mail_mcp.server.DEFAULT_MAIL_ACCOUNT` after import.
+    if account is None and not all_accounts and _server.DEFAULT_MAIL_ACCOUNT:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+
+    # Smart default: 48h window when no explicit start date was passed.
+    effective_recent_days = float(recent_days) if recent_days else 0.0
+    searched_from: Optional[str] = None
+    if date_from is None and effective_recent_days > 0:
+        cutoff = datetime.now() - timedelta(days=effective_recent_days)
+        date_from = cutoff.strftime("%Y-%m-%d")
+        searched_from = date_from
+    elif date_from is not None:
+        # Explicit caller override — effective window is 0 for reporting purposes.
+        effective_recent_days = 0.0
+        searched_from = date_from
+
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
 
     try:
-        records = _search_mail_records(
+        records, errors = await _search_mail_records(
             account=account,
             mailbox=mailbox,
             subject_terms=subject_terms,
@@ -577,6 +821,7 @@ def search_emails(
             limit=limit,
             sort=sort,
             body_text=body_text,
+            timeout=timeout,
         )
         return _build_search_response(
             records,
@@ -585,6 +830,9 @@ def search_emails(
             sort=sort,
             output_format=output_format,
             subject_only=False,
+            errors=errors or None,
+            recent_days_applied=effective_recent_days,
+            searched_from=searched_from,
         )
     except ValueError as exc:
         return f"Error: {exc}"
@@ -686,9 +934,9 @@ def get_email_thread(
 
             -- Display thread messages
             set messageCount to count of threadMessages
-            set outputText to outputText & "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501" & return
+            set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return
             set outputText to outputText & "FOUND " & messageCount & " MESSAGE(S) IN THREAD" & return
-            set outputText to outputText & "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501" & return & return
+            set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
 
             repeat with aMessage in threadMessages
                 try
@@ -698,9 +946,9 @@ def get_email_thread(
                     set messageRead to read status of aMessage
 
                     if messageRead then
-                        set readIndicator to "\u2713"
+                        set readIndicator to "✓"
                     else
-                        set readIndicator to "\u2709"
+                        set readIndicator to "✉"
                     end if
 
                     set outputText to outputText & readIndicator & " " & messageSubject & return

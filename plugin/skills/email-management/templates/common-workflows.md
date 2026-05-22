@@ -29,10 +29,10 @@ manage_trash(action="move_to_trash", sender="newsletter@", mailbox="INBOX", max_
 
 ```
 # 1. Check unread count
-get_unread_count()
+get_mailbox_unread_counts(summary_only=True)
 
 # 2. Quick scan recent
-get_recent_emails(count=20, include_content=False)
+list_inbox_emails(max_emails=20, include_content=False)
 
 # 3. Mark read non-essential
 update_email_status(action="mark_read", sender="automated@", mailbox="INBOX", max_updates=10)
@@ -50,9 +50,10 @@ search_emails(mailbox="All")  # Check flags
 
 ```
 # Option 1: Search by subject
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="Project Alpha",
+    include_content=True,
     max_results=5,
     max_content_length=300
 )
@@ -84,6 +85,7 @@ search_emails(
     account="Work",
     sender="colleague@company.com",
     mailbox="All",
+    recent_days=0,
     max_results=50
 )
 
@@ -101,6 +103,7 @@ search_emails(
     sender="colleague@company.com",
     has_attachments=True,
     mailbox="All",
+    recent_days=0,
     max_results=20
 )
 ```
@@ -144,6 +147,7 @@ search_emails(
     sender="supplier@example.com",
     has_attachments=True,
     mailbox="All",
+    recent_days=0,
     max_results=20
 )
 
@@ -188,7 +192,8 @@ move_email(
 search_emails(
     account="Work",
     sender="client@example.com",
-    mailbox="INBOX"
+    mailbox="INBOX",
+    recent_days=0
 )
 
 move_email(
@@ -228,6 +233,7 @@ search_emails(
     account="Work",
     sender="bigclient@example.com",
     mailbox="All",
+    recent_days=0,
     max_results=50
 )
 
@@ -247,6 +253,7 @@ move_email(
 # 1. Find old read emails
 search_emails(
     account="Work",
+    date_from="2020-01-01",
     date_to="2024-12-31",
     read_status="read",
     mailbox="INBOX",
@@ -282,9 +289,10 @@ move_email(
 
 ```
 # 1. Find the email
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="Quick Question",
+    include_content=True,
     max_results=1,
     max_content_length=300
 )
@@ -311,9 +319,10 @@ move_email(
 
 ```
 # 1. Review email content
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="Complex Request",
+    include_content=True,
     max_results=1,
     max_content_length=500
 )
@@ -361,9 +370,10 @@ reply_to_email(
 
 ```
 # 1. Find the email
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="Customer Issue",
+    include_content=True,
     max_results=1,
     max_content_length=500
 )
@@ -413,6 +423,7 @@ search_emails(
     account="Personal",
     sender="newsletter@unwanted.com",
     mailbox="INBOX",
+    recent_days=0,
     max_results=50
 )
 
@@ -429,7 +440,8 @@ manage_trash(
 search_emails(
     account="Personal",
     sender="newsletter@unwanted.com",
-    mailbox="Trash"
+    mailbox="Trash",
+    recent_days=0
 )
 
 # 5. Permanently delete if confirmed (optional)
@@ -447,6 +459,7 @@ manage_trash(
 # 1. Find emails older than 90 days
 search_emails(
     account="Work",
+    date_from="2020-01-01",
     date_to="2024-10-01",
     read_status="read",
     mailbox="INBOX",
@@ -479,6 +492,7 @@ move_email(
 search_emails(
     account="Work",
     mailbox="Trash",
+    recent_days=0,
     max_results=20
 )
 
@@ -577,7 +591,7 @@ list_mailboxes(
 )
 
 # 4. Review unread counts
-get_unread_count()
+get_mailbox_unread_counts(summary_only=True)
 
 # 5. Identify actions:
 # - Unsubscribe from high-volume, low-value senders
@@ -606,6 +620,7 @@ search_emails(
     account="Work",
     sender="automated-reports@company.com",
     mailbox="All",
+    recent_days=0,
     max_results=50
 )
 
@@ -628,6 +643,7 @@ search_emails(
     account="Work",
     subject_keyword="Q4 Review",
     mailbox="All",
+    recent_days=0,
     max_results=20
 )
 
@@ -671,6 +687,7 @@ search_emails(
     account="Work",
     sender="project-team@company.com",
     mailbox="INBOX",
+    recent_days=0,
     max_results=50
 )
 
@@ -696,6 +713,7 @@ move_email(
 search_emails(
     account="Work",
     mailbox="Important Project",
+    recent_days=0,
     max_results=20
 )
 
@@ -716,9 +734,10 @@ export_emails(
 
 ```
 # 1. Find the email
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="Contract Agreement",
+    include_content=True,
     max_results=1,
     max_content_length=0  # Full content
 )
@@ -803,7 +822,7 @@ get_statistics(scope="account_overview", days_back=7)
 ```
 # Daily essentials
 get_inbox_overview()
-get_recent_emails(count=20)
+list_inbox_emails(max_emails=20)
 search_emails(subject_keyword="...", mailbox="All")
 reply_to_email(subject_keyword="...", reply_body="...")
 move_email(to_mailbox="Archive", from_mailbox="INBOX", max_moves=10)

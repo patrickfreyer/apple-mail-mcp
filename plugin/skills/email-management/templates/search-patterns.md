@@ -4,11 +4,12 @@ This document provides a comprehensive reference for search patterns using the A
 
 ## Basic Search Tools
 
-The MCP provides three main search tools:
+The MCP provides two main search tools:
 
-1. **`get_email_with_content()`** - Best for quick subject searches with content preview
-2. **`search_emails()`** - Best for advanced filtering with multiple criteria
-3. **`get_email_thread()`** - Best for viewing conversation threads
+1. **`search_emails()`** - Advanced filtering with multiple criteria, optionally with content preview via `include_content=True`
+2. **`get_email_thread()`** - Best for viewing conversation threads
+
+Note: `search_emails` defaults to the last 48 hours and the configured default account. To scan the full inbox, pass `recent_days=0` and/or `all_accounts=True`. When you pass an explicit `date_from`, `recent_days` does not apply.
 
 ## Search Pattern Cheat Sheet
 
@@ -16,9 +17,10 @@ The MCP provides three main search tools:
 
 ```python
 # Simple subject search (fast, with content)
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="meeting",
+    include_content=True,
     max_results=5,
     max_content_length=300
 )
@@ -43,6 +45,7 @@ search_emails(
     account="Work",
     sender="colleague@company.com",
     mailbox="All",
+    recent_days=0,
     max_results=50
 )
 
@@ -50,7 +53,8 @@ search_emails(
 search_emails(
     account="Work",
     sender="@company.com",  # All from company domain
-    mailbox="All"
+    mailbox="All",
+    recent_days=0
 )
 
 # Sender + subject
@@ -58,7 +62,8 @@ search_emails(
     account="Work",
     sender="boss@company.com",
     subject_keyword="review",
-    mailbox="All"
+    mailbox="All",
+    recent_days=0
 )
 ```
 
@@ -84,6 +89,7 @@ search_emails(
 # Old emails (before specific date)
 search_emails(
     account="Work",
+    date_from="2020-01-01",
     date_to="2024-12-31",
     read_status="read",
     mailbox="INBOX"
@@ -140,7 +146,8 @@ search_emails(
     account="Work",
     sender="vendor@example.com",
     has_attachments=True,
-    mailbox="All"
+    mailbox="All",
+    recent_days=0
 )
 ```
 
@@ -151,14 +158,16 @@ search_emails(
 search_emails(
     account="Work",
     mailbox="Projects/Alpha",
-    subject_keyword="update"
+    subject_keyword="update",
+    recent_days=0
 )
 
 # Search across all mailboxes
 search_emails(
     account="Work",
     mailbox="All",
-    subject_keyword="important"
+    subject_keyword="important",
+    recent_days=0
 )
 
 # Search in inbox only (default)
@@ -181,6 +190,7 @@ search_emails(
     has_attachments=True,
     read_status="unread",
     mailbox="All",
+    recent_days=0,
     max_results=20
 )
 
@@ -196,6 +206,7 @@ search_emails(
 # Old read emails with attachments (for cleanup)
 search_emails(
     account="Work",
+    date_from="2020-01-01",
     date_to="2024-06-30",
     has_attachments=True,
     read_status="read",
@@ -238,17 +249,19 @@ search_emails(
 )
 
 # Full content preview
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="contract",
+    include_content=True,
     max_content_length=0,  # 0 = unlimited
     max_results=1
 )
 
 # Long preview (1000 chars)
-get_email_with_content(
+search_emails(
     account="Work",
     subject_keyword="requirements",
+    include_content=True,
     max_content_length=1000,
     max_results=3
 )
@@ -758,7 +771,7 @@ filtered_search = search_emails(
 
 | I Want To... | Use This |
 |-------------|----------|
-| Quick subject search | `get_email_with_content(subject_keyword="...")` |
+| Quick subject search | `search_emails(subject_keyword="...", include_content=True)` |
 | Advanced filtering | `search_emails(...)` |
 | View conversation | `get_email_thread(subject_keyword="...")` |
 | Find by sender | `search_emails(sender="...")` |
@@ -766,7 +779,7 @@ filtered_search = search_emails(
 | Find unread | `search_emails(read_status="unread")` |
 | Find with attachments | `search_emails(has_attachments=True)` |
 | Search all folders | `search_emails(mailbox="All")` |
-| Get content preview | `search_emails(include_content=True)` or `get_email_with_content()` |
+| Get content preview | `search_emails(include_content=True)` |
 | Find sent emails | `search_emails(mailbox="Sent")` |
 | Find drafts | `manage_drafts(action="list")` |
 

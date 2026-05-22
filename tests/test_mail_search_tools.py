@@ -1,11 +1,14 @@
 """Tests for structured email search and bulk update helpers."""
 
+import asyncio
 import json
 import unittest
 from unittest.mock import patch
 
+from apple_mail_mcp.core import AppleScriptTimeout
 from apple_mail_mcp.tools import manage as manage_tools
 from apple_mail_mcp.tools import search as search_tools
+from apple_mail_mcp.tools import inbox as inbox_tools
 
 
 def _record_line(
@@ -32,6 +35,11 @@ def _record_line(
             content_preview,
         ]
     )
+
+
+def _run(coro):
+    """Convenience: drive an async tool to completion from a sync test."""
+    return asyncio.run(coro)
 
 
 class SearchToolTests(unittest.TestCase):
@@ -62,12 +70,14 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    output_format="json",
-                    offset=1,
-                    limit=2,
-                    max_results=None,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        output_format="json",
+                        offset=1,
+                        limit=2,
+                        max_results=None,
+                    )
                 )
             )
 
@@ -92,12 +102,14 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    subject_keyword="Ticket",
-                    read_status="unread",
-                    output_format="json",
-                    limit=1,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        subject_keyword="Ticket",
+                        read_status="unread",
+                        output_format="json",
+                        limit=1,
+                    )
                 )
             )
 
@@ -118,14 +130,16 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    subject_keyword="Ticket",
-                    date_from="2026-03-01",
-                    date_to="2026-03-07",
-                    output_format="json",
-                    limit=1,
-                    max_results=None,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        subject_keyword="Ticket",
+                        date_from="2026-03-01",
+                        date_to="2026-03-07",
+                        output_format="json",
+                        limit=1,
+                        max_results=None,
+                    )
                 )
             )
 
@@ -135,7 +149,11 @@ class SearchToolTests(unittest.TestCase):
         self.assertIn("date received >= fromDate", captured["script"])
         self.assertIn("date received <= toDate", captured["script"])
 
-    def test_large_mailbox_search_uses_prefiltered_selection(self):
+    def test_large_mailbox_search_uses_applescript_cap(self):
+        """A1: when subject/sender filters are supplied, the script must use
+        the `whose` clause AND immediately cap the matching list to
+        `items 1 thru N` so a 24K-message Exchange mailbox doesn't
+        materialize every match."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -144,24 +162,82 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    subject_keywords=["INC-1", "INC-2"],
-                    include_content=False,
-                    output_format="json",
-                    limit=50,
-                    max_results=None,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        subject_keywords=["INC-1", "INC-2"],
+                        include_content=False,
+                        output_format="json",
+                        limit=50,
+                        max_results=None,
+                    )
                 )
             )
 
         self.assertEqual(response["items"], [])
         self.assertIn(
-            "set matchingMessages to every message of currentMailbox whose",
+            "set matchingMessages to (every message of currentMailbox whose",
             captured["script"],
         )
+        # A1 cap: limit+1 = 51 (offset=0)
+        self.assertIn("set matchingMessages to items 1 thru 51 of matchingMessages",
+                      captured["script"])
+        # The old, unfiltered enumeration must not appear.
         self.assertNotIn(
-            "set mailboxMessages to every message of currentMailbox", captured["script"]
+            "set matchingMessages to every message of currentMailbox\n",
+            captured["script"],
         )
+
+    def test_no_filter_caps_via_messages_1_thru_n(self):
+        """A1: with no filter conditions, the script should bind
+        `messages 1 thru N` directly instead of `every message`."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            _run(
+                search_tools.search_emails(
+                    account="Work",
+                    output_format="json",
+                    limit=10,
+                    max_results=None,
+                    recent_days=0,
+                )
+            )
+
+        self.assertIn("messages 1 thru 11 of currentMailbox", captured["script"])
+        # `every message` should not appear as the binding source (the helper
+        # functions don't reference it either in this branch).
+        self.assertNotIn("set matchingMessages to every message", captured["script"])
+
+    def test_date_only_filter_uses_whose_clause(self):
+        """A2: a date-only call must still route through the `whose` filter
+        path so we don't fall back to the full-scan branch."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            _run(
+                search_tools.search_emails(
+                    account="Work",
+                    date_from="2026-05-01",
+                    output_format="json",
+                    limit=10,
+                    max_results=None,
+                )
+            )
+
+        self.assertIn(
+            "set matchingMessages to (every message of currentMailbox whose",
+            captured["script"],
+        )
+        self.assertIn("date received >= fromDate", captured["script"])
 
     def test_search_emails_returns_mail_link_from_internet_message_id(self):
         def fake_run(script, timeout=120):
@@ -173,12 +249,14 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    subject_keyword="Linked",
-                    output_format="json",
-                    limit=1,
-                    max_results=None,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        subject_keyword="Linked",
+                        output_format="json",
+                        limit=1,
+                        max_results=None,
+                    )
                 )
             )
 
@@ -204,12 +282,14 @@ class SearchToolTests(unittest.TestCase):
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             response = json.loads(
-                search_tools.search_emails(
-                    account="Work",
-                    subject_keyword="Unbracketed",
-                    output_format="json",
-                    limit=1,
-                    max_results=None,
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        subject_keyword="Unbracketed",
+                        output_format="json",
+                        limit=1,
+                        max_results=None,
+                    )
                 )
             )
 
@@ -222,8 +302,44 @@ class SearchToolTests(unittest.TestCase):
             "message://%3Cabc@example.com%3E",
         )
 
-    def test_search_emails_account_none_iterates_all_accounts(self):
-        """When account is None, the script should iterate all accounts."""
+    def test_search_emails_account_none_dispatches_per_account(self):
+        """A4b: when account is None, the tool first lists accounts (one
+        AppleScript call), then runs one AppleScript per account in
+        parallel via asyncio.to_thread. Each per-account script targets
+        a single account via `{account "..."}`."""
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            # First call is the account list probe — return two account names.
+            if "set acctNames to" in script:
+                return "Work\nPersonal"
+            # Subsequent per-account calls return no records.
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            _run(
+                search_tools.search_emails(
+                    account=None,
+                    subject_keyword="Test",
+                    output_format="json",
+                    limit=5,
+                )
+            )
+
+        # 1 list-accounts call + 2 per-account search calls
+        self.assertEqual(len(scripts), 3)
+        per_account_scripts = scripts[1:]
+        self.assertTrue(
+            any('set searchAccounts to {account "Work"}' in s for s in per_account_scripts)
+        )
+        self.assertTrue(
+            any('set searchAccounts to {account "Personal"}' in s for s in per_account_scripts)
+        )
+
+    def test_search_emails_body_text_uses_ignoring_case_not_lowercase_handler(self):
+        """A4c: body-search must no longer rely on the per-message shell-out
+        lowercase handler. Instead it wraps comparisons in `ignoring case`."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -231,17 +347,99 @@ class SearchToolTests(unittest.TestCase):
             return ""
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
-            search_tools.search_emails(
-                account=None,
-                subject_keyword="Test",
-                output_format="json",
-                limit=5,
+            _run(
+                search_tools.search_emails(
+                    account="Work",
+                    body_text="invoice",
+                    output_format="json",
+                    limit=5,
+                )
             )
 
-        self.assertIn("set searchAccounts to every account", captured["script"])
+        self.assertNotIn("on lowercase(", captured["script"])
+        self.assertNotIn("my lowercase(", captured["script"])
+        self.assertIn("ignoring case", captured["script"])
+        self.assertIn('msgContent contains "invoice"', captured["script"])
 
-    def test_search_emails_body_text_uses_lowercase_handler(self):
-        """When body_text is provided, the script should include LOWERCASE_HANDLER."""
+    def test_search_emails_timeout_param_is_forwarded(self):
+        """A3: an explicit `timeout=N` kwarg must reach run_applescript so the
+        caller can extend (or shorten) the per-account budget."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["timeout"] = timeout
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            _run(
+                search_tools.search_emails(
+                    account="Work",
+                    subject_keyword="Test",
+                    output_format="json",
+                    limit=5,
+                    timeout=300,
+                )
+            )
+
+        self.assertEqual(captured["timeout"], 300)
+
+    def test_search_emails_per_account_timeout_yields_errors_field(self):
+        """A4: when one account's AppleScript times out, the call must still
+        return data from the other accounts plus an `errors` list naming the
+        slow account(s)."""
+
+        def fake_run(script, timeout=120):
+            if "set acctNames to" in script:
+                return "Work\nTU"
+            if 'account "TU"' in script:
+                raise AppleScriptTimeout("TU timed out")
+            # Work returns one record.
+            return _record_line(700, "Work email", account="Work")
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                _run(
+                    search_tools.search_emails(
+                        account=None,
+                        subject_keyword="Anything",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
+            )
+
+        self.assertIn("errors", response)
+        self.assertEqual(response["errors"], ["TU"])
+        self.assertEqual(len(response["items"]), 1)
+        self.assertEqual(response["items"][0]["account"], "Work")
+
+    def test_search_emails_single_account_skips_account_listing(self):
+        """A4b: when an explicit account is passed, the tool must NOT run the
+        account-listing probe — single-account calls should incur zero gather
+        overhead."""
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            _run(
+                search_tools.search_emails(
+                    account="Work",
+                    subject_keyword="Test",
+                    output_format="json",
+                    limit=5,
+                )
+            )
+
+        self.assertEqual(len(scripts), 1)
+        self.assertNotIn("set acctNames to", scripts[0])
+
+    def test_search_emails_default_recent_days_applies_48h_window(self):
+        """A0a: with no date args, a 48h window is auto-applied — the script
+        must contain a populated `fromDate` and a `date received >= fromDate`
+        clause, and the JSON response must echo `recent_days_applied=2.0`."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -249,15 +447,252 @@ class SearchToolTests(unittest.TestCase):
             return ""
 
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
-            search_tools.search_emails(
-                account="Work",
-                body_text="invoice",
-                output_format="json",
-                limit=5,
+            response = json.loads(
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
             )
 
-        self.assertIn("on lowercase(str)", captured["script"])
-        self.assertIn('lowerContent contains "invoice"', captured["script"])
+        self.assertIn("set year of fromDate to", captured["script"])
+        self.assertIn("date received >= fromDate", captured["script"])
+        self.assertEqual(response["recent_days_applied"], 2.0)
+        self.assertIsNotNone(response["searched_from"])
+
+    def test_search_emails_recent_days_zero_disables_window(self):
+        """A0a: recent_days=0 must disable the auto-window — no `fromDate`
+        machinery should appear in the generated script."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        output_format="json",
+                        limit=5,
+                        recent_days=0,
+                    )
+                )
+            )
+
+        self.assertNotIn("set year of fromDate to", captured["script"])
+        self.assertEqual(response["recent_days_applied"], 0.0)
+        self.assertIsNone(response["searched_from"])
+
+    def test_search_emails_explicit_date_from_overrides_default_window(self):
+        """A0a: an explicit `date_from` overrides the 48h default — the script
+        must encode the caller-supplied date, not today−2."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                _run(
+                    search_tools.search_emails(
+                        account="Work",
+                        date_from="2026-01-01",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
+            )
+
+        self.assertIn("set year of fromDate to 2026", captured["script"])
+        self.assertIn("set month of fromDate to January", captured["script"])
+        self.assertIn("set day of fromDate to 1", captured["script"])
+        self.assertEqual(response["searched_from"], "2026-01-01")
+
+    def test_search_emails_default_account_respected_when_env_set(self):
+        """A0b: when DEFAULT_MAIL_ACCOUNT is set and the caller passes neither
+        `account` nor `all_accounts=True`, the generated script must target
+        that default account."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured.setdefault("scripts", []).append(script)
+            return ""
+
+        from apple_mail_mcp import server as _srv
+
+        with patch.object(_srv, "DEFAULT_MAIL_ACCOUNT", "Work"):
+            with patch(
+                "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+            ):
+                _run(
+                    search_tools.search_emails(
+                        subject_keyword="Test",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
+
+        # Single-account fast path: only one AppleScript call, targeting "Work".
+        self.assertEqual(len(captured["scripts"]), 1)
+        self.assertIn('set searchAccounts to {account "Work"}', captured["scripts"][0])
+        self.assertNotIn("set acctNames to", captured["scripts"][0])
+
+    def test_search_emails_all_accounts_overrides_default_account(self):
+        """A0b: `all_accounts=True` must bypass the DEFAULT_MAIL_ACCOUNT
+        fallback and trigger multi-account dispatch."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured.setdefault("scripts", []).append(script)
+            if "set acctNames to" in script:
+                return "Work\nPersonal"
+            return ""
+
+        from apple_mail_mcp import server as _srv
+
+        with patch.object(_srv, "DEFAULT_MAIL_ACCOUNT", "Work"):
+            with patch(
+                "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+            ):
+                _run(
+                    search_tools.search_emails(
+                        all_accounts=True,
+                        subject_keyword="Test",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
+
+        # 1 account-listing probe + 2 per-account dispatches.
+        self.assertEqual(len(captured["scripts"]), 3)
+        per_account = captured["scripts"][1:]
+        self.assertTrue(
+            any('set searchAccounts to {account "Work"}' in s for s in per_account)
+        )
+        self.assertTrue(
+            any('set searchAccounts to {account "Personal"}' in s for s in per_account)
+        )
+
+    def test_search_emails_parallel_dispatch_uses_to_thread(self):
+        """A4b: per-account searches must be dispatched via asyncio.to_thread
+        (one call per account) rather than serially inside one big script."""
+        from unittest.mock import MagicMock
+
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if "set acctNames to" in script:
+                return "A\nB\nC"
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            with patch(
+                "apple_mail_mcp.tools.search.asyncio.to_thread",
+                wraps=asyncio.to_thread,
+            ) as to_thread_spy:
+                _run(
+                    search_tools.search_emails(
+                        account=None,
+                        subject_keyword="X",
+                        output_format="json",
+                        limit=5,
+                    )
+                )
+
+        # 1 list-accounts dispatch + 3 per-account dispatches
+        self.assertGreaterEqual(to_thread_spy.call_count, 4)
+
+
+class ListInboxEmailsTests(unittest.TestCase):
+    def test_list_inbox_emails_caps_messages_in_applescript(self):
+        """A1: text-format list_inbox_emails must bind `messages 1 thru N`
+        rather than `every message` so large inboxes don't fully enumerate."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            _run(inbox_tools.list_inbox_emails(account="Work", max_emails=10))
+
+        self.assertIn("messages 1 thru 10 of inboxMailbox", captured["script"])
+        self.assertNotIn("every message of inboxMailbox", captured["script"])
+
+    def test_list_inbox_emails_unread_only_uses_whose(self):
+        """A1: include_read=False must use `whose read status is false`
+        instead of a Python-side filter on every message."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            _run(
+                inbox_tools.list_inbox_emails(
+                    account="Work",
+                    max_emails=10,
+                    include_read=False,
+                    output_format="json",
+                )
+            )
+
+        self.assertIn("whose read status is false", captured["script"])
+
+    def test_list_inbox_emails_timeout_is_forwarded(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["timeout"] = timeout
+            return ""
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            _run(inbox_tools.list_inbox_emails(account="Work", max_emails=5, timeout=240))
+
+        self.assertEqual(captured["timeout"], 240)
+
+    def test_list_inbox_emails_default_max_emails_is_50(self):
+        """A0a: list_inbox_emails defaults max_emails to 50, which must be
+        baked into the AppleScript via `messages 1 thru 50`."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            _run(inbox_tools.list_inbox_emails(account="Work"))
+
+        self.assertIn("messages 1 thru 50 of inboxMailbox", captured["script"])
+
+    def test_list_inbox_emails_partial_results_on_account_timeout(self):
+        """A4: when one account's AppleScript times out, list_inbox_emails
+        (JSON path) must still return other accounts' data + an `errors`
+        list."""
+
+        def fake_run(script, timeout=120):
+            if "set acctNames to" in script:
+                return "Work\nTU"
+            if 'account "TU"' in script:
+                raise AppleScriptTimeout("TU timed out")
+            return "Hello|||sender@example.com|||today|||false|||Work"
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            raw = _run(inbox_tools.list_inbox_emails(output_format="json", max_emails=5))
+
+        payload = json.loads(raw)
+        self.assertIn("emails", payload)
+        self.assertIn("errors", payload)
+        self.assertEqual(payload["errors"], ["TU"])
+        self.assertEqual(len(payload["emails"]), 1)
+        self.assertEqual(payload["emails"][0]["account"], "Work")
 
 
 class ManageToolTests(unittest.TestCase):

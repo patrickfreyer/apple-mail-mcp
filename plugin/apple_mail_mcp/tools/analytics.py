@@ -3,29 +3,50 @@
 import os
 from typing import Optional, List, Dict, Any
 
+from apple_mail_mcp import server as _server
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+from apple_mail_mcp.core import (
+    AppleScriptTimeout,
+    inject_preferences,
+    escape_applescript,
+    run_applescript,
+    inbox_mailbox_script,
+)
 from apple_mail_mcp.constants import SKIP_FOLDERS
 
 
 @mcp.tool()
 @inject_preferences
 def list_email_attachments(
-    account: str,
-    subject_keyword: str,
-    max_results: int = 1
+    account: Optional[str] = None,
+    subject_keyword: str = "",
+    max_results: int = 50,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     List attachments for emails matching a subject keyword.
 
+    Scans the most-recent inbox messages (capped at ``max_results`` via
+    ``items 1 thru max_results``) and returns attachments for the messages
+    whose subject contains ``subject_keyword``.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work", "Personal")
+        account: Account name (e.g., "Gmail", "Work", "Personal"). Falls back
+            to ``DEFAULT_MAIL_ACCOUNT`` when None.
         subject_keyword: Keyword to search for in email subjects
-        max_results: Maximum number of matching emails to check (default: 1)
+        max_results: Maximum number of messages to inspect from the inbox
+            (default: 50). The AppleScript only enumerates this many messages.
+        timeout: Optional AppleScript timeout in seconds. Defaults to the
+            ``run_applescript`` baseline (120s).
 
     Returns:
         List of attachments with their names and sizes
     """
+
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
 
     # Escape for AppleScript
     escaped_keyword = escape_applescript(subject_keyword)
@@ -39,7 +60,11 @@ def list_email_attachments(
         try
             set targetAccount to account "{escaped_account}"
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
+            if (count of messages of inboxMailbox) > {max_results} then
+                set inboxMessages to messages 1 thru {max_results} of inboxMailbox
+            else
+                set inboxMessages to messages of inboxMailbox
+            end if
 
             repeat with aMessage in inboxMessages
                 if resultCount >= {max_results} then exit repeat
@@ -95,37 +120,60 @@ def list_email_attachments(
     end tell
     '''
 
-    result = run_applescript(script)
+    try:
+        result = run_applescript(
+            script, timeout=timeout if timeout is not None else 120
+        )
+    except AppleScriptTimeout:
+        return f"Error: AppleScript timed out while listing attachments for '{account}'"
     return result
 
 
 @mcp.tool()
 @inject_preferences
 def get_statistics(
-    account: str,
+    account: Optional[str] = None,
     scope: str = "account_overview",
     sender: Optional[str] = None,
     mailbox: Optional[str] = None,
-    days_back: int = 30
+    days_back: int = 30,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Get comprehensive email statistics and analytics.
 
+    For ``account_overview`` and ``sender_stats``, scans the 20 largest
+    mailboxes on the account, up to 500 most-recent messages each, to keep
+    AppleScript wall time predictable on Exchange / Gmail accounts with deep
+    history. ``mailbox_breakdown`` is bounded by Mail.app's own count APIs
+    and is not capped.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Falls back to
+            ``DEFAULT_MAIL_ACCOUNT`` when None.
         scope: Analysis scope: "account_overview", "sender_stats", "mailbox_breakdown"
         sender: Specific sender for "sender_stats" scope
         mailbox: Specific mailbox for "mailbox_breakdown" scope
         days_back: Number of days to analyze (default: 30, 0 = all time)
+        timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
         Formatted statistics report with metrics and insights
     """
 
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
+
     # Escape user inputs for AppleScript
     escaped_account = escape_applescript(account)
     escaped_sender = escape_applescript(sender) if sender else None
     escaped_mailbox = escape_applescript(mailbox) if mailbox else None
+
+    # Caps for the triple-nested scan. See module docstring above.
+    max_mailboxes = 20
+    max_messages_per_mailbox = 500
 
     # Calculate date threshold if days_back > 0
     date_filter = ""
@@ -151,6 +199,10 @@ def get_statistics(
             try
                 set targetAccount to account "{escaped_account}"
                 set allMailboxes to every mailbox of targetAccount
+                -- Cap mailbox scan to the first {max_mailboxes} mailboxes
+                if (count of allMailboxes) > {max_mailboxes} then
+                    set allMailboxes to items 1 thru {max_mailboxes} of allMailboxes
+                end if
 
                 -- Initialize counters
                 set totalEmails to 0
@@ -169,11 +221,20 @@ def get_statistics(
                         -- Skip system folders
                         if {skip_folder_checks} then
 
-                            -- Use whose clause for date pre-filtering when days_back > 0
+                            -- Use whose clause for date pre-filtering when days_back > 0;
+                            -- otherwise bind `messages 1 thru N` so Mail never
+                            -- materializes the full message list of a deep mailbox.
                             if {days_back} > 0 then
                                 set mailboxMessages to (every message of aMailbox whose date received > targetDate)
+                                if (count of mailboxMessages) > {max_messages_per_mailbox} then
+                                    set mailboxMessages to items 1 thru {max_messages_per_mailbox} of mailboxMessages
+                                end if
                             else
-                                set mailboxMessages to every message of aMailbox
+                                if (count of messages of aMailbox) > {max_messages_per_mailbox} then
+                                    set mailboxMessages to messages 1 thru {max_messages_per_mailbox} of aMailbox
+                                else
+                                    set mailboxMessages to messages of aMailbox
+                                end if
                             end if
                             set mailboxTotal to 0
 
@@ -301,6 +362,10 @@ def get_statistics(
             try
                 set targetAccount to account "{escaped_account}"
                 set allMailboxes to every mailbox of targetAccount
+                -- Cap mailbox scan to the first {max_mailboxes} mailboxes
+                if (count of allMailboxes) > {max_mailboxes} then
+                    set allMailboxes to items 1 thru {max_mailboxes} of allMailboxes
+                end if
 
                 set totalFromSender to 0
                 set unreadFromSender to 0
@@ -315,6 +380,10 @@ def get_statistics(
 
                             -- Use whose clause for fast app-level filtering
                             set matchedMessages to (every message of aMailbox whose {whose_clause})
+                            -- Cap to most-recent {max_messages_per_mailbox} matched messages
+                            if (count of matchedMessages) > {max_messages_per_mailbox} then
+                                set matchedMessages to items 1 thru {max_messages_per_mailbox} of matchedMessages
+                            end if
 
                             repeat with aMessage in matchedMessages
                                 try
@@ -369,8 +438,9 @@ def get_statistics(
                     end if
                 end try
 
-                set mailboxMessages to every message of targetMailbox
-                set totalMessages to count of mailboxMessages
+                -- Use Mail's own count APIs to avoid materializing the full
+                -- message list on large mailboxes.
+                set totalMessages to count of messages of targetMailbox
                 set unreadMessages to unread count of targetMailbox
 
                 set outputText to outputText & "Total messages: " & totalMessages & return
@@ -388,36 +458,53 @@ def get_statistics(
     else:
         return f"Error: Invalid scope '{scope}'. Use: account_overview, sender_stats, mailbox_breakdown"
 
-    result = run_applescript(script)
+    try:
+        result = run_applescript(
+            script, timeout=timeout if timeout is not None else 120
+        )
+    except AppleScriptTimeout:
+        return f"Error: AppleScript timed out while computing statistics for '{account}'"
     return result
 
 
 @mcp.tool()
 @inject_preferences
 def export_emails(
-    account: str,
-    scope: str,
+    account: Optional[str] = None,
+    scope: str = "entire_mailbox",
     subject_keyword: Optional[str] = None,
     mailbox: str = "INBOX",
     save_directory: str = "~/Desktop",
     format: str = "txt",
-    max_emails: int = 1000
+    max_emails: int = 1000,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Export emails to files for backup or analysis.
 
+    For ``entire_mailbox`` exports, the AppleScript binds only the first
+    ``max_emails`` messages (``items 1 thru max_emails``) so the full message
+    list of a 24K-message Exchange mailbox is never materialized.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Falls back to
+            ``DEFAULT_MAIL_ACCOUNT`` when None.
         scope: Export scope: "single_email" (requires subject_keyword) or "entire_mailbox"
         subject_keyword: Keyword to find email (required for single_email)
         mailbox: Mailbox to export from (default: "INBOX")
         save_directory: Directory to save exports (default: "~/Desktop")
         format: Export format: "txt", "html" (default: "txt")
         max_emails: Maximum number of emails to export for entire_mailbox (default: 1000, safety cap)
+        timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
         Confirmation message with export location
     """
+
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
 
     # Expand home directory
     save_dir = os.path.expanduser(save_directory)
@@ -476,20 +563,14 @@ def export_emails(
                     end if
                 end try
 
-                set mailboxMessages to every message of targetMailbox
+                -- Use `whose` for app-level filtering and cap to the first match
+                -- so we don't enumerate a 24K-message mailbox just to find one
+                -- subject hit.
+                set matchedMessages to (every message of targetMailbox whose subject contains "{safe_subject_keyword}")
                 set foundMessage to missing value
-
-                -- Find the email
-                repeat with aMessage in mailboxMessages
-                    try
-                        set messageSubject to subject of aMessage
-
-                        if messageSubject contains "{safe_subject_keyword}" then
-                            set foundMessage to aMessage
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                if (count of matchedMessages) > 0 then
+                    set foundMessage to item 1 of matchedMessages
+                end if
 
                 if foundMessage is not missing value then
                     set messageSubject to subject of foundMessage
@@ -566,8 +647,15 @@ def export_emails(
                     end if
                 end try
 
-                set mailboxMessages to every message of targetMailbox
-                set messageCount to count of mailboxMessages
+                -- Use Mail's count API for the headline total, then bind
+                -- only the first max_emails messages to avoid materializing
+                -- the entire mailbox on large Exchange/Gmail accounts.
+                set messageCount to count of messages of targetMailbox
+                if messageCount > {max_emails} then
+                    set mailboxMessages to messages 1 thru {max_emails} of targetMailbox
+                else
+                    set mailboxMessages to messages of targetMailbox
+                end if
                 set exportCount to 0
 
                 -- Create export directory
@@ -642,7 +730,12 @@ def export_emails(
     else:
         return f"Error: Invalid scope '{scope}'. Use: single_email, entire_mailbox"
 
-    result = run_applescript(script)
+    try:
+        result = run_applescript(
+            script, timeout=timeout if timeout is not None else 120
+        )
+    except AppleScriptTimeout:
+        return f"Error: AppleScript timed out while exporting emails for '{account}'"
     return result
 
 
@@ -673,7 +766,13 @@ def _get_recent_emails_structured(
             try
                 {inbox_mailbox_script("inboxMailbox", "anAccount")}
 
-                set inboxMessages to every message of inboxMailbox
+                -- Cap to most-recent {max_per_account} so we don't enumerate
+                -- a full inbox just to render the dashboard preview.
+                if (count of messages of inboxMailbox) > {max_per_account} then
+                    set inboxMessages to messages 1 thru {max_per_account} of inboxMailbox
+                else
+                    set inboxMessages to messages of inboxMailbox
+                end if
 
                 repeat with aMessage in inboxMessages
                     if emailCount >= {max_per_account} then exit repeat

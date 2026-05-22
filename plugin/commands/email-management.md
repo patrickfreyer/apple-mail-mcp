@@ -1,6 +1,7 @@
 ---
 description: Expert email management for Apple Mail — inbox triage, organization, search, analytics, and cleanup
 argument-hint: "[optional: what you want to do, e.g. 'triage my inbox', 'find emails from John']"
+allowed-tools: ["mcp__apple-mail__*", "Read"]
 ---
 
 # Email Management

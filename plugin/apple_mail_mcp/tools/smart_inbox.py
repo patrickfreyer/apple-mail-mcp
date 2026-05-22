@@ -2,14 +2,15 @@
 
 from typing import Optional
 
+from apple_mail_mcp import server as _server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
+    AppleScriptTimeout,
     inject_preferences,
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
     date_cutoff_script,
-    LOWERCASE_HANDLER,
 )
 from apple_mail_mcp.constants import (
     NEWSLETTER_PLATFORM_PATTERNS,
@@ -25,14 +26,16 @@ def _strip_subject_prefixes_script() -> str:
     for prefix in THREAD_PREFIXES:
         escaped = escape_applescript(prefix)
         prefix_checks += f'''
-                if baseSubj starts with "{escaped}" then
-                    set baseSubj to text {len(prefix) + 1} thru -1 of baseSubj
-                    -- trim leading space
-                    repeat while baseSubj starts with " "
-                        set baseSubj to text 2 thru -1 of baseSubj
-                    end repeat
-                    set didStrip to true
-                end if
+                ignoring case
+                    if baseSubj starts with "{escaped}" then
+                        set baseSubj to text {len(prefix) + 1} thru -1 of baseSubj
+                        -- trim leading space
+                        repeat while baseSubj starts with " "
+                            set baseSubj to text 2 thru -1 of baseSubj
+                        end repeat
+                        set didStrip to true
+                    end if
+                end ignoring
 '''
     return f'''
     on stripPrefixes(subj)
@@ -47,8 +50,13 @@ def _strip_subject_prefixes_script() -> str:
 '''
 
 
-def _newsletter_filter_condition(sender_var: str = "lowerSender") -> str:
-    """Return AppleScript condition that evaluates to true if email is a newsletter."""
+def _newsletter_filter_condition(sender_var: str = "messageSender") -> str:
+    """Return AppleScript condition that evaluates to true if email is a newsletter.
+
+    Must be evaluated inside an ``ignoring case`` block — uses raw sender
+    text (no longer lowercased) so case-folding is the AppleScript engine's
+    job, not a per-message shell-out.
+    """
     platform_checks = " or ".join(
         f'{sender_var} contains "{escape_applescript(p)}"'
         for p in NEWSLETTER_PLATFORM_PATTERNS
@@ -63,10 +71,11 @@ def _newsletter_filter_condition(sender_var: str = "lowerSender") -> str:
 @mcp.tool()
 @inject_preferences
 def get_awaiting_reply(
-    account: str,
+    account: Optional[str] = None,
     days_back: int = 7,
     exclude_noreply: bool = True,
     max_results: int = 20,
+    timeout: Optional[int] = None,
 ) -> str:
     """Find sent emails that haven't received a reply yet.
 
@@ -75,23 +84,46 @@ def get_awaiting_reply(
     same recipient. Useful for follow-up tracking.
 
     Args:
-        account: Account name (e.g., "Gmail", "Work", "Personal")
+        account: Account name (e.g., "Gmail", "Work", "Personal").
+            Falls back to ``DEFAULT_MAIL_ACCOUNT`` env-configured account when None.
         days_back: How many days back to check sent emails (default: 7)
         exclude_noreply: Skip emails sent to noreply/no-reply addresses (default: True)
         max_results: Maximum results to return (default: 20)
+        timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
         List of sent emails still awaiting a reply with subject, recipient, and date sent
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
     escaped_account = escape_applescript(account)
+
+    # A1: cap collection sizes so a 24K Sent / Inbox doesn't materialize fully.
+    sent_cap = max(max_results * 4, 50)
+    inbox_cap = 500
+
+    # Build the "whose" date filter for both Sent and Inbox bindings. When
+    # days_back<=0 we skip the date filter entirely.
+    if days_back > 0:
+        sent_whose = "whose date sent >= cutoffDate"
+        inbox_whose = "whose date received >= cutoffDate"
+    else:
+        sent_whose = ""
+        inbox_whose = ""
 
     noreply_filter = ""
     if exclude_noreply:
+        # A4c: case-insensitive substring checks via `ignoring case`, no
+        # per-message shell-out for lowercasing.
         noreply_filter = '''
-                            set lowerRecip to my lowercase(recipAddr)
-                            if lowerRecip contains "noreply" or lowerRecip contains "no-reply" or lowerRecip contains "do-not-reply" or lowerRecip contains "donotreply" then
-                                set skipThis to true
-                            end if
+                            ignoring case
+                                if recipAddr contains "noreply" or recipAddr contains "no-reply" or recipAddr contains "do-not-reply" or recipAddr contains "donotreply" then
+                                    set skipThis to true
+                                end if
+                            end ignoring
 '''
 
     script = f'''
@@ -124,24 +156,40 @@ def get_awaiting_reply(
             -- Get Inbox mailbox
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
 
-            -- Collect subjects from inbox for matching
+            -- Collect subjects from inbox for matching. A1: bind a date-
+            -- filtered slice and cap at {inbox_cap} so we don't enumerate
+            -- a 24K-message inbox just to build the lookup table.
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
-            set inboxMessages to every message of inboxMailbox
+            try
+                set inboxMessages to (every message of inboxMailbox {inbox_whose})
+            on error
+                set inboxMessages to every message of inboxMailbox
+            end try
+            if (count of inboxMessages) > {inbox_cap} then
+                set inboxMessages to items 1 thru {inbox_cap} of inboxMessages
+            end if
 
             repeat with aMessage in inboxMessages
                 try
                     set msgSubject to subject of aMessage
                     set msgSender to sender of aMessage
                     set baseSubject to my stripPrefixes(msgSubject)
-                    set lowerBase to my lowercase(baseSubject)
-                    set end of inboxSubjects to lowerBase
-                    set end of inboxSenders to my lowercase(msgSender)
+                    set end of inboxSubjects to baseSubject
+                    set end of inboxSenders to msgSender
                 end try
             end repeat
 
-            -- Now scan sent emails
-            set sentMessages to every message of sentMailbox
+            -- Now scan sent emails. A1: same whose+cap pattern.
+            try
+                set sentMessages to (every message of sentMailbox {sent_whose})
+            on error
+                set sentMessages to every message of sentMailbox
+            end try
+            if (count of sentMessages) > {sent_cap} then
+                set sentMessages to items 1 thru {sent_cap} of sentMessages
+            end if
+
             set resultCount to 0
             set checkedCount to 0
 
@@ -168,22 +216,25 @@ def get_awaiting_reply(
                         if not skipThis then
                             -- Strip prefixes from sent subject and check inbox
                             set baseSubject to my stripPrefixes(messageSubject)
-                            set lowerBase to my lowercase(baseSubject)
-                            set lowerRecipAddr to my lowercase(recipAddr)
 
-                            -- Check if there is a reply in inbox from this recipient about this subject
+                            -- Check if there is a reply in inbox from this recipient about this subject.
+                            -- A4c: case-insensitive matching via `ignoring case`, not per-message
+                            -- shell lowercase.
                             set foundReply to false
                             set idx to 1
-                            repeat with inboxSubj in inboxSubjects
-                                if inboxSubj contains lowerBase or lowerBase contains inboxSubj then
-                                    set inboxSender to item idx of inboxSenders
-                                    if inboxSender contains lowerRecipAddr then
-                                        set foundReply to true
-                                        exit repeat
+                            ignoring case
+                                repeat with inboxSubj in inboxSubjects
+                                    set inboxSubjText to inboxSubj as string
+                                    if inboxSubjText contains baseSubject or baseSubject contains inboxSubjText then
+                                        set inboxSender to item idx of inboxSenders as string
+                                        if inboxSender contains recipAddr then
+                                            set foundReply to true
+                                            exit repeat
+                                        end if
                                     end if
-                                end if
-                                set idx to idx + 1
-                            end repeat
+                                    set idx to idx + 1
+                                end repeat
+                            end ignoring
 
                             if not foundReply then
                                 set resultCount to resultCount + 1
@@ -210,20 +261,27 @@ def get_awaiting_reply(
         return outputText
     end tell
 
-    {LOWERCASE_HANDLER}
     {_strip_subject_prefixes_script()}
     '''
 
-    return run_applescript(script)
+    try:
+        return run_applescript(script, timeout=timeout)
+    except AppleScriptTimeout:
+        wait_s = timeout if timeout is not None else 120
+        return (
+            f"Error: get_awaiting_reply timed out on account '{account}' after "
+            f"{wait_s}s — try increasing timeout or reducing days_back"
+        )
 
 
 @mcp.tool()
 @inject_preferences
 def get_needs_response(
-    account: str,
+    account: Optional[str] = None,
     mailbox: str = "INBOX",
     days_back: int = 7,
     max_results: int = 20,
+    timeout: Optional[int] = None,
 ) -> str:
     """Identify unread emails that likely need a response from you.
 
@@ -232,18 +290,35 @@ def get_needs_response(
     needing a reply.
 
     Args:
-        account: Account name (e.g., "Gmail", "Work", "Personal")
+        account: Account name (e.g., "Gmail", "Work", "Personal").
+            Falls back to ``DEFAULT_MAIL_ACCOUNT`` env-configured account when None.
         mailbox: Mailbox to scan (default: "INBOX")
         days_back: How many days back to look (default: 7)
         max_results: Maximum results to return (default: 20)
+        timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
         Ranked list of emails likely needing a response, with priority hints
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
     escaped_account = escape_applescript(account)
     escaped_mailbox = escape_applescript(mailbox)
 
-    newsletter_condition = _newsletter_filter_condition("lowerSender")
+    newsletter_condition = _newsletter_filter_condition("messageSender")
+
+    # A1: cap message collection. days_back narrows further; cap is a safety
+    # ceiling for huge unread backlogs.
+    inbox_cap = max(max_results * 10, 200)
+    sent_cap = 200
+
+    if days_back > 0:
+        unread_whose = "whose read status is false and date received >= cutoffDate"
+    else:
+        unread_whose = "whose read status is false"
 
     script = f'''
     tell application "Mail"
@@ -267,7 +342,8 @@ def get_needs_response(
                 end if
             end try
 
-            -- Collect sent subjects for "already replied" detection
+            -- Collect sent subjects for "already replied" detection. A1: cap
+            -- at {sent_cap} so we don't drag the whole Sent mailbox in.
             set sentSubjects to {{}}
             set sentMailbox to missing value
             try
@@ -284,20 +360,29 @@ def get_needs_response(
 
             if sentMailbox is not missing value then
                 set sentMessages to every message of sentMailbox
-                set sentIdx to 0
+                if (count of sentMessages) > {sent_cap} then
+                    set sentMessages to items 1 thru {sent_cap} of sentMessages
+                end if
                 repeat with aMessage in sentMessages
-                    set sentIdx to sentIdx + 1
-                    if sentIdx > 200 then exit repeat
                     try
                         set sentSubj to subject of aMessage
                         set baseSent to my stripPrefixes(sentSubj)
-                        set end of sentSubjects to my lowercase(baseSent)
+                        set end of sentSubjects to baseSent
                     end try
                 end repeat
             end if
 
-            -- Scan target mailbox
-            set mailboxMessages to every message of targetMailbox
+            -- Scan target mailbox. A1: bind unread+date-filtered slice once,
+            -- cap to inbox_cap, so unread-heavy mailboxes don't blow up wall time.
+            try
+                set mailboxMessages to (every message of targetMailbox {unread_whose})
+            on error
+                set mailboxMessages to every message of targetMailbox
+            end try
+            if (count of mailboxMessages) > {inbox_cap} then
+                set mailboxMessages to items 1 thru {inbox_cap} of mailboxMessages
+            end if
+
             set highPriority to {{}}
             set normalPriority to {{}}
             set totalChecked to 0
@@ -309,27 +394,35 @@ def get_needs_response(
                     set messageDate to date received of aMessage
                     {"if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""}
 
-                    -- Only look at unread emails
+                    -- The whose-filter already restricted to unread, but keep
+                    -- a defensive check for the fallback path.
                     if not (read status of aMessage) then
                         set messageSender to sender of aMessage
                         set messageSubject to subject of aMessage
-                        set lowerSender to my lowercase(messageSender)
 
-                        -- Filter out newsletters and automated senders
-                        set isNewsletter to {newsletter_condition}
-                        set isAutomated to (lowerSender contains "noreply" or lowerSender contains "no-reply" or lowerSender contains "donotreply" or lowerSender contains "do-not-reply" or lowerSender contains "notifications@" or lowerSender contains "mailer-daemon" or lowerSender contains "postmaster@")
+                        -- Filter out newsletters and automated senders.
+                        -- A4c: `ignoring case` covers both checks at once
+                        -- without a per-message shell-out.
+                        set isNewsletter to false
+                        set isAutomated to false
+                        ignoring case
+                            set isNewsletter to {newsletter_condition}
+                            set isAutomated to (messageSender contains "noreply" or messageSender contains "no-reply" or messageSender contains "donotreply" or messageSender contains "do-not-reply" or messageSender contains "notifications@" or messageSender contains "mailer-daemon" or messageSender contains "postmaster@")
+                        end ignoring
 
                         if not isNewsletter and not isAutomated then
                             -- Check if user already replied
                             set baseSubject to my stripPrefixes(messageSubject)
-                            set lowerBase to my lowercase(baseSubject)
                             set alreadyReplied to false
-                            repeat with sentSubj in sentSubjects
-                                if sentSubj contains lowerBase or lowerBase contains sentSubj then
-                                    set alreadyReplied to true
-                                    exit repeat
-                                end if
-                            end repeat
+                            ignoring case
+                                repeat with sentSubj in sentSubjects
+                                    set sentSubjText to sentSubj as string
+                                    if sentSubjText contains baseSubject or baseSubject contains sentSubjText then
+                                        set alreadyReplied to true
+                                        exit repeat
+                                    end if
+                                end repeat
+                            end ignoring
 
                             if not alreadyReplied then
                                 -- Determine priority
@@ -399,21 +492,28 @@ def get_needs_response(
         return outputText
     end tell
 
-    {LOWERCASE_HANDLER}
     {_strip_subject_prefixes_script()}
     '''
 
-    return run_applescript(script)
+    try:
+        return run_applescript(script, timeout=timeout)
+    except AppleScriptTimeout:
+        wait_s = timeout if timeout is not None else 120
+        return (
+            f"Error: get_needs_response timed out on account '{account}' after "
+            f"{wait_s}s — try increasing timeout or reducing days_back"
+        )
 
 
 @mcp.tool()
 @inject_preferences
 def get_top_senders(
-    account: str,
+    account: Optional[str] = None,
     mailbox: str = "INBOX",
     days_back: int = 30,
     top_n: int = 10,
     group_by_domain: bool = False,
+    timeout: Optional[int] = None,
 ) -> str:
     """Analyse a mailbox to find the most frequent senders.
 
@@ -421,22 +521,40 @@ def get_top_senders(
     or newsletter sources to unsubscribe from.
 
     Args:
-        account: Account name (e.g., "Gmail", "Work", "Personal")
+        account: Account name (e.g., "Gmail", "Work", "Personal").
+            Falls back to ``DEFAULT_MAIL_ACCOUNT`` env-configured account when None.
         mailbox: Mailbox to analyse (default: "INBOX")
         days_back: How many days back to look (default: 30, 0 = all time)
         top_n: Number of top senders to return (default: 10)
         group_by_domain: Group results by domain instead of individual sender (default: False)
+        timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
         Ranked list of senders (or domains) with email counts
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
     escaped_account = escape_applescript(account)
     escaped_mailbox = escape_applescript(mailbox)
 
     date_cutoff = date_cutoff_script(days_back, "cutoffDate")
     date_check = "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
 
-    # Build the extraction key: either full sender or domain
+    # A1: cap message scan. 2000 is the ceiling; max_results*50 narrows further
+    # for small top_n requests. We deliberately do NOT use a `whose` clause for
+    # the read filter — we want the full sender distribution — but we DO use
+    # one for the date filter when days_back > 0 so Mail doesn't enumerate the
+    # full mailbox just to discard old messages.
+    scan_cap = min(2000, max(top_n * 50, 200))
+    if days_back > 0:
+        scan_whose = "whose date received >= cutoffDate"
+    else:
+        scan_whose = ""
+
+    # Build the extraction key: either full sender or domain.
     if group_by_domain:
         # Extract domain from email address
         extract_key = '''
@@ -470,14 +588,16 @@ def get_top_senders(
 '''
         title_label = "TOP SENDERS"
 
+    # A2/A3: return the raw (key, count) pairs unsorted; Python does the
+    # sort + top-N. The AppleScript still aggregates so we ship only one
+    # line per unique sender, not one per message, across the IPC boundary.
+    # Output schema (parsed below):
+    #   TOTAL|||<totalAnalysed>
+    #   UNIQUE|||<uniqueCount>
+    #   ENTRY|||<senderKey>|||<count>
+    #   ...
     script = f'''
     tell application "Mail"
-        set outputText to "{title_label}" & return
-        set outputText to outputText & "Account: {escaped_account} | Mailbox: {escaped_mailbox} | Last {days_back} days" & return
-        set outputText to outputText & "========================================" & return & return
-
-        {date_cutoff}
-
         try
             set targetAccount to account "{escaped_account}"
 
@@ -492,7 +612,20 @@ def get_top_senders(
                 end if
             end try
 
-            set mailboxMessages to every message of targetMailbox
+            {date_cutoff}
+
+            -- A1: bind a date-filtered + capped slice rather than enumerating
+            -- `every message`, which on a 24K mailbox forces Mail to materialize
+            -- the full list before we touch a single field.
+            try
+                set mailboxMessages to (every message of targetMailbox {scan_whose})
+            on error
+                set mailboxMessages to every message of targetMailbox
+            end try
+            if (count of mailboxMessages) > {scan_cap} then
+                set mailboxMessages to items 1 thru {scan_cap} of mailboxMessages
+            end if
+
             set senderKeys to {{}}
             set senderCounts to {{}}
             set totalAnalysed to 0
@@ -507,7 +640,8 @@ def get_top_senders(
 
                     {extract_key}
 
-                    -- Update count
+                    -- Update count. We keep aggregation in AppleScript so the
+                    -- payload sent to Python is O(unique senders), not O(messages).
                     set foundSender to false
                     set idx to 1
                     repeat with existingKey in senderKeys
@@ -525,57 +659,90 @@ def get_top_senders(
                 end try
             end repeat
 
-            -- Sort by count (simple selection sort, we only need top N)
-            set topN to {top_n}
-            repeat with i from 1 to (count of senderCounts)
-                if i > topN then exit repeat
-                -- Find max from i to end
-                set maxIdx to i
-                set maxVal to item i of senderCounts
-                repeat with j from (i + 1) to (count of senderCounts)
-                    if item j of senderCounts > maxVal then
-                        set maxIdx to j
-                        set maxVal to item j of senderCounts
-                    end if
-                end repeat
-                -- Swap
-                if maxIdx is not i then
-                    set tmpCount to item i of senderCounts
-                    set item i of senderCounts to item maxIdx of senderCounts
-                    set item maxIdx of senderCounts to tmpCount
-                    set tmpKey to item i of senderKeys as string
-                    set item i of senderKeys to (item maxIdx of senderKeys as string)
-                    set item maxIdx of senderKeys to tmpKey
-                end if
+            -- Emit raw (key, count) pairs unsorted. Python performs the
+            -- sort + top-N, which keeps AppleScript out of an O(N^2)
+            -- selection sort on the Mail side.
+            set outputLines to {{}}
+            set end of outputLines to "TOTAL|||" & (totalAnalysed as string)
+            set end of outputLines to "UNIQUE|||" & ((count of senderKeys) as string)
+            set entryIdx to 1
+            repeat with existingKey in senderKeys
+                set kText to existingKey as string
+                set cVal to item entryIdx of senderCounts
+                set end of outputLines to "ENTRY|||" & kText & "|||" & (cVal as string)
+                set entryIdx to entryIdx + 1
             end repeat
 
-            -- Format output
-            set displayCount to topN
-            if (count of senderKeys) < displayCount then
-                set displayCount to (count of senderKeys)
-            end if
-
-            repeat with i from 1 to displayCount
-                set senderKey to item i of senderKeys
-                set sCount to item i of senderCounts
-                set pctText to ""
-                if totalAnalysed > 0 then
-                    set pct to round ((sCount / totalAnalysed) * 100)
-                    set pctText to " (" & pct & "%)"
-                end if
-                set outputText to outputText & i & ". " & senderKey & ": " & sCount & " emails" & pctText & return
-            end repeat
-
-            set outputText to outputText & return & "========================================" & return
-            set outputText to outputText & "Total emails analysed: " & totalAnalysed & return
-            set outputText to outputText & "Unique senders: " & (count of senderKeys) & return
+            set AppleScript's text item delimiters to linefeed
+            set outputText to outputLines as string
+            set AppleScript's text item delimiters to ""
+            return outputText
 
         on error errMsg
-            return "Error: " & errMsg
+            return "ERROR|||" & errMsg
         end try
-
-        return outputText
     end tell
     '''
 
-    return run_applescript(script)
+    try:
+        raw = run_applescript(script, timeout=timeout)
+    except AppleScriptTimeout:
+        wait_s = timeout if timeout is not None else 120
+        return (
+            f"Error: get_top_senders timed out on account '{account}' after "
+            f"{wait_s}s — try increasing timeout or reducing days_back"
+        )
+
+    if raw.startswith("ERROR|||"):
+        return f"Error: {raw.split('|||', 1)[1]}"
+
+    # Parse the AppleScript payload.
+    total_analysed = 0
+    unique_count = 0
+    entries: list[tuple[str, int]] = []
+    for line in raw.splitlines():
+        if line.startswith("TOTAL|||"):
+            try:
+                total_analysed = int(line.split("|||", 1)[1].strip())
+            except ValueError:
+                total_analysed = 0
+        elif line.startswith("UNIQUE|||"):
+            try:
+                unique_count = int(line.split("|||", 1)[1].strip())
+            except ValueError:
+                unique_count = 0
+        elif line.startswith("ENTRY|||"):
+            parts = line.split("|||", 2)
+            if len(parts) == 3:
+                key = parts[1].strip()
+                try:
+                    cnt = int(parts[2].strip())
+                except ValueError:
+                    continue
+                entries.append((key, cnt))
+
+    # Sort + top-N in Python (was an O(N^2) AppleScript selection sort).
+    entries.sort(key=lambda kv: kv[1], reverse=True)
+    top_entries = entries[:top_n]
+
+    # Reproduce the original output format exactly.
+    lines = [
+        title_label,
+        f"Account: {account} | Mailbox: {mailbox} | Last {days_back} days",
+        "========================================",
+        "",
+    ]
+    for i, (key, cnt) in enumerate(top_entries, start=1):
+        if total_analysed > 0:
+            pct = round((cnt / total_analysed) * 100)
+            pct_text = f" ({pct}%)"
+        else:
+            pct_text = ""
+        lines.append(f"{i}. {key}: {cnt} emails{pct_text}")
+
+    lines.append("")
+    lines.append("========================================")
+    lines.append(f"Total emails analysed: {total_analysed}")
+    lines.append(f"Unique senders: {unique_count}")
+
+    return "\n".join(lines) + "\n"

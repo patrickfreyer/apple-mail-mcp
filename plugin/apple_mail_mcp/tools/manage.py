@@ -1,10 +1,13 @@
 """Management tools: moving, status updates, trash, and attachments."""
 
 import os
+import re
 from typing import Optional, List
 
+from apple_mail_mcp import server as _server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
+    AppleScriptTimeout,
     contains_any_condition,
     equals_any_numeric_condition,
     inject_preferences,
@@ -18,11 +21,15 @@ from apple_mail_mcp.core import (
 )
 
 
+# Characters that could break AppleScript strings or mailbox names
+_INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
+
+
 @mcp.tool()
 @inject_preferences
 def move_email(
-    account: str,
-    to_mailbox: str,
+    account: Optional[str] = None,
+    to_mailbox: str = "",
     subject_keyword: Optional[str] = None,
     from_mailbox: str = "INBOX",
     max_moves: int = 50,
@@ -31,6 +38,7 @@ def move_email(
     older_than_days: Optional[int] = None,
     dry_run: bool = False,
     only_read: bool = False,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Move email(s) matching filters from one mailbox to another.
@@ -39,8 +47,10 @@ def move_email(
     matches without moving. Set only_read=True to skip unread emails (useful
     for archiving). For archiving to "Archive", just set to_mailbox="Archive".
 
+    When ``account`` is None the configured ``DEFAULT_MAIL_ACCOUNT`` is used.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Defaults to DEFAULT_MAIL_ACCOUNT.
         to_mailbox: Destination mailbox name. For nested mailboxes, use "/" separator (e.g., "Projects/Amplify Impact")
         subject_keyword: Optional keyword to search for in email subjects
         from_mailbox: Source mailbox name (default: "INBOX")
@@ -50,10 +60,18 @@ def move_email(
         older_than_days: Optional age filter - only move emails older than N days
         dry_run: If True, preview what would be moved without acting (default: False)
         only_read: If True, only move emails that have been read (default: False)
+        timeout: Optional AppleScript timeout in seconds (default: 300s).
 
     Returns:
         Confirmation message with details of moved emails
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: account is required (and no DEFAULT_MAIL_ACCOUNT configured)."
+
+    if not to_mailbox:
+        return "Error: to_mailbox is required."
 
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
     if not subject_terms and not sender and not older_than_days:
@@ -66,34 +84,22 @@ def move_email(
     safe_from = escape_applescript(from_mailbox)
     safe_to = escape_applescript(to_mailbox)
 
-    # Build filter condition for the loop body (uses local vars)
-    condition_str = build_filter_condition(
-        subject=subject_keyword if not subject_keywords else None,
-        sender=sender,
-    )
-    # For multi-keyword subject matching, override the subject part
+    # Build whose-clause conditions (pushed down into AppleScript so we
+    # never enumerate `every message of sourceMailbox` on large mailboxes).
+    whose_conditions: List[str] = []
     if subject_terms:
-        subj_cond = " or ".join(
-            f'messageSubject contains "{escape_applescript(t)}"' for t in subject_terms
-        )
-        subj_cond = f"({subj_cond})"
-        if sender:
-            condition_str = f'{subj_cond} and messageSender contains "{escape_applescript(sender)}"'
-        else:
-            condition_str = subj_cond
-
+        whose_conditions.append(contains_any_condition("subject", subject_terms))
+    if sender:
+        whose_conditions.append(f'sender contains "{escape_applescript(sender)}"')
     if only_read:
-        read_cond = "messageRead is true"
-        condition_str = (
-            f"{condition_str} and {read_cond}" if condition_str != "true" else read_cond
-        )
+        whose_conditions.append("read status is true")
 
-    # Date filter
     date_setup = ""
-    date_cond = ""
     if older_than_days and older_than_days > 0:
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        date_cond = " and messageDate < cutoffDate"
+        whose_conditions.append("date received < cutoffDate")
+
+    whose_clause = " and ".join(whose_conditions)
 
     # Build nested mailbox reference for destination
     mailbox_parts = to_mailbox.split("/")
@@ -117,9 +123,11 @@ def move_email(
     dest_setup = "" if dry_run else f"""
             set destMailbox to {dest_ref}"""
 
+    effective_timeout = timeout if timeout is not None else 300
+
     script = f'''
     tell application "Mail"
-        with timeout of 300 seconds
+        with timeout of {effective_timeout} seconds
             set outputText to "{mode_label}: {safe_from} -> {safe_to}" & return & return
             set moveCount to 0
 
@@ -129,26 +137,24 @@ def move_email(
                 {dest_setup}
                 {date_setup}
 
-                set mailboxMessages to every message of sourceMailbox
+                set matchingMessages to (every message of sourceMailbox whose {whose_clause})
+                if (count of matchingMessages) > {max_moves} then
+                    set matchingMessages to items 1 thru {max_moves} of matchingMessages
+                end if
 
-                repeat with aMessage in mailboxMessages
-                    if moveCount >= {max_moves} then exit repeat
-
+                repeat with aMessage in matchingMessages
                     try
                         set messageSubject to subject of aMessage
                         set messageSender to sender of aMessage
                         set messageDate to date received of aMessage
-                        set messageRead to read status of aMessage
 
-                        if {condition_str}{date_cond} then
-                            {move_action}
+                        {move_action}
 
-                            set outputText to outputText & "{result_prefix}: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return
-                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                        set outputText to outputText & "{result_prefix}: " & messageSubject & return
+                        set outputText to outputText & "   From: " & messageSender & return
+                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
 
-                            set moveCount to moveCount + 1
-                        end if
+                        set moveCount to moveCount + 1
                     end try
                 end repeat
 
@@ -168,20 +174,28 @@ def move_email(
     end tell
     '''
 
-    result = run_applescript(script, timeout=300)
-    return result
+    try:
+        return run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: move_email timed out after {effective_timeout}s on account "
+            f"'{account}'. Retry with a larger timeout or tighter filters."
+        )
 
 
 @mcp.tool()
 @inject_preferences
 def save_email_attachment(
-    account: str, subject_keyword: str, attachment_name: str, save_path: str
+    account: Optional[str] = None,
+    subject_keyword: str = "",
+    attachment_name: str = "",
+    save_path: str = "",
 ) -> str:
     """
     Save a specific attachment from an email to disk.
 
     Args:
-        account: Account name (e.g., "Gmail", "Work", "Personal")
+        account: Account name (e.g., "Gmail", "Work"). Defaults to DEFAULT_MAIL_ACCOUNT.
         subject_keyword: Keyword to search for in email subjects
         attachment_name: Name of the attachment to save
         save_path: Full path where to save the attachment
@@ -189,6 +203,12 @@ def save_email_attachment(
     Returns:
         Confirmation message with save location
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: account is required (and no DEFAULT_MAIL_ACCOUNT configured)."
+    if not subject_keyword or not attachment_name or not save_path:
+        return "Error: subject_keyword, attachment_name, and save_path are required."
 
     # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
     expanded_path = os.path.expanduser(save_path)
@@ -227,6 +247,11 @@ def save_email_attachment(
     escaped_attachment = escape_applescript(attachment_name)
     escaped_path = escape_applescript(expanded_path)
 
+    # Cap candidate set so attachment search on a large inbox doesn't
+    # enumerate every message. 200 is a generous match cap for a single
+    # subject_keyword query.
+    SCAN_CAP = 200
+
     script = f'''
     tell application "Mail"
         set outputText to ""
@@ -234,14 +259,18 @@ def save_email_attachment(
         try
             set targetAccount to account "{escaped_account}"
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
+            set inboxMessages to (every message of inboxMailbox whose subject contains "{escaped_keyword}")
+            if (count of inboxMessages) > {SCAN_CAP} then
+                set inboxMessages to items 1 thru {SCAN_CAP} of inboxMessages
+            end if
             set foundAttachment to false
 
             repeat with aMessage in inboxMessages
                 try
                     set messageSubject to subject of aMessage
 
-                    -- Check if subject contains keyword
+                    -- Subject already filtered above; keep the inner check
+                    -- as a no-op guard so the rest of the script is unchanged.
                     if messageSubject contains "{escaped_keyword}" then
                         set msgAttachments to mail attachments of aMessage
 
@@ -288,8 +317,8 @@ def save_email_attachment(
 @mcp.tool()
 @inject_preferences
 def update_email_status(
-    account: str,
-    action: str,
+    account: Optional[str] = None,
+    action: str = "mark_read",
     subject_keyword: Optional[str] = None,
     subject_keywords: Optional[List[str]] = None,
     sender: Optional[str] = None,
@@ -298,6 +327,7 @@ def update_email_status(
     apply_to_all: bool = False,
     message_ids: Optional[List[str]] = None,
     older_than_days: Optional[int] = None,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Update email status - mark as read/unread or flag/unflag emails.
@@ -305,8 +335,10 @@ def update_email_status(
     When message_ids is provided, uses exact ID matching (ignores other filters).
     Otherwise filters by subject, sender, and/or age.
 
+    When ``account`` is None the configured ``DEFAULT_MAIL_ACCOUNT`` is used.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Defaults to DEFAULT_MAIL_ACCOUNT.
         action: Action to perform: "mark_read", "mark_unread", "flag", "unflag"
         subject_keyword: Optional keyword to filter emails by subject
         subject_keywords: Optional list of subject keywords; matches any keyword
@@ -316,12 +348,18 @@ def update_email_status(
         apply_to_all: Must be True to allow updates without any filter
         message_ids: Optional list of exact Mail message ids for precise targeting
         older_than_days: Optional age filter - only update emails older than N days
+        timeout: Optional AppleScript timeout in seconds (default: 300s).
 
     Returns:
         Confirmation message with details of updated emails
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: account is required (and no DEFAULT_MAIL_ACCOUNT configured)."
 
     safe_account = escape_applescript(account)
+    effective_timeout = timeout if timeout is not None else 300
 
     # Build action scripts
     if action == "mark_read":
@@ -353,7 +391,7 @@ def update_email_status(
 
         script = f'''
         tell application "Mail"
-            with timeout of 300 seconds
+            with timeout of {effective_timeout} seconds
                 set outputText to "UPDATING EMAIL STATUS BY IDS: {action_label}" & return & return
                 set updateCount to 0
 
@@ -401,7 +439,13 @@ def update_email_status(
         end tell
         '''
 
-        return run_applescript(script, timeout=300)
+        try:
+            return run_applescript(script, timeout=effective_timeout)
+        except AppleScriptTimeout:
+            return (
+                f"Error: update_email_status timed out after {effective_timeout}s "
+                f"on account '{account}'."
+            )
 
     # --- Filter-based path ---
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
@@ -431,20 +475,18 @@ def update_email_status(
     if sender:
         conditions.append(f'sender contains "{escape_applescript(sender)}"')
 
-    search_condition = " and ".join(conditions)
-
-    # Date filter
+    # Date filter — pushed into the whose clause so AppleScript filters in
+    # one pass instead of enumerating + Python-side checking.
     date_setup = ""
-    date_check_start = ""
-    date_check_end = ""
     if older_than_days and older_than_days > 0:
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        date_check_start = "if (date received of aMessage) < cutoffDate then"
-        date_check_end = "end if"
+        conditions.append("date received < cutoffDate")
+
+    search_condition = " and ".join(conditions)
 
     script = f'''
     tell application "Mail"
-        with timeout of 300 seconds
+        with timeout of {effective_timeout} seconds
             set outputText to "UPDATING EMAIL STATUS: {action_label}" & return & return
             set updateCount to 0
 
@@ -466,17 +508,15 @@ def update_email_status(
 
                 repeat with aMessage in targetMessages
                     try
-                        {date_check_start}
-                            {single_action_script}
-                            set messageSubject to subject of aMessage
-                            set messageSender to sender of aMessage
-                            set messageDate to date received of aMessage
+                        {single_action_script}
+                        set messageSubject to subject of aMessage
+                        set messageSender to sender of aMessage
+                        set messageDate to date received of aMessage
 
-                            set outputText to outputText & "- {action_label}: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return
-                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-                            set updateCount to updateCount + 1
-                        {date_check_end}
+                        set outputText to outputText & "- {action_label}: " & messageSubject & return
+                        set outputText to outputText & "   From: " & messageSender & return
+                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                        set updateCount to updateCount + 1
                     end try
                 end repeat
 
@@ -493,15 +533,20 @@ def update_email_status(
     end tell
     '''
 
-    result = run_applescript(script, timeout=300)
-    return result
+    try:
+        return run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: update_email_status timed out after {effective_timeout}s "
+            f"on account '{account}'."
+        )
 
 
 @mcp.tool()
 @inject_preferences
 def manage_trash(
-    account: str,
-    action: str,
+    account: Optional[str] = None,
+    action: str = "move_to_trash",
     subject_keyword: Optional[str] = None,
     subject_keywords: Optional[List[str]] = None,
     sender: Optional[str] = None,
@@ -511,6 +556,7 @@ def manage_trash(
     apply_to_all: bool = False,
     older_than_days: Optional[int] = None,
     dry_run: bool = True,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Manage trash operations - delete emails or empty trash.
@@ -518,8 +564,10 @@ def manage_trash(
     When dry_run=True (default) and action is "move_to_trash", previews what
     would be deleted without acting. Set dry_run=False to actually move to trash.
 
+    When ``account`` is None the configured ``DEFAULT_MAIL_ACCOUNT`` is used.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Defaults to DEFAULT_MAIL_ACCOUNT.
         action: Action to perform: "move_to_trash", "delete_permanent", "empty_trash"
         subject_keyword: Optional keyword to filter emails (not used for empty_trash)
         subject_keywords: Optional list of subject keywords; matches any keyword
@@ -530,15 +578,21 @@ def manage_trash(
         apply_to_all: Must be True to allow operations without subject_keyword or sender filter
         older_than_days: Optional age filter - only affect emails older than N days
         dry_run: If True (default), preview what would be affected without acting
+        timeout: Optional AppleScript timeout in seconds (default: 300s).
 
     Returns:
         Confirmation message with details of deleted emails
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: account is required (and no DEFAULT_MAIL_ACCOUNT configured)."
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
     safe_mailbox = escape_applescript(mailbox)
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
+    effective_timeout = timeout if timeout is not None else 300
 
     if action == "empty_trash":
         if not confirm_empty:
@@ -548,33 +602,38 @@ def manage_trash(
             )
         script = f'''
         tell application "Mail"
-            set outputText to "EMPTYING TRASH" & return & return
+            with timeout of {effective_timeout} seconds
+                set outputText to "EMPTYING TRASH" & return & return
 
-            try
-                set targetAccount to account "{safe_account}"
-                set trashMailbox to mailbox "Trash" of targetAccount
-                set trashMessages to every message of trashMailbox
-                set messageCount to count of trashMessages
-                set deleteCount to 0
+                try
+                    set targetAccount to account "{safe_account}"
+                    set trashMailbox to mailbox "Trash" of targetAccount
+                    set messageCount to count of messages of trashMailbox
+                    set deleteCount to 0
 
-                -- Delete messages in trash, respecting max_deletes
-                repeat with aMessage in trashMessages
-                    if deleteCount >= {max_deletes} then exit repeat
-                    delete aMessage
-                    set deleteCount to deleteCount + 1
-                end repeat
+                    if messageCount > {max_deletes} then
+                        set trashMessages to messages 1 thru {max_deletes} of trashMailbox
+                    else
+                        set trashMessages to messages of trashMailbox
+                    end if
 
-                set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
-                set outputText to outputText & "   Deleted " & deleteCount & " of " & messageCount & " message(s)" & return
-                if deleteCount < messageCount then
-                    set outputText to outputText & "   (limited by max_deletes=" & {max_deletes} & ")" & return
-                end if
+                    repeat with aMessage in trashMessages
+                        delete aMessage
+                        set deleteCount to deleteCount + 1
+                    end repeat
 
-            on error errMsg
-                return "Error: " & errMsg
-            end try
+                    set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
+                    set outputText to outputText & "   Deleted " & deleteCount & " of " & messageCount & " message(s)" & return
+                    if deleteCount < messageCount then
+                        set outputText to outputText & "   (limited by max_deletes=" & {max_deletes} & ")" & return
+                    end if
 
-            return outputText
+                on error errMsg
+                    return "Error: " & errMsg
+                end try
+
+                return outputText
+            end timeout
         end tell
         '''
     elif action == "delete_permanent":
@@ -593,15 +652,23 @@ def manage_trash(
             conditions.append(f'sender contains "{escape_applescript(sender)}"')
 
         if conditions:
-            matching_messages_script = f"set matchingMessages to every message of trashMailbox whose {' and '.join(conditions)}"
-        else:
             matching_messages_script = (
-                "set matchingMessages to every message of trashMailbox"
+                f"set matchingMessages to every message of trashMailbox whose {' and '.join(conditions)}"
+            )
+        else:
+            # No filters (apply_to_all path) — cap before binding so we don't
+            # materialize the full trash mailbox.
+            matching_messages_script = (
+                f"if (count of messages of trashMailbox) > {max_deletes} then\n"
+                f"                        set matchingMessages to messages 1 thru {max_deletes} of trashMailbox\n"
+                f"                    else\n"
+                f"                        set matchingMessages to messages of trashMailbox\n"
+                f"                    end if"
             )
 
         script = f'''
         tell application "Mail"
-            with timeout of 300 seconds
+            with timeout of {effective_timeout} seconds
                 set outputText to "PERMANENTLY DELETING EMAILS" & return & return
                 set deleteCount to 0
 
@@ -655,28 +722,32 @@ def manage_trash(
                 "to filter emails, or set apply_to_all=True to move all messages to trash."
             )
 
-        # Build search condition with escaped inputs
-        conditions = []
+        # Date filter — push into whose clause so AppleScript filters in a
+        # single pass instead of enumerating + Python-side date checks.
+        date_setup = ""
+        conditions: List[str] = []
         if subject_terms:
             conditions.append(contains_any_condition("subject", subject_terms))
         if sender:
             conditions.append(f'sender contains "{escape_applescript(sender)}"')
-
-        if conditions:
-            matching_messages_script = f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
-        else:
-            matching_messages_script = (
-                "set matchingMessages to every message of sourceMailbox"
-            )
-
-        # Date filter
-        date_setup = ""
-        date_check_start = ""
-        date_check_end = ""
         if older_than_days and older_than_days > 0:
             date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-            date_check_start = "if (date received of aMessage) < cutoffDate then"
-            date_check_end = "end if"
+            conditions.append("date received < cutoffDate")
+
+        if conditions:
+            matching_messages_script = (
+                f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
+            )
+        else:
+            # No filters (apply_to_all path) — cap before binding so we don't
+            # materialize the full mailbox.
+            matching_messages_script = (
+                f"if (count of messages of sourceMailbox) > {max_deletes} then\n"
+                f"                        set matchingMessages to messages 1 thru {max_deletes} of sourceMailbox\n"
+                f"                    else\n"
+                f"                        set matchingMessages to messages of sourceMailbox\n"
+                f"                    end if"
+            )
 
         if dry_run:
             mode_label = "DRY RUN - PREVIEW TRASH"
@@ -692,7 +763,7 @@ def manage_trash(
 
         script = f'''
         tell application "Mail"
-            with timeout of 300 seconds
+            with timeout of {effective_timeout} seconds
                 set outputText to "{mode_label}" & return & return
                 set deleteCount to 0
 
@@ -719,14 +790,12 @@ def manage_trash(
                             set messageSender to sender of aMessage
                             set messageDate to date received of aMessage
 
-                            {date_check_start}
-                                {move_script}
-                                set deleteCount to deleteCount + 1
+                            {move_script}
+                            set deleteCount to deleteCount + 1
 
-                                set outputText to outputText & "{result_verb}: " & messageSubject & return
-                                set outputText to outputText & "   From: " & messageSender & return
-                                set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-                            {date_check_end}
+                            set outputText to outputText & "{result_verb}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
                         end try
                     end repeat
 
@@ -743,21 +812,20 @@ def manage_trash(
         end tell
         '''
 
-    result = run_applescript(script, timeout=300)
-    return result
-
-
-import re
-
-# Characters that could break AppleScript strings or mailbox names
-_INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
+    try:
+        return run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: manage_trash timed out after {effective_timeout}s on "
+            f"account '{account}'."
+        )
 
 
 @mcp.tool()
 @inject_preferences
 def create_mailbox(
-    account: str,
-    name: str,
+    account: Optional[str] = None,
+    name: str = "",
     parent_mailbox: Optional[str] = None,
 ) -> str:
     """
@@ -768,8 +836,10 @@ def create_mailbox(
     You can also pass a full slash-separated path as *name*
     (e.g., "Projects/2024/ClientName") and omit parent_mailbox.
 
+    When ``account`` is None the configured ``DEFAULT_MAIL_ACCOUNT`` is used.
+
     Args:
-        account: Account name (e.g., "Gmail", "Work")
+        account: Account name (e.g., "Gmail", "Work"). Defaults to DEFAULT_MAIL_ACCOUNT.
         name: Name for the new mailbox. May contain "/" to create a
               nested path in one call (each segment is created if needed).
         parent_mailbox: Optional existing parent folder for nesting.
@@ -777,6 +847,11 @@ def create_mailbox(
     Returns:
         Confirmation with the new mailbox path.
     """
+    if account is None:
+        account = _server.DEFAULT_MAIL_ACCOUNT
+    if not account:
+        return "Error: account is required (and no DEFAULT_MAIL_ACCOUNT configured)."
+
     # Validate name
     if not name or not name.strip():
         return "Error: Mailbox name cannot be empty."

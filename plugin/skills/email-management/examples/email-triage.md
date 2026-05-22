@@ -99,7 +99,7 @@ search_emails(sender="important-client@client.com", read_status="unread")
 
 ### Step 4: Quick Scan Remaining (P2-P4) (3-5 min)
 ```
-get_recent_emails(count=50, include_content=False)
+list_inbox_emails(max_emails=50, include_content=False)
 ```
 
 **Rapid categorization by subject line**:
@@ -114,7 +114,7 @@ get_recent_emails(count=50, include_content=False)
 
 ### Step 5: Set Context for Later (1-2 min)
 ```
-get_unread_count()
+get_mailbox_unread_counts(summary_only=True)
 ```
 
 **Mental note**:
@@ -366,8 +366,8 @@ update_email_status(action="unflag", subject_keyword="...", max_updates=10)
 | Bulk flag | `update_email_status()` | action="flag" |
 | Bulk trash | `manage_trash()` | action="move_to_trash" |
 | Bulk mark read | `update_email_status()` | action="mark_read" |
-| Recent scan | `get_recent_emails()` | count=50 |
-| Check counts | `get_unread_count()` | See progress |
+| Recent scan | `list_inbox_emails()` | max_emails=50 |
+| Check counts | `get_mailbox_unread_counts(summary_only=True)` | See progress |
 
 ## Remember
 

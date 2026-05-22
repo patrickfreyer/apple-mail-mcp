@@ -50,8 +50,17 @@ def _sanitize_for_json(text: str) -> str:
     return "".join(ch for ch in text if ch in ("\n", "\t") or (ord(ch) >= 32))
 
 
-def run_applescript(script: str, timeout: int = 120) -> str:
-    """Execute AppleScript via stdin pipe for reliable multi-line handling."""
+class AppleScriptTimeout(Exception):
+    """Raised when an AppleScript invocation exceeds its per-call timeout."""
+
+
+def run_applescript(script: str, timeout: Optional[int] = 120) -> str:
+    """Execute AppleScript via stdin pipe for reliable multi-line handling.
+
+    Raises ``AppleScriptTimeout`` (subclass of Exception) on per-call timeout
+    so callers can isolate slow-account failures without losing siblings'
+    partial results.
+    """
     try:
         result = subprocess.run(
             ["osascript", "-"],
@@ -66,7 +75,9 @@ def run_applescript(script: str, timeout: int = 120) -> str:
         output = result.stdout.decode("utf-8", errors="replace").strip()
         return _sanitize_for_json(output)
     except subprocess.TimeoutExpired:
-        raise Exception("AppleScript execution timed out")
+        raise AppleScriptTimeout("AppleScript execution timed out")
+    except AppleScriptTimeout:
+        raise
     except Exception as e:
         raise Exception(f"AppleScript execution failed: {str(e)}")
 
@@ -173,14 +184,6 @@ def parse_email_list(output: str) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Shared AppleScript template helpers
 # ---------------------------------------------------------------------------
-
-LOWERCASE_HANDLER = """
-    on lowercase(str)
-        set lowerStr to do shell script "echo " & quoted form of str & " | tr '[:upper:]' '[:lower:]'"
-        return lowerStr
-    end lowercase
-"""
-
 
 # Localized inbox mailbox names. Mail.app uses the system locale to name
 # the inbox folder for non-IMAP accounts (Exchange, on-my-Mac), so we must
