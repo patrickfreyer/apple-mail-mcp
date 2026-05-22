@@ -18,7 +18,7 @@
  </picture>
 </a>
 
-An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **27 tools**, **221** unit tests, Python **3.10+**.
+An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **27 tools**, **249** unit tests, Python **3.10+**.
 
 ## Documentation map
 
@@ -72,7 +72,7 @@ python3 -m venv .venv
 .venv/bin/apple-mail accounts --json
 .venv/bin/apple-mail search --account "Gmail" --query "invoice" --limit 10 --json
 .venv/bin/apple-mail show --account "Gmail" --id 12345 --json
-.venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
+.venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body" --signature-name "TU"
 .venv/bin/apple-mail quick-check --account "Gmail" --json
 .venv/bin/apple-mail perf-test --account "Gmail" --json
 .venv/bin/apple-mail perf-test --include-analysis --allow-heavy-mail-scan --account "Gmail" --json
@@ -232,6 +232,7 @@ Pass `--draft-safe` to keep read, search, draft, and open-for-review workflows a
 In draft-safe mode:
 
 - `compose_email`, `reply_to_email`, and `forward_email` default to `mode="draft"` (quiet save to Drafts, no leftover compose windows)
+- they apply `DEFAULT_MAIL_SIGNATURE` by default when set; pass `include_signature=False` or CLI `--no-signature` to suppress it
 - use `mode="open"` only when you want each draft saved and left open in Mail for review (bulk reply UIs)
 - pass `message_id` from search/list tools for reply/forward when available; `subject_keyword` is fallback only
 - explicit `mode="send"` calls return an error
@@ -278,13 +279,32 @@ Set `USER_EMAIL_PREFERENCES` to give the assistant context about your workflow. 
 
 For `.mcpb` installs, configure both under Claude Desktop → **Developer > MCP Servers > Apple Mail MCP** (the bundle exposes them via `user_config`).
 
+### Default Mail Signature
+
+Set `DEFAULT_MAIL_SIGNATURE` to the exact Apple Mail signature name you want applied to new compose, reply, and forward drafts. Per-call `signature_name` overrides the default; `include_signature=False` disables it for one call. The CLI exposes this as `apple-mail draft --signature-name "TU"` and `--no-signature`.
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/plugin/start_mcp.sh",
+      "args": ["--draft-safe"],
+      "env": {
+        "DEFAULT_MAIL_ACCOUNT": "Work",
+        "DEFAULT_MAIL_SIGNATURE": "TU"
+      }
+    }
+  }
+}
+```
+
 ### Performance Defaults
 
 To stay fast on large mailboxes (24K+ messages), the server applies conservative defaults you can opt out of per-call:
 
 | Default | Tools | Override |
 |---------|-------|----------|
-| Last 48 hours | `search_emails`, `get_awaiting_reply`, `get_needs_response`, `get_top_senders` | Pass `recent_days=N` (e.g. `7` for a week, `0` for unlimited) |
+| Last 48 hours | `search_emails`, `get_awaiting_reply`, `get_needs_response`, `get_top_senders` | Pass `recent_days=N` (e.g. `7` for a week); full scans require explicit opt-in |
 | 50 emails max | `list_inbox_emails`, `list_email_attachments` | Pass `max_emails` / `max_results` |
 | Single account | All scoped tools when `DEFAULT_MAIL_ACCOUNT` is set | Pass `account=<name>` or `all_accounts=True` |
 | Per-call timeout | All long-running tools | Pass `timeout=<seconds>` |
@@ -331,7 +351,7 @@ apple-mail inbox --account "Gmail" --limit 10 --json
 apple-mail search --account "Gmail" --query "invoice" --limit 10 --json
 apple-mail show --account "Gmail" --id 12345 --json
 apple-mail mailboxes --account "Gmail" --json
-apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
+apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body" --signature-name "TU"
 apple-mail mcp-config --repo "$(pwd)"
 apple-mail quick-check --account "Gmail" --json
 apple-mail perf-test --account "Gmail" --json

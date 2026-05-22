@@ -37,7 +37,7 @@ export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"
 
 ## Maintenance
 
-- After `tools/*.py`: `.venv/bin/pytest tests/ -q` (221 tests)
+- After `tools/*.py`: `.venv/bin/pytest tests/ -q` (249 tests)
 - After manifests: `bash tools/validate_manifests.sh` + `plugin-dev:plugin-validator`
 - After skills: `plugin-dev:skill-reviewer` (+ manifest validator if marketing copy changed)
 - Live workflow: [`docs/AGENT_LIVE_TESTING.md`](../docs/AGENT_LIVE_TESTING.md)

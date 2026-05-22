@@ -673,6 +673,12 @@ def _build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--cc", help="CC address(es)")
     draft.add_argument("--bcc", help="BCC address(es)")
     draft.add_argument("--from-address", help="Sender alias on the account")
+    draft.add_argument("--signature-name", help="Mail signature name to apply")
+    draft.add_argument(
+        "--no-signature",
+        action="store_true",
+        help="Do not apply the configured/default Mail signature",
+    )
     draft.add_argument("--open", action="store_true", help="Open compose window")
     _add_json_flag(draft)
 
@@ -976,6 +982,8 @@ def _cmd_draft(args: argparse.Namespace) -> int:
         mode="open" if args.open else "draft",
         body_html=body_html,
         from_address=args.from_address,
+        include_signature=not args.no_signature,
+        signature_name=args.signature_name,
     )
 
 

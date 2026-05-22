@@ -38,9 +38,32 @@ python tools/check_wrapper_surface.py --wrapper /path/to/apple-mail
 
 Run after regenerating the mcporter bundle or adding read tools agents rely on.
 
-## pre-commit-validate.sh
+## dev-check.sh
 
-Manifest validation + mocked pytest. No live Mail. Requires root `.venv/`.
+Tiered local gate (no live Mail except `live` tier). Requires root `.venv/`.
+
+| Tier | Runs |
+|------|------|
+| `default` | `validate_manifests.sh` + `pytest`; adds `check_wrapper_surface.py` when **staged** files touch `plugin/apple_mail_mcp/tools/`, tool registration, or MCPB `manifest.json` |
+| `surface` | default + wrapper check always |
+| `manifest` | manifests only |
+| `live` | default + `.venv/bin/apple-mail quick-check --json` |
+| `all` | default + wrapper check always |
+
+```bash
+bash tools/dev-check.sh
+bash tools/dev-check.sh surface
+```
+
+## pre-commit hook
+
+Install once per clone:
+
+```bash
+bash tools/install-git-hooks.sh
+```
+
+Runs `bash tools/dev-check.sh default` on every commit (manifests + pytest; wrapper check when staged tool surface changes). Manual equivalent:
 
 ```bash
 bash tools/pre-commit-validate.sh

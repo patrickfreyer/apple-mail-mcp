@@ -27,6 +27,13 @@
       "description": "When set, email tools default to this account instead of scanning all configured Mail accounts. Use the exact account name as it appears in Apple Mail (e.g. 'Gmail', 'Work', 'iCloud'). Leave blank to query all accounts by default.",
       "required": false,
       "default": ""
+    },
+    "default_signature": {
+      "type": "string",
+      "title": "Default Mail Signature",
+      "description": "Optional Apple Mail signature name to apply by default to compose, reply, and forward drafts (e.g. 'TU'). Leave blank to use Mail's existing behavior.",
+      "required": false,
+      "default": ""
     }
   },
   "server": {
@@ -35,11 +42,13 @@
     "mcp_config": {
       "command": "/bin/bash",
       "args": [
-        "${__dirname}/start_mcp.sh"
+        "${__dirname}/start_mcp.sh",
+        "--draft-safe"
       ],
       "env": {
         "USER_EMAIL_PREFERENCES": "${user_config.user_preferences}",
-        "DEFAULT_MAIL_ACCOUNT": "${user_config.default_account}"
+        "DEFAULT_MAIL_ACCOUNT": "${user_config.default_account}",
+        "DEFAULT_MAIL_SIGNATURE": "${user_config.default_signature}"
       }
     }
   },
@@ -74,15 +83,15 @@
     },
     {
       "name": "reply_to_email",
-      "description": "Reply to an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the compose window for review. Optional reply-all, CC/BCC, HTML body."
+      "description": "Reply to an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the compose window for review. Supports DEFAULT_MAIL_SIGNATURE, signature_name, include_signature, reply-all, CC/BCC, and HTML body."
     },
     {
       "name": "compose_email",
-      "description": "Compose a new email from a specific account. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Supports TO/CC/BCC and optional HTML body."
+      "description": "Compose a new email from a specific account. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Supports DEFAULT_MAIL_SIGNATURE, signature_name, include_signature, TO/CC/BCC, and optional HTML body."
     },
     {
       "name": "forward_email",
-      "description": "Forward an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Optional prepended message, CC/BCC."
+      "description": "Forward an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Supports DEFAULT_MAIL_SIGNATURE, signature_name, include_signature, optional prepended message, and CC/BCC."
     },
     {
       "name": "create_rich_email_draft",

@@ -124,6 +124,27 @@ def _resolve_account(
     return account, None
 
 
+def _resolve_signature_name(
+    include_signature: bool, signature_name: Optional[str]
+) -> Optional[str]:
+    """Return the Mail signature name to apply, or None when disabled/unset."""
+    if not include_signature:
+        return None
+    if signature_name is not None:
+        signature_name = signature_name.strip()
+        return signature_name or None
+    default_signature = _server.DEFAULT_MAIL_SIGNATURE
+    return default_signature.strip() if default_signature else None
+
+
+def _compose_signature_script(message_var: str, signature_name: Optional[str]) -> str:
+    """AppleScript fragment that applies a native Mail signature by name."""
+    if not signature_name:
+        return ""
+    safe_signature = escape_applescript(signature_name)
+    return f'set message signature of {message_var} to signature "{safe_signature}"'
+
+
 def _split_addresses(value):
     """Return trimmed recipient addresses preserving order."""
     if not value:
@@ -570,6 +591,7 @@ def _send_html_email(
     mode: str = "send",
     sender_override: Optional[str] = None,
     timeout: Optional[int] = None,
+    signature_name: Optional[str] = None,
 ) -> str:
     """Send an HTML-formatted email via NSPasteboard clipboard injection.
 
@@ -590,6 +612,7 @@ def _send_html_email(
     sender_script = _compose_sender_script(
         "newMsg", f'account "{safe_account}"', sender_override
     )
+    signature_script = _compose_signature_script("newMsg", signature_name)
 
     # Mode-specific behaviour after paste
     if mode == "send":
@@ -655,6 +678,7 @@ pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
 tell application "Mail"
     set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
     {sender_script}
+    {signature_script}
     tell newMsg
         {to_lines}
         {cc_lines}
@@ -680,9 +704,7 @@ tell application "System Events"
         end repeat
         delay 0.3
 
-        -- Select all in body and paste HTML
-        keystroke "a" using command down
-        delay 0.2
+        -- Paste HTML without Cmd+A so Mail's native signature remains intact.
         keystroke "v" using command down
         delay 0.5
 
@@ -786,6 +808,8 @@ def reply_to_email(
     message_id: Optional[str] = None,
     recent_days: float = 2.0,
     timeout: Optional[int] = None,
+    include_signature: bool = True,
+    signature_name: Optional[str] = None,
 ) -> str:
     """
     Reply to an email by message_id (preferred) or subject keyword.
@@ -805,6 +829,8 @@ def reply_to_email(
         message_id: Exact numeric Apple Mail message id from search/list tools. Required preference over subject_keyword whenever an id is available.
         recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to 120s for the main reply script and up to 30s for alias validation.
+        include_signature: Whether to apply the configured/default Mail signature (default: True).
+        signature_name: Optional Mail signature name; falls back to DEFAULT_MAIL_SIGNATURE when omitted.
 
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
@@ -840,6 +866,7 @@ def reply_to_email(
         )
     if sender_error:
         return sender_error
+    resolved_signature_name = _resolve_signature_name(include_signature, signature_name)
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -973,6 +1000,7 @@ def reply_to_email(
     sender_script = _compose_sender_script(
         "replyMessage", "targetAccount", sender_override
     )
+    signature_script = _compose_signature_script("replyMessage", resolved_signature_name)
 
     script = f'''
 use framework "Foundation"
@@ -1009,6 +1037,7 @@ tell application "Mail"
             delay 0.5
 
             {sender_script}
+            {signature_script}
 
             -- Add CC/BCC recipients
             {cc_script}
@@ -1117,6 +1146,8 @@ def compose_email(
     body_html: Optional[str] = None,
     from_address: Optional[str] = None,
     timeout: Optional[int] = None,
+    include_signature: bool = True,
+    signature_name: Optional[str] = None,
 ) -> str:
     """
     Compose a new email from a specific account.
@@ -1133,6 +1164,8 @@ def compose_email(
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
+        include_signature: Whether to apply the configured/default Mail signature (default: True).
+        signature_name: Optional Mail signature name; falls back to DEFAULT_MAIL_SIGNATURE when omitted.
 
     Returns:
         Confirmation message with details of the email
@@ -1166,6 +1199,7 @@ def compose_email(
         )
     if sender_error:
         return sender_error
+    resolved_signature_name = _resolve_signature_name(include_signature, signature_name)
 
     # Validate and resolve attachments early
     attachment_script = ""
@@ -1197,6 +1231,7 @@ def compose_email(
             mode=mode,
             sender_override=sender_override,
             timeout=timeout,
+            signature_name=resolved_signature_name,
         )
 
     # --- Plain-text path: existing AppleScript approach ---
@@ -1229,6 +1264,7 @@ def compose_email(
     sender_script = _compose_sender_script(
         "newMessage", "targetAccount", sender_override
     )
+    signature_script = _compose_signature_script("newMessage", resolved_signature_name)
 
     # Determine behavior per mode
     if mode == "send":
@@ -1258,6 +1294,7 @@ def compose_email(
             set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:{visible}}}
 
             {sender_script}
+            {signature_script}
 
             -- Add TO/CC/BCC recipients
             tell newMessage
@@ -1332,6 +1369,8 @@ def forward_email(
     message_id: Optional[str] = None,
     recent_days: float = 2.0,
     timeout: Optional[int] = None,
+    include_signature: bool = True,
+    signature_name: Optional[str] = None,
 ) -> str:
     """
     Forward an email to one or more recipients.
@@ -1349,6 +1388,8 @@ def forward_email(
         message_id: Exact numeric Apple Mail message id from search/list tools. Required preference over subject_keyword whenever an id is available.
         recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
+        include_signature: Whether to apply the configured/default Mail signature (default: True).
+        signature_name: Optional Mail signature name; falls back to DEFAULT_MAIL_SIGNATURE when omitted.
 
     Returns:
         Confirmation message with details of forwarded email
@@ -1391,6 +1432,7 @@ def forward_email(
         )
     if sender_error:
         return sender_error
+    resolved_signature_name = _resolve_signature_name(include_signature, signature_name)
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -1407,6 +1449,7 @@ def forward_email(
     sender_script = _compose_sender_script(
         "forwardMessage", "targetAccount", sender_override
     )
+    signature_script = _compose_signature_script("forwardMessage", resolved_signature_name)
 
     cc_script, bcc_script, _, _ = _build_recipient_loops(
         cc, bcc, message_var="forwardMessage"
@@ -1516,6 +1559,7 @@ tell application "Mail"
             set forwardMessage to forward foundMessage with opening window
 
             {sender_script}
+            {signature_script}
 
             -- Add recipients
             {to_script}

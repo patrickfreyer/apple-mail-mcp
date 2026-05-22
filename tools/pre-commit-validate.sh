@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Optional local pre-push check — manifest drift + mocked pytest (no live Mail).
-# Wire into git: ln -sf ../../tools/pre-commit-validate.sh .git/hooks/pre-commit
+# Git pre-commit hook — manifest drift + mocked pytest (+ wrapper when tool surface staged).
+# Install once per clone: bash tools/install-git-hooks.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-bash tools/validate_manifests.sh
-.venv/bin/pytest tests/ -q
+bash tools/dev-check.sh default

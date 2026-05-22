@@ -1,10 +1,12 @@
 """Tests for compose and rich draft helpers."""
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from apple_mail_mcp import server as _server
 from apple_mail_mcp.tools import compose as compose_tools
 
 
@@ -24,6 +26,127 @@ def _assert_ordered(testcase, text, *snippets):
         position = text.find(snippet)
         testcase.assertGreater(position, last_position)
         last_position = position
+
+
+class DefaultMailSignatureSupportTests(unittest.TestCase):
+    def test_server_exposes_default_mail_signature_env_setting(self):
+        self.assertTrue(hasattr(_server, "DEFAULT_MAIL_SIGNATURE"))
+
+    def test_compose_email_signature_parameters_are_in_tool_signature(self):
+        params = inspect.signature(compose_tools.compose_email).parameters
+
+        self.assertIn("include_signature", params)
+        self.assertTrue(params["include_signature"].default)
+        self.assertIn("signature_name", params)
+        self.assertIsNone(params["signature_name"].default)
+
+    def test_default_signature_applies_to_plain_draft_via_mail_signature_property(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "saved"
+
+        with (
+            patch.object(compose_tools.server, "DEFAULT_MAIL_SIGNATURE", "TU", create=True),
+            patch("apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run),
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="self@example.com",
+                subject="Test",
+                body="Body",
+                mode="draft",
+            )
+
+        script = captured[0]
+        _assert_ordered(
+            self,
+            script,
+            'set message signature of newMessage to signature "TU"',
+            "save newMessage",
+        )
+
+    def test_include_signature_false_suppresses_default_signature_assignment(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "saved"
+
+        with (
+            patch.object(compose_tools.server, "DEFAULT_MAIL_SIGNATURE", "TU", create=True),
+            patch("apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run),
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="self@example.com",
+                subject="Test",
+                body="Body",
+                include_signature=False,
+            )
+
+        self.assertNotIn("message signature of newMessage", captured[0])
+
+    def test_html_compose_applies_signature_without_selecting_all(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "saved"
+
+        with (
+            patch.object(compose_tools.server, "DEFAULT_MAIL_SIGNATURE", "TU", create=True),
+            patch("apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run),
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="team@example.com",
+                subject="Hi",
+                body="Plain",
+                body_html="<p>Hi</p>",
+                mode="draft",
+            )
+
+        script = captured[0]
+        self.assertIn('set message signature of newMsg to signature "TU"', script)
+        self.assertNotIn('keystroke "a" using command down', script)
+
+    def test_reply_and_forward_accept_signature_options(self):
+        for tool, message_var, kwargs in [
+            (
+                compose_tools.reply_to_email,
+                "replyMessage",
+                {"subject_keyword": "test", "reply_body": "Thanks"},
+            ),
+            (
+                compose_tools.forward_email,
+                "forwardMessage",
+                {"subject_keyword": "test", "to": "recipient@example.com"},
+            ),
+        ]:
+            with self.subTest(tool=tool.__name__):
+                captured = []
+
+                def fake_run(script, timeout=120):
+                    captured.append(script)
+                    return "saved"
+
+                with patch(
+                    "apple_mail_mcp.tools.compose.run_applescript",
+                    side_effect=fake_run,
+                ):
+                    tool(
+                        account="Work",
+                        include_signature=True,
+                        signature_name="TU",
+                        **kwargs,
+                    )
+
+                self.assertIn(
+                    f'set message signature of {message_var} to signature "TU"',
+                    captured[0],
+                )
 
 
 class ComposeToolTests(unittest.TestCase):

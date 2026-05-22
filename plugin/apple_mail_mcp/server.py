@@ -47,6 +47,7 @@ USER_PREFERENCES = os.environ.get("USER_EMAIL_PREFERENCES", "")
 # tools should read this lazily (e.g. ``from apple_mail_mcp import server;
 # server.DEFAULT_MAIL_ACCOUNT``) rather than importing the constant once.
 DEFAULT_MAIL_ACCOUNT = os.environ.get("DEFAULT_MAIL_ACCOUNT", "").strip() or None
+DEFAULT_MAIL_SIGNATURE = os.environ.get("DEFAULT_MAIL_SIGNATURE", "").strip() or None
 
 # Read-only mode flag — set via --read-only CLI argument.
 # When enabled, tools that send email are disabled. Drafts remain available.

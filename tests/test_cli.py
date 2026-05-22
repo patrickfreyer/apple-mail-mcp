@@ -116,6 +116,67 @@ class AppleMailCliTests(unittest.TestCase):
         self.assertEqual(captured["body"], "Hello from file")
         self.assertEqual(captured["mode"], "draft")
 
+    def test_draft_forwards_signature_name_to_compose_email(self):
+        captured = {}
+
+        def fake_compose(**kwargs):
+            captured.update(kwargs)
+            return "drafted"
+
+        with (
+            patch("apple_mail_mcp.tools.compose.compose_email", side_effect=fake_compose),
+            patch("builtins.print"),
+        ):
+            code = cli.main(
+                [
+                    "draft",
+                    "--account",
+                    "Work",
+                    "--to",
+                    "person@example.com",
+                    "--subject",
+                    "Subject",
+                    "--body",
+                    "Hello",
+                    "--signature-name",
+                    "TU",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["include_signature"])
+        self.assertEqual(captured["signature_name"], "TU")
+
+    def test_draft_forwards_no_signature_to_compose_email(self):
+        captured = {}
+
+        def fake_compose(**kwargs):
+            captured.update(kwargs)
+            return "drafted"
+
+        with (
+            patch("apple_mail_mcp.tools.compose.compose_email", side_effect=fake_compose),
+            patch("builtins.print"),
+        ):
+            code = cli.main(
+                [
+                    "draft",
+                    "--account",
+                    "Work",
+                    "--to",
+                    "person@example.com",
+                    "--subject",
+                    "Subject",
+                    "--body",
+                    "Hello",
+                    "--no-signature",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertFalse(captured["include_signature"])
+        self.assertIsNone(captured["signature_name"])
+
     def test_mcp_config_defaults_to_draft_safe(self):
         with patch("builtins.print") as mock_print:
             code = cli.main(["mcp-config", "--repo", "/tmp/apple-mail-mcp"])

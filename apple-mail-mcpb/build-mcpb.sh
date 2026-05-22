@@ -125,7 +125,7 @@ For grouped tool summaries, see the upstream [`README`](https://github.com/patri
 
 1. Claude Desktop → **Settings → Developer → MCP Servers → Install from file** → choose this `.mcpb`.
 2. Approve Automation + Mail Data Access prompts when macOS asks.
-3. Populate **Default Mail Account** / **Email Preferences** in the MCP inspector when available.
+3. Populate **Default Mail Account** / **Default Mail Signature** / **Email Preferences** in the MCP inspector when available.
 
 Prefer **`--draft-safe`** for shared/agent hosts; manifests typically enable it by default — override only deliberately.
 
@@ -155,6 +155,7 @@ Also copies `skills/CLAUDE.md` authoring notes — safe to ignore for runtime.
 ## Operational notes
 
 - Keep **`DEFAULT_MAIL_ACCOUNT`** set when multiple accounts fan out slowly.
+- Set **`DEFAULT_MAIL_SIGNATURE`** to an exact Mail signature name when drafts should include your standard signature.
 - Use narrow `recent_days` / caps before escalating cross-account AppleScript workloads.
 - `export_emails`, `save_email_attachment`, compose send paths imply disk or dispatch risk — preview + confirm.
 

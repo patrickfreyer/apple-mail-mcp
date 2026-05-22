@@ -181,11 +181,12 @@ bash tools/validate_manifests.sh
 .venv/bin/pytest tests/ -q
 ```
 
-Optional local hook (manifest drift + pytest, no live Mail):
+Optional local hook (manifest drift + pytest; wrapper check when staged MCP tool files change):
 
 ```bash
-bash tools/pre-commit-validate.sh
-# or: ln -sf ../../tools/pre-commit-validate.sh .git/hooks/pre-commit
+bash tools/install-git-hooks.sh   # once per clone
+bash tools/dev-check.sh             # manual equivalent
+bash tools/dev-check.sh surface     # always include wrapper check
 ```
 
 Live Mail verification is manual on macOS with Mail.app running.
@@ -199,6 +200,7 @@ The Claude plugin starts the server via `mcpServers.apple-mail` → `${CLAUDE_PL
 | Variable | Purpose |
 |----------|---------|
 | `DEFAULT_MAIL_ACCOUNT` | Exact Mail account name (e.g. `Work`, `Gmail`). When set, most tools default to this account instead of fanning out across every account — largest perf win on multi-account mailboxes. |
+| `DEFAULT_MAIL_SIGNATURE` | Exact Apple Mail signature name to apply by default to compose, reply, and forward drafts (e.g. `TU`). |
 | `USER_EMAIL_PREFERENCES` | Free-text workflow hints injected into preference-aware tool docstrings (e.g. "Prefer Archive over Trash, cap lists at 25"). |
 
 Example `env` block for a manual MCP config (also emitted by `apple-mail mcp-config` if you add `env` yourself):
@@ -206,6 +208,7 @@ Example `env` block for a manual MCP config (also emitted by `apple-mail mcp-con
 ```json
 "env": {
   "DEFAULT_MAIL_ACCOUNT": "Work",
+  "DEFAULT_MAIL_SIGNATURE": "TU",
   "USER_EMAIL_PREFERENCES": "Prefer Archive over Trash; default triage window 7 days"
 }
 ```
