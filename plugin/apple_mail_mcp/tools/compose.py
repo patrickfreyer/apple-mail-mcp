@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 from apple_mail_mcp import server as _server
-from apple_mail_mcp.server import mcp, READ_ONLY
+from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     inject_preferences,
@@ -210,6 +210,17 @@ def _prepare_rich_bodies(subject, text_body, html_body):
         rich_body = _build_html_from_text(plain_body)
 
     return plain_body, rich_body, []
+
+
+def _send_blocked(mode: Optional[str]) -> Optional[str]:
+    """Return an error when the active server mode disallows sending."""
+    if mode != "send":
+        return None
+    if _server.READ_ONLY:
+        return "Error: Sending is disabled in read-only mode."
+    if _server.DRAFT_SAFE:
+        return "Error: Sending is disabled in draft-safe mode. Use mode='draft' or mode='open'."
+    return None
 
 
 def _save_open_message_as_draft(subject, retries=10, delay_seconds=0.5, timeout=None):
@@ -618,7 +629,7 @@ def reply_to_email(
     reply_to_all: bool = False,
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
-    send: bool = True,
+    send: bool = False,
     mode: Optional[str] = None,
     attachments: Optional[str] = None,
     body_html: Optional[str] = None,
@@ -635,8 +646,8 @@ def reply_to_email(
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
-        send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
-        mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
+        send: If True, send immediately; if False (default), save as draft. Ignored if mode is set.
+        mode: Delivery mode — "send" (send immediately), "draft" (default, save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
@@ -764,6 +775,10 @@ def reply_to_email(
         effective_mode = mode
     else:
         effective_mode = "send" if send else "draft"
+
+    blocked = _send_blocked(effective_mode)
+    if blocked:
+        return blocked
 
     # Read body from temp file in AppleScript (avoids all string escaping issues)
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
@@ -952,13 +967,13 @@ def compose_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     attachments: Optional[str] = None,
-    mode: str = "send",
+    mode: str = "draft",
     body_html: Optional[str] = None,
     from_address: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> str:
     """
-    Compose and send a new email from a specific account.
+    Compose a new email from a specific account.
 
     Args:
         account: Account name to send from (e.g., "Gmail", "Work", "Personal"). Defaults to `DEFAULT_MAIL_ACCOUNT` env var if `account` is omitted.
@@ -968,7 +983,7 @@ def compose_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
-        mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
+        mode: Delivery mode — "draft" (default, save silently to Drafts), "open" (open compose window for review), or "send" (send immediately)
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
@@ -980,6 +995,9 @@ def compose_email(
     # Validate mode
     if mode not in ("send", "draft", "open"):
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+    blocked = _send_blocked(mode)
+    if blocked:
+        return blocked
 
     account, account_error = _resolve_account(account)
     if account_error:
@@ -1177,6 +1195,7 @@ def forward_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     from_address: Optional[str] = None,
+    mode: str = "draft",
     timeout: Optional[int] = None,
 ) -> str:
     """
@@ -1191,6 +1210,7 @@ def forward_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        mode: Delivery mode — "draft" (default, save silently), "open" (open compose window for review), or "send" (send immediately)
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
 
     Returns:
@@ -1206,6 +1226,13 @@ def forward_email(
         return "Error: 'to' is required"
 
     message = _strip_cdata_wrappers(message)
+
+    # Validate mode
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+    blocked = _send_blocked(mode)
+    if blocked:
+        return blocked
 
     try:
         sender_override, sender_error = _validate_from_address(
@@ -1314,9 +1341,22 @@ use framework "AppKit"
 use scripting additions
 """
 
+    if mode == "send":
+        header_text = "FORWARDING EMAIL"
+        post_forward_action = "send forwardMessage"
+        success_text = "Email forwarded successfully."
+    elif mode == "open":
+        header_text = "OPENING FORWARD FOR REVIEW"
+        post_forward_action = "set visible of forwardMessage to true\n            activate"
+        success_text = "Forward opened in Mail for review. Edit and send when ready."
+    else:
+        header_text = "SAVING FORWARD AS DRAFT"
+        post_forward_action = "close window 1 saving yes"
+        success_text = "Forward saved as draft."
+
     script = f'''{use_frameworks}
 tell application "Mail"
-    set outputText to "FORWARDING EMAIL" & return & return
+    set outputText to "{header_text}" & return & return
 
     try
         set targetAccount to account "{safe_account}"
@@ -1366,13 +1406,13 @@ tell application "Mail"
             -- Add optional message via HTML clipboard paste (preserves forwarded content)
             {fwd_html_paste_script}
 
-            -- Send the forward
-            send forwardMessage
+            -- Send, save as draft, or leave open for review
+            {post_forward_action}
 
             -- Clean up temp files
             {fwd_html_cleanup_script}
 
-            set outputText to outputText & "Email forwarded successfully." & return
+            set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: {safe_to}" & return
             set outputText to outputText & "Subject: " & messageSubject & return
     '''
@@ -1593,8 +1633,10 @@ def manage_drafts(
         '''
 
     elif action == "send":
-        if READ_ONLY:
+        if _server.READ_ONLY:
             return "Error: Sending drafts is disabled in read-only mode."
+        if _server.DRAFT_SAFE:
+            return "Error: Sending drafts is disabled in draft-safe mode."
         if not draft_subject:
             return "Error: 'draft_subject' is required for sending drafts"
 

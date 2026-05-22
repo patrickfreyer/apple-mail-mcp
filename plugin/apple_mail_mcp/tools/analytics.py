@@ -13,6 +13,7 @@ from apple_mail_mcp.core import (
     inbox_mailbox_script,
 )
 from apple_mail_mcp.constants import SKIP_FOLDERS
+from apple_mail_mcp.tools.search import _search_mail_records
 
 
 @mcp.tool()
@@ -51,6 +52,25 @@ def list_email_attachments(
     # Escape for AppleScript
     escaped_keyword = escape_applescript(subject_keyword)
     escaped_account = escape_applescript(account)
+
+    # Fast no-hit path: use the optimized search helper first so no-match
+    # attachment checks don't scan the inbox with a Python-side loop.
+    preflight_records = _search_mail_records(
+        account=account,
+        mailbox="INBOX",
+        subject_terms=[subject_keyword],
+        has_attachments=True,
+        include_content=False,
+        offset=0,
+        limit=max_results,
+    )
+    if not preflight_records:
+        return (
+            f"ATTACHMENTS FOR: {subject_keyword}\n\n"
+            "========================================\n"
+            "FOUND: 0 matching email(s)\n"
+            "========================================"
+        )
 
     script = f'''
     tell application "Mail"

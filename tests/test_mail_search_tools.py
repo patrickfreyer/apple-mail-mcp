@@ -361,6 +361,40 @@ class SearchToolTests(unittest.TestCase):
         self.assertIn("ignoring case", captured["script"])
         self.assertIn('msgContent contains "invoice"', captured["script"])
 
+    def test_get_email_by_id_returns_exact_message_json(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return _record_line(
+                12345,
+                "Exact Ticket",
+                content_preview="Full body preview",
+            )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                search_tools.get_email_by_id(
+                    account="Work",
+                    message_id="12345",
+                    output_format="json",
+                )
+            )
+
+        self.assertEqual(response["item"]["message_id"], "12345")
+        self.assertEqual(response["item"]["subject"], "Exact Ticket")
+        self.assertEqual(response["item"]["content_preview"], "Full body preview")
+        self.assertIn("whose id is 12345", captured["script"])
+
+    def test_get_email_by_id_rejects_non_numeric_ids(self):
+        result = search_tools.get_email_by_id(
+            account="Work",
+            message_id="abc",
+            output_format="json",
+        )
+
+        self.assertIn("message_id must be a numeric", result)
+
     def test_search_emails_timeout_param_is_forwarded(self):
         """A3: an explicit `timeout=N` kwarg must reach run_applescript so the
         caller can extend (or shorten) the per-account budget."""
@@ -696,6 +730,52 @@ class ListInboxEmailsTests(unittest.TestCase):
 
 
 class ManageToolTests(unittest.TestCase):
+    def test_move_email_dry_run_uses_search_helper(self):
+        with patch(
+            "apple_mail_mcp.tools.manage._search_mail_records",
+            return_value=[
+                {
+                    "subject": "Ticket",
+                    "sender": "sender@example.com",
+                    "received_date": "2026-03-07T10:00:00",
+                }
+            ],
+        ) as mock_search, patch(
+            "apple_mail_mcp.tools.manage.run_applescript"
+        ) as mock_run:
+            result = manage_tools.move_email(
+                account="Work",
+                to_mailbox="Archive",
+                subject_keyword="Ticket",
+                dry_run=True,
+                max_moves=1,
+            )
+
+        mock_search.assert_called_once()
+        mock_run.assert_not_called()
+        self.assertIn("DRY RUN - PREVIEW MOVE", result)
+        self.assertIn("Would move: Ticket", result)
+
+    def test_manage_trash_dry_run_uses_search_helper(self):
+        with patch(
+            "apple_mail_mcp.tools.manage._search_mail_records",
+            return_value=[],
+        ) as mock_search, patch(
+            "apple_mail_mcp.tools.manage.run_applescript"
+        ) as mock_run:
+            result = manage_tools.manage_trash(
+                account="Work",
+                action="move_to_trash",
+                subject_keyword="Ticket",
+                dry_run=True,
+                max_deletes=1,
+            )
+
+        mock_search.assert_called_once()
+        mock_run.assert_not_called()
+        self.assertIn("DRY RUN - PREVIEW TRASH", result)
+        self.assertIn("TOTAL: 0", result)
+
     def test_update_email_status_with_message_ids_uses_exact_id_condition(self):
         captured = {}
 

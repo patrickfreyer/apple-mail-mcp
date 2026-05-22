@@ -198,8 +198,6 @@ def get_awaiting_reply(
 
                 try
                     set messageDate to date sent of aMessage
-                    {"if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""}
-
                     set messageSubject to subject of aMessage
                     set messageRecipients to every to recipient of aMessage
 

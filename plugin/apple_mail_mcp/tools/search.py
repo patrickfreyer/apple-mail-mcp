@@ -11,9 +11,11 @@ from apple_mail_mcp import server as _server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
+    build_mailbox_ref,
     contains_any_condition,
     inject_preferences,
     escape_applescript,
+    normalize_message_ids,
     normalize_search_terms,
     run_applescript,
 )
@@ -693,6 +695,17 @@ async def _search_mail_records(
     return combined, errors
 
 
+def _search_mail_records_sync(**kwargs) -> List[Dict[str, Any]]:
+    """Synchronous bridge for sync tools (move_email, manage_trash,
+    list_email_attachments) that need preflight records. Returns just the
+    record list — error-account names are dropped here because the sync
+    callers don't surface a partial-success structure. Sync callers should
+    pass an explicit ``account`` so this stays a single-account dispatch
+    and avoids the multi-account gather path."""
+    records, _errors = asyncio.run(_search_mail_records(**kwargs))
+    return records
+
+
 @mcp.tool()
 @inject_preferences
 async def search_emails(
@@ -836,6 +849,164 @@ async def search_emails(
         )
     except ValueError as exc:
         return f"Error: {exc}"
+
+
+@mcp.tool()
+@inject_preferences
+def get_email_by_id(
+    account: str,
+    message_id: str,
+    mailbox: str = "INBOX",
+    include_content: bool = True,
+    max_content_length: int = 5000,
+    output_format: str = "text",
+) -> str:
+    """
+    Fetch one email by its exact Apple Mail message id.
+
+    Use this after `search_emails` returns a `message_id` when you need the
+    full message body or stable metadata without running another broad subject
+    search.
+
+    Args:
+        account: Account name to search in (e.g., "Gmail", "Work").
+        message_id: Exact numeric Apple Mail message id returned by search tools.
+        mailbox: Mailbox to search in (default: "INBOX").
+        include_content: Whether to include email content (default: True).
+        max_content_length: Maximum content characters to return when include_content=True.
+        output_format: Output format: "text" or "json" (default: "text").
+
+    Returns:
+        One matching email as text, or JSON with {"item": ...}. If no message is
+        found, JSON returns {"item": null}.
+    """
+    if output_format not in {"text", "json"}:
+        return "Error: Invalid output_format. Use: text, json"
+
+    normalized_ids = normalize_message_ids([message_id])
+    if not normalized_ids:
+        return "Error: message_id must be a numeric Apple Mail message id"
+
+    if max_content_length < 0:
+        return "Error: max_content_length must be >= 0"
+
+    safe_account = escape_applescript(account)
+    numeric_id = normalized_ids[0]
+
+    script = f'''
+    on sanitize_field(value)
+        try
+            set valueText to value as string
+        on error
+            set valueText to ""
+        end try
+
+        set AppleScript's text item delimiters to {{return, linefeed, tab}}
+        set valueParts to text items of valueText
+        set AppleScript's text item delimiters to " "
+        set valueText to valueParts as string
+        set AppleScript's text item delimiters to "|||"
+        set valueParts to text items of valueText
+        set AppleScript's text item delimiters to " | "
+        set valueText to valueParts as string
+        set AppleScript's text item delimiters to ""
+        return valueText
+    end sanitize_field
+
+    on pad2(numberValue)
+        if numberValue < 10 then
+            return "0" & (numberValue as string)
+        end if
+        return numberValue as string
+    end pad2
+
+    on month_number(monthValue)
+        set monthValues to {{January, February, March, April, May, June, July, August, September, October, November, December}}
+        repeat with monthIndex from 1 to 12
+            if item monthIndex of monthValues is monthValue then
+                return monthIndex
+            end if
+        end repeat
+        return 0
+    end month_number
+
+    on iso_datetime(dateValue)
+        set yearValue to year of dateValue as integer
+        set monthValue to my month_number(month of dateValue)
+        set dayValue to day of dateValue as integer
+        set hourValue to hours of dateValue
+        set minuteValue to minutes of dateValue
+        set secondValue to seconds of dateValue
+        return (yearValue as string) & "-" & my pad2(monthValue) & "-" & my pad2(dayValue) & "T" & my pad2(hourValue) & ":" & my pad2(minuteValue) & ":" & my pad2(secondValue)
+    end iso_datetime
+
+    tell application "Mail"
+        with timeout of 120 seconds
+            try
+                set targetAccount to account "{safe_account}"
+                {build_mailbox_ref(mailbox, var_name="targetMailbox")}
+                set targetMessages to every message of targetMailbox whose id is {numeric_id}
+
+                if (count of targetMessages) is 0 then
+                    return ""
+                end if
+
+                set aMessage to item 1 of targetMessages
+                set messageId to my sanitize_field(id of aMessage)
+                set internetMessageId to ""
+                try
+                    set internetMessageId to my sanitize_field(message id of aMessage)
+                end try
+                set messageSubject to my sanitize_field(subject of aMessage)
+                set messageSender to my sanitize_field(sender of aMessage)
+                set messageRead to read status of aMessage
+                set messageDate to date received of aMessage
+                set receivedAt to my iso_datetime(messageDate)
+                set mailboxName to my sanitize_field(name of targetMailbox)
+                set accountName to my sanitize_field(name of targetAccount)
+                set contentPreview to ""
+
+                if {str(include_content).lower()} then
+                    try
+                        set msgContent to content of aMessage
+                        set AppleScript's text item delimiters to {{return, linefeed, tab}}
+                        set contentParts to text items of msgContent
+                        set AppleScript's text item delimiters to " "
+                        set cleanText to contentParts as string
+                        set AppleScript's text item delimiters to ""
+                        if {max_content_length} > 0 and length of cleanText > {max_content_length} then
+                            set contentPreview to my sanitize_field(text 1 thru {max_content_length} of cleanText & "...")
+                        else
+                            set contentPreview to my sanitize_field(cleanText)
+                        end if
+                    end try
+                end if
+
+                set readValue to "false"
+                if messageRead then
+                    set readValue to "true"
+                end if
+
+                return messageId & "|||" & internetMessageId & "|||" & messageSubject & "|||" & messageSender & "|||" & mailboxName & "|||" & accountName & "|||" & readValue & "|||" & receivedAt & "|||" & contentPreview
+            on error errMsg
+                return "ERROR|||" & errMsg
+            end try
+        end timeout
+    end tell
+    '''
+
+    result = run_applescript(script, timeout=120)
+    if result.startswith("ERROR|||"):
+        return f"Error: {result.split('|||', 1)[1]}"
+
+    records = _parse_search_records(result)
+    item = records[0] if records else None
+    if output_format == "json":
+        return json.dumps({"item": item})
+
+    if item is None:
+        return f"No email found for message_id={numeric_id} in {mailbox}"
+    return _format_search_records_text([item])
 
 
 @mcp.tool()

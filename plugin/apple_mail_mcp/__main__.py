@@ -44,9 +44,15 @@ def main():
         help="Disable tools that send email (compose, reply, forward). "
              "Drafts can still be created and listed.",
     )
+    parser.add_argument(
+        "--draft-safe",
+        action="store_true",
+        help="Disable actual sends while keeping draft/open composition tools available.",
+    )
     args = parser.parse_args()
 
     server.READ_ONLY = args.read_only
+    server.DRAFT_SAFE = args.draft_safe or args.read_only
 
     from apple_mail_mcp import mcp  # noqa: E402
 

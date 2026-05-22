@@ -19,3 +19,7 @@ DEFAULT_MAIL_ACCOUNT = os.environ.get("DEFAULT_MAIL_ACCOUNT", "").strip() or Non
 # Read-only mode flag — set via --read-only CLI argument.
 # When enabled, tools that send email are disabled. Drafts remain available.
 READ_ONLY = False
+
+# Draft-safe mode flag — set via --draft-safe CLI argument.
+# When enabled, sending is disabled but draft/open workflows remain available.
+DRAFT_SAFE = False

@@ -2,6 +2,7 @@
 
 import os
 import re
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from apple_mail_mcp import server as _server
@@ -19,6 +20,30 @@ from apple_mail_mcp.core import (
     build_mailbox_ref,
     build_filter_condition,
 )
+from apple_mail_mcp.tools.search import _search_mail_records_sync
+
+
+def _date_to_for_older_than(days: Optional[int]) -> Optional[str]:
+    """Return YYYY-MM-DD cutoff date for older-than filters."""
+    if days is None or days <= 0:
+        return None
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _format_dry_run_records(title: str, records, result_prefix: str, limit: int) -> str:
+    """Format structured search records as existing dry-run text."""
+    lines = [title, ""]
+    for record in records[:limit]:
+        lines.append(f"{result_prefix}: {record.get('subject', '')}")
+        lines.append(f"   From: {record.get('sender', '')}")
+        lines.append(f"   Date: {record.get('received_date', '')}")
+        lines.append("")
+    lines.append("========================================")
+    lines.append(f"TOTAL: {min(len(records), limit)} email(s) {result_prefix.lower()}")
+    if len(records) > limit:
+        lines.append("(limit reached)")
+    lines.append("========================================")
+    return "\n".join(lines)
 
 
 # Characters that could break AppleScript strings or mailbox names
@@ -112,9 +137,23 @@ def move_email(
         dest_ref = f'mailbox "{safe_to}" of targetAccount'
 
     if dry_run:
-        mode_label = "DRY RUN - PREVIEW MOVE"
-        move_action = ""
-        result_prefix = "Would move"
+        records = _search_mail_records_sync(
+            account=account,
+            mailbox=from_mailbox,
+            subject_terms=subject_terms or None,
+            sender=sender,
+            read_status="read" if only_read else "all",
+            date_to=_date_to_for_older_than(older_than_days),
+            include_content=False,
+            offset=0,
+            limit=max_moves + 1,
+        )
+        return _format_dry_run_records(
+            f"DRY RUN - PREVIEW MOVE: {from_mailbox} -> {to_mailbox}",
+            records,
+            "Would move",
+            max_moves,
+        )
     else:
         mode_label = "MOVING EMAILS"
         move_action = "move aMessage to destMailbox"
@@ -750,9 +789,22 @@ def manage_trash(
             )
 
         if dry_run:
-            mode_label = "DRY RUN - PREVIEW TRASH"
-            move_script = ""
-            result_verb = "Would trash"
+            records = _search_mail_records_sync(
+                account=account,
+                mailbox=mailbox,
+                subject_terms=subject_terms or None,
+                sender=sender,
+                date_to=_date_to_for_older_than(older_than_days),
+                include_content=False,
+                offset=0,
+                limit=max_deletes + 1,
+            )
+            return _format_dry_run_records(
+                "DRY RUN - PREVIEW TRASH",
+                records,
+                "Would trash",
+                max_deletes,
+            )
         else:
             mode_label = "MOVING EMAILS TO TRASH"
             move_script = "move aMessage to trashMailbox"

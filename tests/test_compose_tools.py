@@ -213,6 +213,40 @@ class ValidateFromAddressTests(unittest.TestCase):
 
 
 class ComposeEmailSenderOverrideTests(unittest.TestCase):
+    def test_compose_defaults_to_draft_mode(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "✓ Email saved as draft!"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="self@example.com",
+                subject="Test",
+                body="Body",
+            )
+
+        self.assertIn("SAVING EMAIL AS DRAFT", captured[0])
+        self.assertIn("close window 1 saving yes", captured[0])
+        self.assertNotIn("send newMessage", captured[0])
+
+    def test_draft_safe_blocks_explicit_send(self):
+        with patch.object(compose_tools.server, "DRAFT_SAFE", True):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="self@example.com",
+                subject="Test",
+                body="Body",
+                mode="send",
+            )
+
+        self.assertIn("draft-safe mode", result)
+
     def test_default_emits_single_alias_fallback_block(self):
         captured = []
 
@@ -412,6 +446,28 @@ class CreateRichEmailDraftFromAddressTests(unittest.TestCase):
 
 
 class ReplyToEmailSenderOverrideTests(unittest.TestCase):
+    def test_reply_defaults_to_draft_mode(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript"
+            ) as mock_applescript,
+        ):
+            compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply body",
+            )
+
+        mock_applescript.assert_not_called()
+        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        self.assertIn("SAVING REPLY AS DRAFT", script)
+        self.assertIn("close window 1 saving yes", script)
+        self.assertNotIn("send replyMessage", script)
+
     def test_default_emits_single_alias_fallback_for_reply_message(self):
         with (
             patch(
@@ -485,6 +541,28 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
 
 
 class ForwardEmailSenderOverrideTests(unittest.TestCase):
+    def test_forward_defaults_to_draft_mode(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "✓ Forward saved"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="recipient@example.com",
+            )
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("SAVING FORWARD AS DRAFT", captured[0])
+        self.assertIn("close window 1 saving yes", captured[0])
+        self.assertNotIn("send forwardMessage", captured[0])
+
     def test_default_emits_single_alias_fallback_for_forward_message(self):
         captured = []
 

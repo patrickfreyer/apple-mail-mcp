@@ -41,6 +41,7 @@ dependencies = [
 
 [project.scripts]
 mcp-apple-mail = "apple_mail_mcp.__main__:main"
+apple-mail = "apple_mail_mcp.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/patrickfreyer/apple-mail-mcp"
