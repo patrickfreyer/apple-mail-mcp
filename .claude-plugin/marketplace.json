@@ -11,7 +11,9 @@
   "plugins": [
     {
       "name": "apple-mail",
+      "displayName": "Apple Mail",
       "source": "./plugin",
+      "strict": false,
       "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools plus bundled Claude Code workflow skills (Mail operator, triage, inbox zero, taxonomy, archiving, Mail rules advisor, drafting, attachments, writing style)",
       "version": "3.1.7",
       "author": {
@@ -30,6 +32,17 @@
         "automation",
         "macos",
         "applescript"
+      ],
+      "skills": [
+        "./plugin/skills/apple-mail-operator",
+        "./plugin/skills/inbox-triage",
+        "./plugin/skills/email-management",
+        "./plugin/skills/mailbox-taxonomy",
+        "./plugin/skills/email-archive-cleanup",
+        "./plugin/skills/mail-rules-advisor",
+        "./plugin/skills/email-drafting",
+        "./plugin/skills/email-style-profile",
+        "./plugin/skills/email-attachments"
       ]
     }
   ]

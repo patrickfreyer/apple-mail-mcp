@@ -54,6 +54,25 @@ claude plugin install apple-mail@apple-mail-mcp
 
 Then restart Claude Code.
 
+### Claude Desktop Cowork (plugin marketplace)
+
+Cowork uses Anthropic's **remote marketplace backend** (`remoteMarketplaceClient`), which currently rejects most third-party GitHub marketplaces with a generic **"Failed to add marketplace"** even when the repo is valid. This is a [known Cowork/Desktop bug](https://github.com/anthropics/claude-code/issues/41653), not a problem with this fork's manifest. Claude Code CLI install (above) works; Cowork's GitHub sync often does not.
+
+**Workaround — upload the plugin directly (recommended for Cowork):**
+
+1. Zip the `plugin/` folder (must contain `.claude-plugin/plugin.json`, `skills/`, `start_mcp.sh`, etc.)
+2. Cowork → **Customize** → **Add plugin** → **Upload plugin**
+3. Select the zip and enable **Apple Mail**
+
+```bash
+cd /path/to/apple-mail-mcp
+zip -r apple-mail-plugin.zip plugin/
+```
+
+**Important:** Apple Mail MCP requires **macOS Mail.app** on the host Mac (`start_mcp.sh` → AppleScript). Cowork's Linux VM cannot run Mail directly; the plugin MCP server must execute on your Mac host. If tools fail after upload, use the **Claude Code CLI** install or the **Desktop `.mcpb`** path below instead.
+
+GitHub marketplace URL (when Cowork sync works): `agenticassets/apple-mail-mcp`
+
 ### Other Install Methods
 
 <details>
