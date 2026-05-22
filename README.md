@@ -18,7 +18,26 @@
  </picture>
 </a>
 
-An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp).
+An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **27 tools**, **206** unit tests, Python **3.10+**.
+
+## Documentation map
+
+| Doc | Purpose |
+|-----|---------|
+| [`CLAUDE.md`](CLAUDE.md) | Root navigation hub for agents |
+| [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) | Tool performance rules, read-only, skills, plugin-dev |
+| [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md) | Live Mail verification via `apple-mail` CLI |
+| [`plugin/CLAUDE.md`](plugin/CLAUDE.md) | Plugin wrapper & `start_mcp.sh` |
+| [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) | Package entry, `core.py`, CLI |
+| [`plugin/apple_mail_mcp/tools/CLAUDE.md`](plugin/apple_mail_mcp/tools/CLAUDE.md) | MCP tool modules |
+| [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) | Skill authoring |
+| [`plugin/commands/CLAUDE.md`](plugin/commands/CLAUDE.md) | Legacy slash commands |
+| [`tests/CLAUDE.md`](tests/CLAUDE.md) | Test layout & AppleScript mocks |
+| [`tools/CLAUDE.md`](tools/CLAUDE.md) | Manifest validation scripts |
+| [`docs/CLAUDE.md`](docs/CLAUDE.md) | Docs folder index |
+| [`tasks/CLAUDE.md`](tasks/CLAUDE.md) | Phase plans & backlog |
+| [`apple-mail-mcpb/CLAUDE.md`](apple-mail-mcpb/CLAUDE.md) | Desktop bundle build |
+| [`.claude-plugin/CLAUDE.md`](.claude-plugin/CLAUDE.md) | Marketplace manifest |
 
 ## Quick Install
 
@@ -54,8 +73,12 @@ python3 -m venv .venv
 .venv/bin/apple-mail search --account "Gmail" --query "invoice" --limit 10 --json
 .venv/bin/apple-mail show --account "Gmail" --id 12345 --json
 .venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
+.venv/bin/apple-mail quick-check --account "Gmail" --json
+.venv/bin/apple-mail perf-test --account "Gmail" --json
 .venv/bin/apple-mail smoke-test --account "Gmail" --json
 ```
+
+See [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md) for batteries, permissions, and when to use each command.
 
 Generate draft-safe Claude/OpenClaw MCP config from the same checkout:
 
@@ -100,7 +123,7 @@ claude mcp add apple-mail -- mcp-apple-mail
 <details>
 <summary><strong>Claude Desktop MCPB</strong></summary>
 
-1. Download `apple-mail-mcp-v2.2.0.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
+1. Download the latest `apple-mail-mcp-*.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
 2. Open Claude Desktop → Settings → Developer → MCP Servers → Install from file
 3. Select the `.mcpb` file and grant Mail.app permissions
 
@@ -307,8 +330,12 @@ apple-mail show --account "Gmail" --id 12345 --json
 apple-mail mailboxes --account "Gmail" --json
 apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
 apple-mail mcp-config --repo "$(pwd)"
+apple-mail quick-check --account "Gmail" --json
+apple-mail perf-test --account "Gmail" --json
 apple-mail smoke-test --account "Gmail" --json
 ```
+
+Live verification guide: [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md).
 
 The CLI keeps write operations draft-first. It intentionally does not expose
 send/delete shortcuts; use the MCP tools with `--draft-safe` for shared agents.
@@ -336,7 +363,7 @@ cp -r plugin/skills/email-management ~/.claude/skills/email-management
 
 - macOS with Apple Mail configured
 - Python 3.10+
-- `fastmcp` (+ optional `mcp-ui-server` for the `inbox_dashboard` tool)
+- `fastmcp>=3.1.0,<4` (+ optional `mcp-ui-server` for the `inbox_dashboard` tool)
 - Claude Desktop or any MCP-compatible client
 - Mail.app permissions: Automation + Mail Data Access (grant in **System Settings > Privacy & Security > Automation**)
 
@@ -362,7 +389,7 @@ apple-mail-mcp/
 │   │   └── plugin.json        # Plugin manifest
 │   ├── commands/              # /email-management slash command
 │   ├── skills/                # Email Management Expert skill
-│   ├── apple_mail_mcp/        # Python MCP server package (26 tools)
+│   ├── apple_mail_mcp/        # Python MCP server package (27 tools)
 │   ├── apple_mail_mcp.py      # Entry point
 │   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)
 │   └── requirements.txt

@@ -797,5 +797,111 @@ class ManageToolTests(unittest.TestCase):
         self.assertIn("set read status of targetMessages to true", captured["script"])
 
 
+class GetEmailThreadTests(unittest.TestCase):
+    """Phase 2 scan-path hardening for get_email_thread."""
+
+    def test_get_email_thread_default_emits_whose_date_filter_and_cap(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            captured["timeout"] = timeout
+            return "EMAIL THREAD VIEW"
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            result = search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Project Update",
+                max_messages=25,
+            )
+
+        script = captured["script"]
+        self.assertIn("EMAIL THREAD VIEW", result)
+        self.assertIn("set cutoffDate to current date", script)
+        self.assertIn("date received >= cutoffDate", script)
+        self.assertIn("items 1 thru 25", script)
+        self.assertIn("ignoring case", script)
+        self.assertIn("Window: last 48h", script)
+        self.assertEqual(captured["timeout"], 120)
+
+    def test_get_email_thread_recent_days_zero_uses_messages_cap(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Budget",
+                max_messages=10,
+                recent_days=0,
+            )
+
+        script = captured["script"]
+        self.assertNotIn("cutoffDate", script)
+        self.assertNotIn("date received >= cutoffDate", script)
+        self.assertIn("messages 1 thru 10", script)
+        self.assertIn("Window: full inbox", script)
+
+    def test_get_email_thread_no_bare_every_message_enumeration(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Standup",
+                max_messages=5,
+            )
+
+        script = captured["script"]
+        self.assertNotIn("set mailboxMessages to every message of currentMailbox", script)
+        self.assertNotIn("repeat with aMessage in mailboxMessages", script)
+
+    def test_get_email_thread_passes_custom_timeout(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["timeout"] = timeout
+            return "ok"
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Invoice",
+                timeout=300,
+            )
+
+        self.assertEqual(captured["timeout"], 300)
+
+    def test_get_email_thread_handles_timeout(self):
+        def fake_run(script, timeout=120):
+            raise AppleScriptTimeout("simulated")
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            result = search_tools.get_email_thread(
+                account="Work",
+                subject_keyword="Invoice",
+                timeout=90,
+            )
+
+        self.assertIn("timed out", result.lower())
+        self.assertIn("Work", result)
+        self.assertIn("90", result)
+
+    def test_get_email_thread_rejects_invalid_max_messages(self):
+        result = search_tools.get_email_thread(
+            account="Work",
+            subject_keyword="Invoice",
+            max_messages=0,
+        )
+        self.assertIn("max_messages must be > 0", result)
+
+
 if __name__ == "__main__":
     unittest.main()

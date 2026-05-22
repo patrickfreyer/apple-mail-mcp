@@ -2,9 +2,41 @@
 
 import os
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # Initialize FastMCP server
 mcp = FastMCP("Apple Mail MCP")
+
+# Shared MCP tool annotations (see tasks/phase-3-annotation-matrix.md).
+READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+WRITE_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+IDEMPOTENT_WRITE_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+DESTRUCTIVE_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+SEND_TOOLS = ("compose_email", "reply_to_email", "forward_email")
 
 # Load user preferences from environment
 USER_PREFERENCES = os.environ.get("USER_EMAIL_PREFERENCES", "")

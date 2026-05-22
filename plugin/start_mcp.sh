@@ -36,6 +36,31 @@ PY
     return 1
 }
 
+fastmcp_import_ok() {
+    "${VENV_DIR}/bin/python3" -c "import fastmcp" >/dev/null 2>&1
+}
+
+verify_fastmcp_after_install() {
+    if fastmcp_import_ok; then
+        return 0
+    fi
+    log_error "ERROR: fastmcp failed to import from ${VENV_DIR} after pip install. Check requirements.txt and network access."
+    exit 1
+}
+
+repair_fastmcp_once_if_needed() {
+    if fastmcp_import_ok; then
+        return 0
+    fi
+    log_error "fastmcp not importable; reinstalling dependencies once..."
+    "${VENV_DIR}/bin/pip" install --quiet -r "${REQUIREMENTS}" 2>&1 | while read line; do log_error "$line"; done
+    if fastmcp_import_ok; then
+        return 0
+    fi
+    log_error "ERROR: fastmcp is still not importable after reinstall. Try removing ${VENV_DIR} and restarting."
+    exit 1
+}
+
 PYTHON_BIN="$(find_python || true)"
 
 # Check if venv exists and is valid
@@ -56,8 +81,12 @@ if [ ! -d "${VENV_DIR}" ] || [ ! -f "${VENV_DIR}/bin/python3" ]; then
     "${VENV_DIR}/bin/pip" install --quiet --upgrade pip 2>&1 | while read line; do log_error "$line"; done
     "${VENV_DIR}/bin/pip" install --quiet -r "${REQUIREMENTS}" 2>&1 | while read line; do log_error "$line"; done
 
+    verify_fastmcp_after_install
+
     log_error "Setup complete. Starting MCP server..."
 fi
+
+repair_fastmcp_once_if_needed
 
 # Run the Python MCP server
 exec "${VENV_DIR}/bin/python3" "${PYTHON_SCRIPT}" "$@"

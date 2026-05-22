@@ -1,22 +1,27 @@
 """Analytics tools: attachments, statistics, exports, and dashboard."""
 
+import asyncio
 import os
-from typing import Optional, List, Dict, Any
+import re
+from typing import Optional, List, Dict, Any, Union
 
 from apple_mail_mcp import server as _server
-from apple_mail_mcp.server import mcp
+from apple_mail_mcp.server import mcp, READ_ONLY_TOOL_ANNOTATIONS, WRITE_TOOL_ANNOTATIONS
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     inject_preferences,
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    list_mail_account_names,
+    validate_account_name,
+    validate_save_path,
 )
 from apple_mail_mcp.constants import SKIP_FOLDERS
 from apple_mail_mcp.tools.search import _search_mail_records_sync as _search_mail_records
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def list_email_attachments(
     account: Optional[str] = None,
@@ -48,6 +53,11 @@ def list_email_attachments(
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
         return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
 
     # Escape for AppleScript
     escaped_keyword = escape_applescript(subject_keyword)
@@ -154,7 +164,163 @@ def list_email_attachments(
     return result
 
 
-@mcp.tool()
+def _statistics_recent_days_applied(days_back: int, scope: str) -> float:
+    if scope == "mailbox_breakdown":
+        return 0.0
+    return float(days_back) if days_back > 0 else 0.0
+
+
+def _parse_account_overview_statistics(text: str) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "total_emails": 0,
+        "unread": 0,
+        "read": 0,
+        "flagged": 0,
+        "with_attachments": 0,
+        "top_senders": [],
+        "mailbox_distribution": [],
+    }
+
+    total_match = re.search(r"Total Emails: (\d+)", text)
+    if total_match:
+        stats["total_emails"] = int(total_match.group(1))
+
+    unread_match = re.search(r"Unread: (\d+)(?: \((\d+)%\))?", text)
+    if unread_match:
+        stats["unread"] = int(unread_match.group(1))
+        if unread_match.group(2) is not None:
+            stats["unread_percent"] = int(unread_match.group(2))
+
+    read_match = re.search(r"Read: (\d+)(?: \((\d+)%\))?", text)
+    if read_match:
+        stats["read"] = int(read_match.group(1))
+        if read_match.group(2) is not None:
+            stats["read_percent"] = int(read_match.group(2))
+
+    flagged_match = re.search(r"Flagged: (\d+)", text)
+    if flagged_match:
+        stats["flagged"] = int(flagged_match.group(1))
+
+    attachments_match = re.search(
+        r"With Attachments: (\d+)(?: \((\d+)%\))?", text
+    )
+    if attachments_match:
+        stats["with_attachments"] = int(attachments_match.group(1))
+        if attachments_match.group(2) is not None:
+            stats["with_attachments_percent"] = int(attachments_match.group(2))
+
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "👥 TOP SENDERS":
+            section = "senders"
+            continue
+        if stripped == "📁 MAILBOX DISTRIBUTION":
+            section = "mailboxes"
+            continue
+        if section == "senders" and stripped.endswith(" emails"):
+            sender_match = re.match(r"(.+): (\d+) emails$", stripped)
+            if sender_match:
+                stats["top_senders"].append(
+                    {
+                        "sender": sender_match.group(1),
+                        "count": int(sender_match.group(2)),
+                    }
+                )
+        elif section == "mailboxes" and ":" in stripped and not stripped.startswith("━"):
+            mailbox_match = re.match(r"(.+): (\d+)(?: \((\d+)%\))?$", stripped)
+            if mailbox_match:
+                entry = {
+                    "mailbox": mailbox_match.group(1),
+                    "count": int(mailbox_match.group(2)),
+                }
+                if mailbox_match.group(3) is not None:
+                    entry["percent"] = int(mailbox_match.group(3))
+                stats["mailbox_distribution"].append(entry)
+
+    return stats
+
+
+def _parse_sender_stats_statistics(text: str) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {}
+    for key, pattern in (
+        ("total_emails", r"Total emails: (\d+)"),
+        ("unread", r"Unread: (\d+)"),
+        ("with_attachments", r"With attachments: (\d+)"),
+    ):
+        match = re.search(pattern, text)
+        if match:
+            stats[key] = int(match.group(1))
+    return stats
+
+
+def _parse_mailbox_breakdown_statistics(text: str) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {}
+    for key, pattern in (
+        ("total_messages", r"Total messages: (\d+)"),
+        ("unread", r"Unread: (\d+)"),
+        ("read", r"Read: (\d+)"),
+    ):
+        match = re.search(pattern, text)
+        if match:
+            stats[key] = int(match.group(1))
+    return stats
+
+
+def _parse_statistics_text(scope: str, text: str) -> Dict[str, Any]:
+    if scope == "account_overview":
+        return _parse_account_overview_statistics(text)
+    if scope == "sender_stats":
+        return _parse_sender_stats_statistics(text)
+    return _parse_mailbox_breakdown_statistics(text)
+
+
+def _format_statistics_json(
+    *,
+    scope: str,
+    account: str,
+    days_back: int,
+    statistics: Dict[str, Any],
+    sender: Optional[str] = None,
+    mailbox: Optional[str] = None,
+    errors: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "account": account,
+        "scope": scope,
+        "days_back": days_back,
+        "recent_days_applied": _statistics_recent_days_applied(days_back, scope),
+        "statistics": statistics,
+        "errors": errors or [],
+    }
+    if sender is not None:
+        payload["sender"] = sender
+    if scope == "mailbox_breakdown":
+        payload["mailbox"] = mailbox or "INBOX"
+    return payload
+
+
+def _statistics_json_error(
+    error: str,
+    *,
+    account: Optional[str] = None,
+    days_back: Optional[int] = None,
+    scope: Optional[str] = None,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"error": error, "errors": []}
+    if account is not None:
+        payload["account"] = account
+    if days_back is not None:
+        payload["days_back"] = days_back
+    if scope is not None:
+        payload["scope"] = scope
+    if message is not None:
+        payload["message"] = message
+    return payload
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_statistics(
     account: Optional[str] = None,
@@ -162,8 +328,9 @@ def get_statistics(
     sender: Optional[str] = None,
     mailbox: Optional[str] = None,
     days_back: int = 30,
+    output_format: str = "text",
     timeout: Optional[int] = None,
-) -> str:
+) -> Union[str, Dict[str, Any]]:
     """
     Get comprehensive email statistics and analytics.
 
@@ -180,16 +347,40 @@ def get_statistics(
         sender: Specific sender for "sender_stats" scope
         mailbox: Specific mailbox for "mailbox_breakdown" scope
         days_back: Number of days to analyze (default: 30, 0 = all time)
+        output_format: ``text`` (default, human-readable) or ``json`` (structured dict).
         timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
-        Formatted statistics report with metrics and insights
+        Formatted statistics report with metrics and insights, or a structured
+        dict when ``output_format="json"``.
     """
+
+    if output_format not in {"text", "json"}:
+        return "Error: Invalid output_format. Use: text, json"
 
     if account is None:
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
+        if output_format == "json":
+            return _statistics_json_error(
+                "account_required",
+                days_back=days_back,
+                scope=scope,
+                message="account is required (no DEFAULT_MAIL_ACCOUNT configured)",
+            )
         return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        if output_format == "json":
+            return _statistics_json_error(
+                "account_not_found",
+                account=account,
+                days_back=days_back,
+                scope=scope,
+            )
+        return account_err
 
     # Escape user inputs for AppleScript
     escaped_account = escape_applescript(account)
@@ -368,6 +559,14 @@ def get_statistics(
 
     elif scope == "sender_stats":
         if not sender:
+            if output_format == "json":
+                return _statistics_json_error(
+                    "sender_required",
+                    account=account,
+                    days_back=days_back,
+                    scope=scope,
+                    message="'sender' parameter required for sender_stats scope",
+                )
             return "Error: 'sender' parameter required for sender_stats scope"
 
         # Build whose clause for fast app-level filtering
@@ -481,6 +680,17 @@ def get_statistics(
         '''
 
     else:
+        if output_format == "json":
+            return _statistics_json_error(
+                "invalid_scope",
+                account=account,
+                days_back=days_back,
+                scope=scope,
+                message=(
+                    f"Invalid scope '{scope}'. "
+                    "Use: account_overview, sender_stats, mailbox_breakdown"
+                ),
+            )
         return f"Error: Invalid scope '{scope}'. Use: account_overview, sender_stats, mailbox_breakdown"
 
     try:
@@ -488,11 +698,42 @@ def get_statistics(
             script, timeout=timeout if timeout is not None else 120
         )
     except AppleScriptTimeout:
-        return f"Error: AppleScript timed out while computing statistics for '{account}'"
+        timeout_msg = (
+            f"Error: AppleScript timed out while computing statistics for '{account}'"
+        )
+        if output_format == "json":
+            return _statistics_json_error(
+                "timeout",
+                account=account,
+                days_back=days_back,
+                scope=scope,
+                message=timeout_msg,
+            )
+        return timeout_msg
+
+    if output_format == "json":
+        if result.startswith("Error:"):
+            return _statistics_json_error(
+                "applescript_error",
+                account=account,
+                days_back=days_back,
+                scope=scope,
+                message=result,
+            )
+        statistics = _parse_statistics_text(scope, result)
+        return _format_statistics_json(
+            scope=scope,
+            account=account,
+            days_back=days_back,
+            statistics=statistics,
+            sender=sender,
+            mailbox=mailbox,
+        )
+
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
 @inject_preferences
 def export_emails(
     account: Optional[str] = None,
@@ -531,33 +772,16 @@ def export_emails(
     if not account:
         return "Error: 'account' is required (no DEFAULT_MAIL_ACCOUNT configured)"
 
-    # Expand home directory
-    save_dir = os.path.expanduser(save_directory)
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
 
-    # Path validation: resolve to absolute path and enforce safety constraints
-    resolved_path = os.path.realpath(save_dir)
-    home_dir = os.path.expanduser('~')
+    path_err = validate_save_path(save_directory)
+    if path_err:
+        return path_err
 
-    # Must be under the user's home directory
-    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
-        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
-
-    # Block sensitive directories
-    sensitive_dirs = [
-        os.path.join(home_dir, '.ssh'),
-        os.path.join(home_dir, '.gnupg'),
-        os.path.join(home_dir, '.config'),
-        os.path.join(home_dir, '.aws'),
-        os.path.join(home_dir, '.claude'),
-        os.path.join(home_dir, 'Library', 'LaunchAgents'),
-        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
-        os.path.join(home_dir, 'Library', 'Keychains'),
-    ]
-    for sensitive_dir in sensitive_dirs:
-        if resolved_path.startswith(sensitive_dir + os.sep) or resolved_path == sensitive_dir:
-            return f"Error: Cannot export emails to sensitive directory: {sensitive_dir}"
-
-    save_dir = resolved_path
+    save_dir = os.path.realpath(os.path.expanduser(save_directory))
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -764,51 +988,17 @@ def export_emails(
     return result
 
 
-def _get_recent_emails_structured(
-    max_total: int = 20,
-    max_per_account: int = 10
-) -> List[Dict[str, Any]]:
-    """
-    Internal helper to get recent emails from all accounts as structured data.
-
-    Returns list of dicts with keys:
-    - subject: str
-    - sender: str
-    - date: str
-    - is_read: bool
-    - account: str
-    - preview: str
-    """
-    script = f'''
-    tell application "Mail"
-        set allEmails to {{}}
-        set allAccounts to every account
-
-        repeat with anAccount in allAccounts
-            set accountName to name of anAccount
-            set emailCount to 0
-
-            try
-                {inbox_mailbox_script("inboxMailbox", "anAccount")}
-
-                -- Cap to most-recent {max_per_account} so we don't enumerate
-                -- a full inbox just to render the dashboard preview.
-                if (count of messages of inboxMailbox) > {max_per_account} then
-                    set inboxMessages to messages 1 thru {max_per_account} of inboxMailbox
-                else
-                    set inboxMessages to messages of inboxMailbox
-                end if
-
-                repeat with aMessage in inboxMessages
-                    if emailCount >= {max_per_account} then exit repeat
-
-                    try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
-                        set messageDate to date received of aMessage
-                        set messageRead to read status of aMessage
-
-                        -- Get preview
+def _build_recent_one_account_script(
+    account: str,
+    max_per_account: int,
+    include_preview: bool,
+) -> str:
+    """Build AppleScript that returns recent inbox messages for one account."""
+    escaped_account = escape_applescript(account)
+    preview_block = ""
+    preview_field = '""'
+    if include_preview:
+        preview_block = '''
                         set messagePreview to ""
                         try
                             set msgContent to content of aMessage
@@ -817,58 +1007,133 @@ def _get_recent_emails_structured(
                             else
                                 set messagePreview to msgContent
                             end if
-                            -- Clean up preview
-                            set AppleScript's text item delimiters to {{return, linefeed}}
+                            set AppleScript's text item delimiters to {return, linefeed}
                             set contentParts to text items of messagePreview
                             set AppleScript's text item delimiters to " "
                             set messagePreview to contentParts as string
                             set AppleScript's text item delimiters to ""
                         end try
+        '''
+        preview_field = "messagePreview"
 
-                        -- Format as parseable string: SUBJECT|||SENDER|||DATE|||READ|||ACCOUNT|||PREVIEW
-                        set emailRecord to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & messagePreview
-                        set end of allEmails to emailRecord
-                        set emailCount to emailCount + 1
-                    end try
-                end repeat
-            end try
-        end repeat
+    return f'''
+    tell application "Mail"
+        set resultLines to {{}}
+        try
+            set anAccount to account "{escaped_account}"
+            set accountName to name of anAccount
+            {inbox_mailbox_script("inboxMailbox", "anAccount")}
 
-        -- Join all emails with newline
+            if (count of messages of inboxMailbox) > {max_per_account} then
+                set inboxMessages to messages 1 thru {max_per_account} of inboxMailbox
+            else
+                set inboxMessages to messages of inboxMailbox
+            end if
+
+            repeat with aMessage in inboxMessages
+                try
+                    set messageSubject to subject of aMessage
+                    set messageSender to sender of aMessage
+                    set messageDate to date received of aMessage
+                    set messageRead to read status of aMessage
+                    {preview_block}
+                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & {preview_field}
+                end try
+            end repeat
+        end try
         set AppleScript's text item delimiters to linefeed
-        set emailOutput to allEmails as string
-        set AppleScript's text item delimiters to ""
-        return emailOutput
+        return resultLines as string
     end tell
     '''
 
-    result = run_applescript(script)
 
-    # Parse the result into structured data
-    emails = []
-    if result:
-        for line in result.split('\n'):
-            if '|||' in line:
-                # Use maxsplit=5 so preview field (last) can contain '|||'
-                parts = line.split('|||', 5)
-                if len(parts) >= 5:
-                    emails.append({
-                        'subject': parts[0].strip(),
-                        'sender': parts[1].strip(),
-                        'date': parts[2].strip(),
-                        'is_read': parts[3].strip().lower() == 'true',
-                        'account': parts[4].strip(),
-                        'preview': parts[5].strip() if len(parts) > 5 else ''
-                    })
+def _parse_recent_email_lines(result: str) -> List[Dict[str, Any]]:
+    emails: List[Dict[str, Any]] = []
+    if not result:
+        return emails
+    for line in result.split("\n"):
+        if "|||" not in line:
+            continue
+        parts = line.split("|||", 5)
+        if len(parts) >= 5:
+            emails.append({
+                "subject": parts[0].strip(),
+                "sender": parts[1].strip(),
+                "date": parts[2].strip(),
+                "is_read": parts[3].strip().lower() == "true",
+                "account": parts[4].strip(),
+                "preview": parts[5].strip() if len(parts) > 5 else "",
+            })
+    return emails
 
-    # Emails arrive in inbox order (newest first per account)
-    # Limit to max_total
+
+def _get_recent_emails_structured(
+    max_total: int = 20,
+    max_per_account: int = 10,
+    include_preview: bool = False,
+    timeout: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Internal helper to get recent emails from all accounts as structured data.
+    Runs one AppleScript per account sequentially (use async variant for dashboard).
+    """
+    accounts = list_mail_account_names(timeout=30 if timeout is None else min(timeout, 30))
+    emails: List[Dict[str, Any]] = []
+    for account in accounts:
+        script = _build_recent_one_account_script(account, max_per_account, include_preview)
+        try:
+            result = run_applescript(
+                script, timeout=timeout if timeout is not None else 60
+            )
+        except AppleScriptTimeout:
+            continue
+        emails.extend(_parse_recent_email_lines(result))
+        if len(emails) >= max_total:
+            break
     return emails[:max_total]
 
 
-@mcp.tool()
+async def _get_recent_emails_structured_async(
+    max_total: int = 20,
+    max_per_account: int = 10,
+    include_preview: bool = False,
+    timeout: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch recent emails per account in parallel."""
+    try:
+        accounts = await asyncio.to_thread(list_mail_account_names, timeout)
+    except AppleScriptTimeout:
+        return []
+
+    per_call_timeout = timeout if timeout is not None else 60
+
+    async def run_one(account: str):
+        script = _build_recent_one_account_script(
+            account, max_per_account, include_preview
+        )
+        try:
+            raw = await asyncio.to_thread(
+                run_applescript, script, per_call_timeout
+            )
+            return _parse_recent_email_lines(raw)
+        except AppleScriptTimeout:
+            return []
+
+    batches = await asyncio.gather(*(run_one(a) for a in accounts))
+    combined: List[Dict[str, Any]] = []
+    for batch in batches:
+        combined.extend(batch)
+    return combined[:max_total]
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
-def inbox_dashboard() -> Any:
+async def inbox_dashboard(
+    include_preview: bool = False,
+    max_total: int = 20,
+    max_per_account: int = 10,
+    timeout: Optional[int] = None,
+) -> Any:
     """
     Get an interactive dashboard view of your email inbox.
 
@@ -881,6 +1146,12 @@ def inbox_dashboard() -> Any:
     This tool returns a UIResource that can be rendered by compatible
     MCP clients (like Claude Desktop with MCP Apps support) to provide
     an interactive dashboard experience.
+
+    Args:
+        include_preview: Include body previews for recent emails (slower; default False).
+        max_total: Maximum recent emails across all accounts (default: 20).
+        max_per_account: Maximum recent emails per account (default: 10).
+        timeout: Optional per-call AppleScript timeout in seconds (default: 60).
 
     Note: Requires mcp-ui-server package and a compatible MCP client.
 
@@ -895,17 +1166,20 @@ def inbox_dashboard() -> Any:
     from apple_mail_mcp.tools.inbox import get_mailbox_unread_counts
     from ui import create_inbox_dashboard_ui
 
-    # Get unread counts per account (summary_only gives flat account->count dict)
-    accounts_data = get_mailbox_unread_counts(summary_only=True)
+    per_call_timeout = timeout if timeout is not None else 60
 
-    # Get recent emails across all accounts as structured data
-    recent_emails = _get_recent_emails_structured(
-        max_total=20,
-        max_per_account=10
+    unread_task = asyncio.to_thread(
+        get_mailbox_unread_counts, summary_only=True
     )
+    recent_task = _get_recent_emails_structured_async(
+        max_total=max_total,
+        max_per_account=max_per_account,
+        include_preview=include_preview,
+        timeout=per_call_timeout,
+    )
+    accounts_data, recent_emails = await asyncio.gather(unread_task, recent_task)
 
-    # Create and return the UI resource
     return create_inbox_dashboard_ui(
         accounts_data=accounts_data,
-        recent_emails=recent_emails
+        recent_emails=recent_emails,
     )

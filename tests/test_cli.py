@@ -126,3 +126,79 @@ class AppleMailCliTests(unittest.TestCase):
         self.assertEqual(args[0], "/tmp/apple-mail-mcp/plugin/start_mcp.sh")
         self.assertIn("--draft-safe", args)
 
+    def test_unread_summary_calls_tool(self):
+        captured = {}
+
+        def fake_unread(**kwargs):
+            captured.update(kwargs)
+            return {"Work": 3}
+
+        with (
+            patch(
+                "apple_mail_mcp.tools.inbox.get_mailbox_unread_counts",
+                side_effect=fake_unread,
+            ),
+            patch("builtins.print"),
+        ):
+            code = cli.main(["unread", "--account", "Work", "--summary", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["summary_only"])
+        self.assertEqual(captured["account"], "Work")
+
+    def test_move_dry_run_forwards_dry_run_flag(self):
+        captured = {}
+
+        def fake_move(**kwargs):
+            captured.update(kwargs)
+            return "preview"
+
+        with (
+            patch("apple_mail_mcp.tools.manage.move_email", side_effect=fake_move),
+            patch("builtins.print"),
+        ):
+            code = cli.main(
+                [
+                    "move-dry-run",
+                    "--account",
+                    "Work",
+                    "--to",
+                    "Archive",
+                    "--subject",
+                    cli.NO_HIT_SUBJECT,
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["dry_run"])
+
+    def test_smoke_test_checks_invalid_account_and_draft_safe(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.inbox.list_accounts",
+                return_value=["Work"],
+            ),
+            patch(
+                "apple_mail_mcp.tools.inbox.list_inbox_emails",
+                side_effect=lambda **kwargs: (
+                    '{"error":"account_not_found","account":"'
+                    + kwargs["account"]
+                    + '"}'
+                    if kwargs["account"] == cli.INVALID_ACCOUNT
+                    else '{"emails":[]}'
+                ),
+            ),
+            patch(
+                "apple_mail_mcp.tools.search.search_emails",
+                return_value='{"items":[]}',
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose._send_blocked",
+                return_value="Error: Sending is disabled in draft-safe mode.",
+            ),
+            patch("builtins.print"),
+        ):
+            code = cli.main(["smoke-test", "--account", "Work", "--json"])
+
+        self.assertEqual(code, 0)
+

@@ -1,0 +1,30 @@
+# .claude-plugin/ — marketplace manifest
+
+Top-level **Claude Code marketplace** registration → [`plugin/`](../plugin/) via `"source": "./plugin"`.
+
+## Two version fields
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `metadata.version` | `1.0.0` | **This marketplace JSON** — not the plugin. Don't bump on every release. |
+| `plugins[0].version` | `3.1.5` | **Plugin release** — sync with `pyproject.toml`, `plugin.json`, `server.json`, mcpb manifest. |
+
+`validate_manifests.sh` checks `plugins[0].version` and tool-count in `plugins[0].description` only.
+
+## Not here
+
+- Plugin manifest → `plugin/.claude-plugin/plugin.json`
+- Desktop bundle → [`apple-mail-mcpb/`](../apple-mail-mcpb/)
+
+## Local install
+
+```bash
+claude plugin marketplace add .
+claude plugin install apple-mail@apple-mail-mcp
+```
+
+After edits: `plugin-dev:plugin-validator` + `tools/validate_manifests.sh`.
+
+## Related
+
+[`plugin/CLAUDE.md`](../plugin/CLAUDE.md) · [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md) · [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md)

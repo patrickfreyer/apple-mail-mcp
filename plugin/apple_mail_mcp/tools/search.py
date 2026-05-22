@@ -8,7 +8,8 @@ from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
 from apple_mail_mcp import server as _server
-from apple_mail_mcp.server import mcp
+from apple_mail_mcp.server import mcp, READ_ONLY_TOOL_ANNOTATIONS
+from apple_mail_mcp.constants import THREAD_PREFIXES
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     build_mailbox_ref,
@@ -18,6 +19,9 @@ from apple_mail_mcp.core import (
     normalize_message_ids,
     normalize_search_terms,
     run_applescript,
+    validate_account_name,
+    account_not_found_json,
+    list_mail_account_names,
 )
 
 
@@ -734,7 +738,7 @@ def _search_mail_records_sync(**kwargs) -> List[Dict[str, Any]]:
     return records
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 async def search_emails(
     account: Optional[str] = None,
@@ -832,6 +836,25 @@ async def search_emails(
     if account is None and not all_accounts and _server.DEFAULT_MAIL_ACCOUNT:
         account = _server.DEFAULT_MAIL_ACCOUNT
 
+    if account:
+        validation_timeout = 30 if timeout is None else min(timeout, 30)
+        account_err = validate_account_name(account, timeout=validation_timeout)
+        if account_err:
+            if output_format == "json":
+                return json.dumps(
+                    {
+                        "results": [],
+                        "total": 0,
+                        "error": "account_not_found",
+                        "account": account,
+                        "available_accounts": list_mail_account_names(
+                            timeout=validation_timeout
+                        ),
+                    },
+                    indent=2,
+                )
+            return account_err
+
     # Smart default: 48h window when no explicit start date was passed.
     effective_recent_days = float(recent_days) if recent_days else 0.0
     searched_from: Optional[str] = None
@@ -879,7 +902,7 @@ async def search_emails(
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_email_by_id(
     account: str,
@@ -888,6 +911,7 @@ def get_email_by_id(
     include_content: bool = True,
     max_content_length: int = 5000,
     output_format: str = "text",
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Fetch one email by its exact Apple Mail message id.
@@ -903,6 +927,7 @@ def get_email_by_id(
         include_content: Whether to include email content (default: True).
         max_content_length: Maximum content characters to return when include_content=True.
         output_format: Output format: "text" or "json" (default: "text").
+        timeout: Optional AppleScript timeout in seconds (default: 120s).
 
     Returns:
         One matching email as text, or JSON with {"item": ...}. If no message is
@@ -910,6 +935,13 @@ def get_email_by_id(
     """
     if output_format not in {"text", "json"}:
         return "Error: Invalid output_format. Use: text, json"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        if output_format == "json":
+            return account_not_found_json(account, timeout=validation_timeout)
+        return account_err
 
     normalized_ids = normalize_message_ids([message_id])
     if not normalized_ids:
@@ -920,6 +952,7 @@ def get_email_by_id(
 
     safe_account = escape_applescript(account)
     numeric_id = normalized_ids[0]
+    effective_timeout = timeout if timeout is not None else 120
 
     script = f'''
     on sanitize_field(value)
@@ -969,7 +1002,7 @@ def get_email_by_id(
     end iso_datetime
 
     tell application "Mail"
-        with timeout of 120 seconds
+        with timeout of {effective_timeout} seconds
             try
                 set targetAccount to account "{safe_account}"
                 {build_mailbox_ref(mailbox, var_name="targetMailbox")}
@@ -1023,7 +1056,13 @@ def get_email_by_id(
     end tell
     '''
 
-    result = run_applescript(script, timeout=120)
+    try:
+        result = run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: AppleScript timed out while fetching message_id={numeric_id} "
+            f"on account {account!r}. Try again or pass a larger `timeout`."
+        )
     if result.startswith("ERROR|||"):
         return f"Error: {result.split('|||', 1)[1]}"
 
@@ -1033,38 +1072,116 @@ def get_email_by_id(
         return json.dumps({"item": item})
 
     if item is None:
-        return f"No email found for message_id={numeric_id} in {mailbox}"
+        return f"Error: No email found for message_id={numeric_id} in {mailbox}"
     return _format_search_records_text([item])
 
 
-@mcp.tool()
+def _thread_strip_prefixes_handler() -> str:
+    """AppleScript handler to strip Re:/Fwd:/etc. prefixes from subjects."""
+    prefix_checks = ""
+    for prefix in THREAD_PREFIXES:
+        escaped = escape_applescript(prefix)
+        prefix_checks += f'''
+                ignoring case
+                    if baseSubj starts with "{escaped}" then
+                        set baseSubj to text {len(prefix) + 1} thru -1 of baseSubj
+                        repeat while baseSubj starts with " "
+                            set baseSubj to text 2 thru -1 of baseSubj
+                        end repeat
+                        set didStrip to true
+                    end if
+                end ignoring
+'''
+    return f'''
+    on stripThreadPrefixes(subj)
+        set baseSubj to subj
+        set didStrip to true
+        repeat while didStrip
+            set didStrip to false
+            {prefix_checks}
+        end repeat
+        return baseSubj
+    end stripThreadPrefixes
+'''
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_email_thread(
-    account: str, subject_keyword: str, mailbox: str = "INBOX", max_messages: int = 50
+    account: str,
+    subject_keyword: str,
+    mailbox: str = "INBOX",
+    max_messages: int = 50,
+    recent_days: float = 2.0,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Get an email conversation thread - all messages with the same or similar subject.
+
+    Defaults to the last 48 hours. Pass ``recent_days=0`` to scan the capped
+    head of the mailbox without a date window. Subject matching is
+    case-insensitive.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
         subject_keyword: Keyword to identify the thread (e.g., "Re: Project Update")
         mailbox: Mailbox to search in (default: "INBOX", use "All" for all mailboxes)
         max_messages: Maximum number of thread messages to return (default: 50)
+        recent_days: Only scan messages received within this many days (default: 2.0
+            = 48h). Set to 0 to disable the date window.
+        timeout: Optional AppleScript timeout in seconds (default: 120).
 
     Returns:
         Formatted thread view with all related messages sorted by date
     """
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
+
+    if max_messages <= 0:
+        return "Error: max_messages must be > 0"
+
+    effective_recent_days = float(recent_days) if recent_days else 0.0
+    effective_timeout = timeout if timeout is not None else 120
 
     # Escape user inputs for AppleScript
     escaped_account = escape_applescript(account)
     escaped_mailbox = escape_applescript(mailbox)
 
-    # For thread detection, we'll strip common prefixes
-    thread_keywords = ["Re:", "Fwd:", "FW:", "RE:", "Fw:"]
     cleaned_keyword = subject_keyword
-    for prefix in thread_keywords:
+    for prefix in THREAD_PREFIXES:
         cleaned_keyword = cleaned_keyword.replace(prefix, "").strip()
     escaped_keyword = escape_applescript(cleaned_keyword)
+
+    date_setup = ""
+    if effective_recent_days > 0:
+        cutoff = datetime.now() - timedelta(days=effective_recent_days)
+        date_setup = _build_applescript_date("cutoffDate", cutoff.strftime("%Y-%m-%d"))
+
+    if effective_recent_days <= 0:
+        window_line = "Window: full inbox"
+    elif effective_recent_days == 2.0:
+        window_line = "Window: last 48h"
+    else:
+        window_line = f"Window: last {effective_recent_days}d"
+
+    scan_cap = max_messages
+    if effective_recent_days > 0:
+        candidate_collection = f'''
+                                set candidateMessages to (every message of currentMailbox whose date received >= cutoffDate)
+                                if (count of candidateMessages) > {scan_cap} then
+                                    set candidateMessages to items 1 thru {scan_cap} of candidateMessages
+                                end if
+        '''
+    else:
+        candidate_collection = f'''
+                                if (count of messages of currentMailbox) > {scan_cap} then
+                                    set candidateMessages to messages 1 thru {scan_cap} of currentMailbox
+                                else
+                                    set candidateMessages to messages of currentMailbox
+                                end if
+        '''
 
     mailbox_script = f'''
         try
@@ -1087,48 +1204,41 @@ def get_email_thread(
     '''
 
     script = f'''
+    {_thread_strip_prefixes_handler()}
+
     tell application "Mail"
         set outputText to "EMAIL THREAD VIEW" & return & return
         set outputText to outputText & "Thread topic: {escaped_keyword}" & return
-        set outputText to outputText & "Account: {escaped_account}" & return & return
+        set outputText to outputText & "Account: {escaped_account}" & return
+        set outputText to outputText & "{window_line}" & return & return
         set threadMessages to {{}}
+        {date_setup}
 
         try
             set targetAccount to account "{escaped_account}"
             {mailbox_script}
 
-            -- Collect all matching messages from all mailboxes
+            -- Collect matching messages from mailboxes with date filter + cap
             repeat with currentMailbox in searchMailboxes
-                set mailboxMessages to every message of currentMailbox
+                if (count of threadMessages) >= {max_messages} then exit repeat
 
-                repeat with aMessage in mailboxMessages
-                    if (count of threadMessages) >= {max_messages} then exit repeat
+                try
+                    {candidate_collection}
 
-                    try
-                        set messageSubject to subject of aMessage
+                    ignoring case
+                        repeat with aMessage in candidateMessages
+                            if (count of threadMessages) >= {max_messages} then exit repeat
 
-                        -- Remove common prefixes for matching
-                        set cleanSubject to messageSubject
-                        if cleanSubject starts with "Re: " then
-                            set cleanSubject to text 5 thru -1 of cleanSubject
-                        end if
-                        if cleanSubject starts with "RE: " then
-                            set cleanSubject to text 5 thru -1 of cleanSubject
-                        end if
-                        if cleanSubject starts with "Fwd: " then
-                            set cleanSubject to text 6 thru -1 of cleanSubject
-                        else if cleanSubject starts with "FW: " then
-                            set cleanSubject to text 5 thru -1 of cleanSubject
-                        else if cleanSubject starts with "Fw: " then
-                            set cleanSubject to text 5 thru -1 of cleanSubject
-                        end if
-
-                        -- Check if this message is part of the thread
-                        if cleanSubject contains "{escaped_keyword}" or messageSubject contains "{escaped_keyword}" then
-                            set end of threadMessages to aMessage
-                        end if
-                    end try
-                end repeat
+                            try
+                                set messageSubject to subject of aMessage
+                                set cleanSubject to my stripThreadPrefixes(messageSubject)
+                                if cleanSubject contains "{escaped_keyword}" or messageSubject contains "{escaped_keyword}" then
+                                    set end of threadMessages to aMessage
+                                end if
+                            end try
+                        end repeat
+                    end ignoring
+                end try
             end repeat
 
             -- Display thread messages
@@ -1184,5 +1294,11 @@ def get_email_thread(
     end tell
     '''
 
-    result = run_applescript(script)
+    try:
+        result = run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: get_email_thread timed out on account '{account}' after "
+            f"{effective_timeout}s. Retry with a larger timeout or tighter filters."
+        )
     return result

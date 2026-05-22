@@ -265,7 +265,7 @@ Ask Claude:
 ## Requirements
 
 - macOS with Apple Mail configured
-- Python 3.7+
+- Python 3.10+
 - Mail app with at least one account configured
 - Appropriate macOS permissions granted
 

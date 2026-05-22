@@ -6,6 +6,20 @@
 **Branch:** `improve-speed-and-tools`  
 **Current baseline:** `113` tests passing; latest pushed repo commit before this review was `e4a7670`
 
+## Status (updated 2026-05-21, post Phase 0+A)
+
+Resolution tracking lives in **[`tasks/plan-review-status-2026-05-21.md`](tasks/plan-review-status-2026-05-21.md)**.
+
+| Area | Summary |
+|------|---------|
+| Phase 0 manifest sync | ✅ Done (27 tools, mcpb `get_email_by_id`, SKILL typo) |
+| Phase A live fixes | 🟡 Core landed (dashboard async/preview default, account validation on 3 tools, overview compact/JSON, smart_inbox caps); expand validation wiring + tighter dashboard gate still open |
+| Tests | ✅ 119 passing (`tests/test_phase_a_fixes.py` added) |
+| Still open | Split-PR discipline for *future* work, grep/wc-l command, audit hotspot cleanup, CLAUDE.md/build-mcpb Python text, CI non-live guardrails, FastMCP API verify, staged JSON, perf gates, plugin-validator fallback wording |
+| Deferred | `include_timing` (not implemented — defer to Phase B); hybrid SQLite (after A/B/2 benchmarked) |
+
+---
+
 ## Bottom Line
 
 The plan is directionally right and is much better than a generic hardening backlog. It correctly shifts priority toward the live-measured problems: `inbox_dashboard`, unknown account handling, `get_inbox_overview`, analysis-tool latency, CLI coverage, manifest drift, and CI guardrails.

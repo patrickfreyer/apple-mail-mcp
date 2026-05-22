@@ -2,10 +2,10 @@
 
 import asyncio
 import json
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 from apple_mail_mcp import server as _server
-from apple_mail_mcp.server import mcp
+from apple_mail_mcp.server import mcp, READ_ONLY_TOOL_ANNOTATIONS
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     inject_preferences,
@@ -13,6 +13,8 @@ from apple_mail_mcp.core import (
     run_applescript,
     inbox_mailbox_script,
     content_preview_script,
+    validate_account_name,
+    account_not_found_json,
 )
 
 
@@ -261,7 +263,7 @@ def _strip_count_marker(raw: str) -> Tuple[str, int]:
     return "\n".join(kept), count
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 async def list_inbox_emails(
     account: Optional[str] = None,
@@ -322,6 +324,14 @@ async def list_inbox_emails(
     # monkeypatch `apple_mail_mcp.server.DEFAULT_MAIL_ACCOUNT` after import.
     if account is None and not all_accounts and _server.DEFAULT_MAIL_ACCOUNT:
         account = _server.DEFAULT_MAIL_ACCOUNT
+
+    if account:
+        validation_timeout = 30 if timeout is None else min(timeout, 30)
+        account_err = validate_account_name(account, timeout=validation_timeout)
+        if account_err:
+            if output_format == "json":
+                return account_not_found_json(account, timeout=validation_timeout)
+            return account_err
 
     if output_format == "json":
         return await _list_inbox_emails_json(
@@ -500,12 +510,13 @@ async def _list_inbox_emails_json(
 # get_mailbox_unread_counts and other tools (unchanged)
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_mailbox_unread_counts(
     account: Optional[str] = None,
     include_zero: bool = False,
     summary_only: bool = False,
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Get unread counts per mailbox for one account or all accounts.
@@ -518,12 +529,21 @@ def get_mailbox_unread_counts(
         include_zero: Whether to include mailboxes with zero unread messages
         summary_only: If True, return only per-account inbox unread totals
                       (flat dict of account name -> unread count)
+        timeout: Optional AppleScript timeout in seconds (default: 120s).
 
     Returns:
         If summary_only=False: nested dict keyed by account name then mailbox path
         If summary_only=True: flat dict mapping account names to inbox unread counts
     """
+    if account:
+        account_err = validate_account_name(
+            account, timeout=30 if timeout is None else min(timeout, 30)
+        )
+        if account_err:
+            return {"error": "account_not_found", "account": account}
+
     escaped_account = escape_applescript(account) if account else None
+    effective_timeout = timeout if timeout is not None else 120
 
     # Fast path: summary_only returns just per-account inbox unread totals
     if summary_only:
@@ -548,7 +568,16 @@ def get_mailbox_unread_counts(
             return resultList as string
         end tell
         """
-        result = run_applescript(script)
+        try:
+            result = run_applescript(script, timeout=effective_timeout)
+        except AppleScriptTimeout:
+            return {
+                "error": "timed_out",
+                "message": (
+                    "AppleScript timed out while fetching inbox unread counts. "
+                    "Try again or pass a larger `timeout`."
+                ),
+            }
         counts: Dict[str, int] = {}
         for item in result.split("|"):
             if ":" in item:
@@ -618,7 +647,16 @@ def get_mailbox_unread_counts(
     end tell
     """
 
-    result = run_applescript(script)
+    try:
+        result = run_applescript(script, timeout=effective_timeout)
+    except AppleScriptTimeout:
+        return {
+            "error": "timed_out",
+            "message": (
+                "AppleScript timed out while fetching mailbox unread counts. "
+                "Try again or pass a larger `timeout`."
+            ),
+        }
     counts: Dict[str, Dict[str, int]] = {}
     if not result:
         return counts
@@ -633,7 +671,7 @@ def get_mailbox_unread_counts(
     return counts
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def list_accounts() -> List[str]:
     """
@@ -662,7 +700,7 @@ def list_accounts() -> List[str]:
     return result.split("|") if result else []
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def list_account_addresses() -> Dict[str, List[str]]:
     """
@@ -718,7 +756,7 @@ def list_account_addresses() -> Dict[str, List[str]]:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def list_mailboxes(
     account: Optional[str] = None,
@@ -737,6 +775,13 @@ def list_mailboxes(
         Formatted list of mailboxes with optional message counts.
         For nested mailboxes, shows both indented format and path format (e.g., "Projects/Amplify Impact")
     """
+    if account:
+        validation_timeout = 30
+        account_err = validate_account_name(account, timeout=validation_timeout)
+        if account_err:
+            if output_format == "json":
+                return account_not_found_json(account, timeout=validation_timeout)
+            return account_err
 
     if output_format == "json":
         return _list_mailboxes_json(account, include_counts)
@@ -993,6 +1038,7 @@ def _parse_overview_account(raw: str) -> Dict[str, Any]:
         "mailboxes": [],  # list of (name, unread_count) tuples
         "recent": [],     # list of dicts
     }
+    parse_errors: List[str] = []
     if not raw:
         return result
     for line in raw.splitlines():
@@ -1009,12 +1055,16 @@ def _parse_overview_account(raw: str) -> Dict[str, Any]:
                     result["unread"] = int(parts[2])
                     result["total"] = int(parts[3])
                 except ValueError:
-                    pass
+                    parse_errors.append(
+                        f"Invalid HEADER counts for {parts[1]!r}: {parts[2]!r}, {parts[3]!r}"
+                    )
         elif tag in ("MAILBOX", "SUBMAILBOX") and len(parts) >= 3:
             try:
                 result["mailboxes"].append((parts[1], int(parts[2])))
             except ValueError:
-                pass
+                parse_errors.append(
+                    f"Invalid {tag} unread count for {parts[1]!r}: {parts[2]!r}"
+                )
         elif tag == "RECENT" and len(parts) >= 5:
             result["recent"].append({
                 "subject": parts[1],
@@ -1024,16 +1074,28 @@ def _parse_overview_account(raw: str) -> Dict[str, Any]:
             })
         elif tag == "FATAL" and len(parts) >= 2:
             result["error"] = parts[1]
+    if parse_errors:
+        result["parse_errors"] = parse_errors
     return result
 
 
-def _format_overview(accounts: List[Dict[str, Any]], errors: List[str]) -> str:
+def _format_overview(
+    accounts: List[Dict[str, Any]],
+    errors: List[str],
+    *,
+    include_mailboxes: bool = True,
+    include_recent: bool = True,
+    include_suggestions: bool = True,
+    max_recent: int = 10,
+    compact: bool = False,
+) -> str:
     """Format combined per-account overview payloads into the legacy text shape."""
     lines: List[str] = []
-    lines.append("╔══════════════════════════════════════════╗")
-    lines.append("║      EMAIL INBOX OVERVIEW                ║")
-    lines.append("╚══════════════════════════════════════════╝")
-    lines.append("")
+    if not compact:
+        lines.append("╔══════════════════════════════════════════╗")
+        lines.append("║      EMAIL INBOX OVERVIEW                ║")
+        lines.append("╚══════════════════════════════════════════╝")
+        lines.append("")
     lines.append("📊 UNREAD EMAILS BY ACCOUNT")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -1047,75 +1109,82 @@ def _format_overview(accounts: List[Dict[str, Any]], errors: List[str]) -> str:
         total = acct.get("total") or 0
         total_unread += unread
         prefix = "⚠️ " if unread > 0 else "✅"
-        lines.append(f"  {prefix} {name}: {unread} unread ({total} total)")
+        if compact:
+            lines.append(f"  {prefix} {name}: {unread} unread")
+        else:
+            lines.append(f"  {prefix} {name}: {unread} unread ({total} total)")
 
     lines.append("")
     lines.append(f"📈 TOTAL UNREAD: {total_unread} across all accounts")
-    lines.append("")
-    lines.append("")
 
-    lines.append("📁 MAILBOX STRUCTURE")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    for acct in accounts:
-        name = acct.get("account") or "(unknown)"
-        lines.append(f"\nAccount: {name}")
-        for mb_name, mb_unread in acct.get("mailboxes", []):
-            if "/" in mb_name:
-                if mb_unread > 0:
-                    lines.append(f"     └─ {mb_name.split('/', 1)[1]} ({mb_unread} unread)")
-            else:
-                if mb_unread > 0:
-                    lines.append(f"  📂 {mb_name} ({mb_unread} unread)")
+    if include_mailboxes and not compact:
+        lines.append("")
+        lines.append("")
+        lines.append("📁 MAILBOX STRUCTURE")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        for acct in accounts:
+            name = acct.get("account") or "(unknown)"
+            lines.append(f"\nAccount: {name}")
+            for mb_name, mb_unread in acct.get("mailboxes", []):
+                if "/" in mb_name:
+                    if mb_unread > 0:
+                        lines.append(f"     └─ {mb_name.split('/', 1)[1]} ({mb_unread} unread)")
                 else:
-                    lines.append(f"  📂 {mb_name}")
+                    if mb_unread > 0:
+                        lines.append(f"  📂 {mb_name} ({mb_unread} unread)")
+                    else:
+                        lines.append(f"  📂 {mb_name}")
 
-    lines.append("")
-    lines.append("")
-    lines.append("📬 RECENT EMAILS PREVIEW (10 Most Recent)")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    # Collect up to 10 recent across all accounts (matching prior behavior).
-    recent_combined = []
-    for acct in accounts:
-        name = acct.get("account") or "(unknown)"
-        for r in acct.get("recent", []):
-            recent_combined.append((name, r))
-    display_count = 0
-    for name, r in recent_combined:
-        if display_count >= 10:
-            break
-        display_count += 1
-        indicator = "✓" if r["is_read"] else "✉"
+    if include_recent:
         lines.append("")
-        lines.append(f"{indicator} {r['subject']}")
-        lines.append(f"   Account: {name}")
-        lines.append(f"   From: {r['sender']}")
-        lines.append(f"   Date: {r['date']}")
-
-    if display_count == 0:
         lines.append("")
-        lines.append("No recent emails found.")
+        label = f"📬 RECENT EMAILS PREVIEW ({max_recent} Most Recent)"
+        lines.append(label)
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    lines.append("")
-    lines.append("")
-    lines.append("💡 SUGGESTED ACTIONS FOR ASSISTANT")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("Based on this overview, consider suggesting:")
-    lines.append("")
-    if total_unread > 0:
-        lines.append("1. 📧 Review unread emails - Use list_inbox_emails to show recent unread messages")
-        lines.append("2. 🔍 Search for action items - Look for keywords like 'urgent', 'action required', 'deadline'")
-        lines.append("3. 📤 Move processed emails - Suggest moving read emails to appropriate folders")
-    else:
-        lines.append("1. ✅ Inbox is clear! No unread emails.")
-    lines.append("4. 📋 Organize by topic - Suggest moving emails to project-specific folders")
-    lines.append("5. ✉️  Draft replies - Identify emails that need responses")
-    lines.append("6. 🗂️  Archive old emails - Move older read emails to archive folders")
-    lines.append("7. 🔔 Highlight priority items - Identify emails from important senders or with urgent keywords")
-    lines.append("")
-    lines.append("═══════════════════════════════════════════════════")
-    lines.append("💬 Ask me to drill down into any account or take specific actions!")
-    lines.append("═══════════════════════════════════════════════════")
+        recent_combined = []
+        for acct in accounts:
+            name = acct.get("account") or "(unknown)"
+            for r in acct.get("recent", []):
+                recent_combined.append((name, r))
+        display_count = 0
+        for name, r in recent_combined:
+            if display_count >= max_recent:
+                break
+            display_count += 1
+            indicator = "✓" if r["is_read"] else "✉"
+            lines.append("")
+            lines.append(f"{indicator} {r['subject']}")
+            if not compact:
+                lines.append(f"   Account: {name}")
+            lines.append(f"   From: {r['sender']}")
+            lines.append(f"   Date: {r['date']}")
+
+        if display_count == 0:
+            lines.append("")
+            lines.append("No recent emails found.")
+
+    if include_suggestions and not compact:
+        lines.append("")
+        lines.append("")
+        lines.append("💡 SUGGESTED ACTIONS FOR ASSISTANT")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("Based on this overview, consider suggesting:")
+        lines.append("")
+        if total_unread > 0:
+            lines.append("1. 📧 Review unread emails - Use list_inbox_emails to show recent unread messages")
+            lines.append("2. 🔍 Search for action items - Look for keywords like 'urgent', 'action required', 'deadline'")
+            lines.append("3. 📤 Move processed emails - Suggest moving read emails to appropriate folders")
+        else:
+            lines.append("1. ✅ Inbox is clear! No unread emails.")
+        lines.append("4. 📋 Organize by topic - Suggest moving emails to project-specific folders")
+        lines.append("5. ✉️  Draft replies - Identify emails that need responses")
+        lines.append("6. 🗂️  Archive old emails - Move older read emails to archive folders")
+        lines.append("7. 🔔 Highlight priority items - Identify emails from important senders or with urgent keywords")
+        lines.append("")
+        lines.append("═══════════════════════════════════════════════════")
+        lines.append("💬 Ask me to drill down into any account or take specific actions!")
+        lines.append("═══════════════════════════════════════════════════")
 
     if errors:
         lines.append("")
@@ -1124,9 +1193,114 @@ def _format_overview(accounts: List[Dict[str, Any]], errors: List[str]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+def _overview_suggestions(total_unread: int) -> List[str]:
+    """Action suggestions mirrored from the text-mode overview footer."""
+    if total_unread > 0:
+        return [
+            "Review unread emails - Use list_inbox_emails to show recent unread messages",
+            "Search for action items - Look for keywords like 'urgent', 'action required', 'deadline'",
+            "Move processed emails - Suggest moving read emails to appropriate folders",
+            "Organize by topic - Suggest moving emails to project-specific folders",
+            "Draft replies - Identify emails that need responses",
+            "Archive old emails - Move older read emails to archive folders",
+            "Highlight priority items - Identify emails from important senders or with urgent keywords",
+        ]
+    return [
+        "Inbox is clear! No unread emails.",
+        "Organize by topic - Suggest moving emails to project-specific folders",
+        "Draft replies - Identify emails that need responses",
+        "Archive old emails - Move older read emails to archive folders",
+        "Highlight priority items - Identify emails from important senders or with urgent keywords",
+    ]
+
+
+def _overview_json_error(
+    error: str,
+    *,
+    account: Optional[str] = None,
+    include_mailboxes: bool = True,
+    include_recent: bool = True,
+    include_suggestions: bool = True,
+    max_recent: int = 10,
+    message: Optional[str] = None,
+    errors: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "error": error,
+        "output_format": "json",
+        "include_mailboxes": include_mailboxes,
+        "include_recent": include_recent,
+        "include_suggestions": include_suggestions,
+        "max_recent": max_recent,
+        "total_unread": 0,
+        "accounts": [],
+        "suggestions": [],
+        "errors": errors or [],
+    }
+    if account is not None:
+        payload["account"] = account
+    if message is not None:
+        payload["message"] = message
+    return payload
+
+
+def _format_overview_json(
+    accounts: List[Dict[str, Any]],
+    errors: List[str],
+    *,
+    account: Optional[str] = None,
+    include_mailboxes: bool = True,
+    include_recent: bool = True,
+    include_suggestions: bool = True,
+    max_recent: int = 10,
+) -> Dict[str, Any]:
+    """Return structured overview payload for JSON mode."""
+    total_unread = 0
+    account_rows: List[Dict[str, Any]] = []
+    for acct in accounts:
+        row: Dict[str, Any] = {"account": acct.get("account")}
+        if acct.get("error"):
+            row["error"] = acct["error"]
+        else:
+            row["unread"] = acct.get("unread") or 0
+            row["total"] = acct.get("total") or 0
+            total_unread += row["unread"]
+            if include_mailboxes:
+                row["mailboxes"] = [
+                    {"path": name, "unread": unread}
+                    for name, unread in acct.get("mailboxes", [])
+                ]
+            if include_recent:
+                row["recent"] = acct.get("recent", [])[:max_recent]
+        account_rows.append(row)
+
+    payload: Dict[str, Any] = {
+        "output_format": "json",
+        "include_mailboxes": include_mailboxes,
+        "include_recent": include_recent,
+        "include_suggestions": include_suggestions,
+        "max_recent": max_recent,
+        "total_unread": total_unread,
+        "accounts": account_rows,
+        "suggestions": _overview_suggestions(total_unread) if include_suggestions else [],
+        "errors": errors,
+    }
+    if account is not None:
+        payload["account"] = account
+    return payload
+
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
-async def get_inbox_overview(timeout: Optional[int] = None) -> str:
+async def get_inbox_overview(
+    account: Optional[str] = None,
+    output_format: str = "text",
+    include_mailboxes: bool = True,
+    include_recent: bool = True,
+    include_suggestions: bool = True,
+    max_recent: int = 10,
+    timeout: Optional[int] = None,
+) -> Union[str, Dict[str, Any]]:
     """
     Get a comprehensive overview of your email inbox status across all accounts.
 
@@ -1136,26 +1310,59 @@ async def get_inbox_overview(timeout: Optional[int] = None) -> str:
     the data is returned anyway.
 
     Args:
+        account: Optional account name to scope the overview to one account.
+        output_format: ``text`` (default), ``compact`` (shorter text), or ``json``.
+        include_mailboxes: Include mailbox structure with unread counts (default: True).
+        include_recent: Include recent-email preview section (default: True).
+        include_suggestions: Include assistant action suggestions (default: True).
+        max_recent: Maximum recent emails to show across all accounts (default: 10).
         timeout: Optional per-account AppleScript timeout in seconds
             (default: 180s).
 
     Returns:
-        Comprehensive overview including:
-        - Unread email counts by account
-        - List of available mailboxes/folders
-        - AI suggestions for actions (move emails, respond to messages, etc.)
-
-        When one or more accounts time out, the response includes the slow
-        account names so the caller can retry them individually with a
-        larger `timeout`.
+        Comprehensive overview including unread counts, optional mailbox
+        structure, recent preview, and optional AI suggestions. JSON mode
+        returns a structured dict.
     """
-    try:
-        accounts = await asyncio.to_thread(_list_mail_accounts, timeout)
-    except AppleScriptTimeout:
-        return "Error: Mail account listing timed out"
+    json_kwargs = {
+        "account": account,
+        "include_mailboxes": include_mailboxes,
+        "include_recent": include_recent,
+        "include_suggestions": include_suggestions,
+        "max_recent": max_recent,
+    }
 
-    if not accounts:
-        return _format_overview([], [])
+    if output_format not in {"text", "compact", "json"}:
+        return "Error: Invalid output_format. Use: text, compact, json"
+
+    if account:
+        validation_timeout = 30 if timeout is None else min(timeout, 30)
+        account_err = validate_account_name(account, timeout=validation_timeout)
+        if account_err:
+            if output_format == "json":
+                return _overview_json_error(
+                    "account_not_found",
+                    **json_kwargs,
+                )
+            return account_err
+        accounts_to_query = [account]
+    else:
+        try:
+            accounts_to_query = await asyncio.to_thread(_list_mail_accounts, timeout)
+        except AppleScriptTimeout:
+            if output_format == "json":
+                return _overview_json_error(
+                    "account_listing_timeout",
+                    **json_kwargs,
+                    message="Error: Mail account listing timed out",
+                    errors=["__account_listing__"],
+                )
+            return "Error: Mail account listing timed out"
+
+    if not accounts_to_query:
+        if output_format == "json":
+            return _format_overview_json([], [], **json_kwargs)
+        return _format_overview([], [], compact=output_format == "compact")
 
     async def run_one(acct: str):
         try:
@@ -1163,7 +1370,7 @@ async def get_inbox_overview(timeout: Optional[int] = None) -> str:
         except AppleScriptTimeout:
             return acct, AppleScriptTimeout(acct)
 
-    results = await asyncio.gather(*(run_one(a) for a in accounts))
+    results = await asyncio.gather(*(run_one(a) for a in accounts_to_query))
 
     parsed: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -1171,6 +1378,20 @@ async def get_inbox_overview(timeout: Optional[int] = None) -> str:
         if isinstance(outcome, AppleScriptTimeout):
             errors.append(acct)
             continue
-        parsed.append(_parse_overview_account(outcome))
+        parsed_acct = _parse_overview_account(outcome)
+        if parsed_acct.get("parse_errors"):
+            errors.extend(parsed_acct["parse_errors"])
+        parsed.append(parsed_acct)
 
-    return _format_overview(parsed, errors)
+    if output_format == "json":
+        return _format_overview_json(parsed, errors, **json_kwargs)
+
+    return _format_overview(
+        parsed,
+        errors,
+        include_mailboxes=include_mailboxes,
+        include_recent=include_recent,
+        include_suggestions=include_suggestions,
+        max_recent=max_recent,
+        compact=output_format == "compact",
+    )

@@ -64,3 +64,13 @@ class InboxToolTests(unittest.TestCase):
 
         self.assertEqual(records[0]["content_preview"], "Hello ||| still content")
 
+
+class OverviewParseTests(unittest.TestCase):
+    def test_parse_overview_account_collects_malformed_counts(self):
+        raw = "\n".join([
+            "HEADER|||Work|||not-a-number|||also-bad",
+            "MAILBOX|||Inbox|||bad-count",
+        ])
+        parsed = inbox_tools._parse_overview_account(raw)
+        self.assertIn("parse_errors", parsed)
+        self.assertEqual(len(parsed["parse_errors"]), 2)

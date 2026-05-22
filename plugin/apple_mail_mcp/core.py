@@ -1,5 +1,7 @@
 """Core helpers: AppleScript execution, escaping, parsing, and preference injection."""
 
+import json
+import os
 import subprocess
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -127,6 +129,102 @@ def normalize_message_ids(message_ids: Optional[List[Any]]) -> List[str]:
             normalized.append(value_text)
 
     return normalized
+
+
+def list_mail_account_names(timeout: Optional[int] = 30) -> List[str]:
+    """Return configured Mail account names. Cheap (<1s) on any setup."""
+    script = '''
+    tell application "Mail"
+        set acctNames to {}
+        repeat with anAccount in (every account)
+            set end of acctNames to (name of anAccount)
+        end repeat
+        set AppleScript's text item delimiters to linefeed
+        return acctNames as string
+    end tell
+    '''
+    raw = run_applescript(script, timeout=timeout)
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def validate_account_name(account: str, timeout: Optional[int] = 30) -> Optional[str]:
+    """Return an error string when *account* is unknown, else None."""
+    if not account or not str(account).strip():
+        return "Error: account name is required"
+    names = list_mail_account_names(timeout=timeout)
+    if account not in names:
+        available = ", ".join(names) if names else "(none configured)"
+        return (
+            f"Error: account_not_found — '{account}' is not configured in Mail. "
+            f"Available accounts: {available}"
+        )
+    return None
+
+
+SENSITIVE_DIRS = (
+    ".ssh",
+    ".gnupg",
+    ".config",
+    ".aws",
+    ".claude",
+    os.path.join("Library", "LaunchAgents"),
+    os.path.join("Library", "LaunchDaemons"),
+    os.path.join("Library", "Keychains"),
+)
+
+
+def validate_save_path(
+    path: str,
+    *,
+    path_label: str = "Save path",
+    sensitive_action: str = "export emails to",
+) -> Optional[str]:
+    """Return an error string when *path* is outside home or under a sensitive dir."""
+    home_dir = os.path.expanduser("~")
+    resolved = os.path.realpath(os.path.expanduser(path))
+
+    if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
+        return (
+            f"Error: {path_label} must be under your home directory ({home_dir}). "
+            f"Got: {resolved}"
+        )
+
+    for rel in SENSITIVE_DIRS:
+        sensitive_dir = os.path.join(home_dir, rel)
+        if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
+            return f"Error: Cannot {sensitive_action} sensitive directory: {sensitive_dir}"
+
+    return None
+
+
+def account_not_found_json(account: str, timeout: Optional[int] = 30) -> str:
+    """Structured JSON error for unknown account names."""
+    names = list_mail_account_names(timeout=timeout)
+    return json.dumps(
+        {
+            "error": "account_not_found",
+            "account": account,
+            "available_accounts": names,
+            "emails": [],
+        },
+        indent=2,
+    )
+
+
+def reject_unknown_account(
+    account: str,
+    *,
+    timeout: Optional[int] = None,
+    json_error: bool = False,
+) -> Optional[str]:
+    """Return an error response string when *account* is unknown, else None."""
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if not account_err:
+        return None
+    if json_error:
+        return account_not_found_json(account, timeout=validation_timeout)
+    return account_err
 
 
 def equals_any_numeric_condition(field_name: str, values: List[str]) -> str:

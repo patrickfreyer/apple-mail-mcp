@@ -48,7 +48,7 @@ The MCP server enforces conservative defaults. Confirm with the user before rais
 |-----------|-------------|---------------------------|
 | `manage_trash(action="move_to_trash")` | 5 messages | Any time `max_deletes` exceeds 20 |
 | `manage_trash(action="delete_permanent")` | 5 messages | Always — this is irreversible |
-| `manage_trash(action="empty_trash")` | hard confirm via `confirm=True` | Always |
+| `manage_trash(action="empty_trash")` | hard confirm via `confirm_empty=True` | Always |
 | `move_email` | 1 message | Any bulk move (`max_moves` > 10) |
 | `update_email_status` | 10 messages | Any bulk update (`max_updates` > 50) |
 

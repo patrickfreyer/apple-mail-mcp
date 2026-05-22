@@ -12,17 +12,98 @@ from typing import Optional, List, Tuple
 
 from apple_mail_mcp import server as _server
 from apple_mail_mcp import server  # public alias used by tests
-from apple_mail_mcp.server import mcp
+from apple_mail_mcp.server import mcp, WRITE_TOOL_ANNOTATIONS, DESTRUCTIVE_TOOL_ANNOTATIONS
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     inject_preferences,
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    validate_account_name,
+    validate_save_path,
+    normalize_message_ids,
 )
 
+DRAFT_LIST_CAP = 100
+MESSAGE_LOOKUP_CAP = 100
 
-def _resolve_account(account: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+
+def _build_found_message_lookup(
+    mailbox_var: str,
+    *,
+    message_id: Optional[str],
+    subject_keyword: Optional[str],
+    recent_days: float,
+    found_var: str = "foundMessage",
+    messages_var: str = "mailboxMessages",
+) -> Tuple[str, Optional[str]]:
+    """Build AppleScript to resolve one message by id or capped subject search."""
+    if message_id:
+        normalized = normalize_message_ids([message_id])
+        if not normalized:
+            return "", "Error: message_id must be a numeric Apple Mail message id"
+        numeric_id = normalized[0]
+        return (
+            f"""
+        set targetMessages to every message of {mailbox_var} whose id is {numeric_id}
+        set {found_var} to missing value
+        if (count of targetMessages) > 0 then
+            set {found_var} to item 1 of targetMessages
+        end if
+        """,
+            None,
+        )
+
+    safe_keyword = escape_applescript(subject_keyword or "")
+    date_setup = ""
+    whose_parts = [f'subject contains "{safe_keyword}"']
+    if recent_days > 0:
+        date_setup = (
+            f"set recentCutoffDate to (current date) - ({float(recent_days)} * days)\n        "
+        )
+        whose_parts.append("date received >= recentCutoffDate")
+
+    return (
+        f"""
+        {date_setup}set {messages_var} to items 1 thru {MESSAGE_LOOKUP_CAP} of (every message of {mailbox_var} whose {" and ".join(whose_parts)})
+        set {found_var} to missing value
+
+        repeat with aMessage in {messages_var}
+            try
+                set messageSubject to subject of aMessage
+                if messageSubject contains "{safe_keyword}" then
+                    set {found_var} to aMessage
+                    exit repeat
+                end if
+            end try
+        end repeat
+        """,
+        None,
+    )
+
+
+def _build_draft_lookup(subject_keyword: str) -> str:
+    """Build capped AppleScript to find one draft by subject keyword."""
+    safe_draft_subject = escape_applescript(subject_keyword)
+    return f"""
+                set draftMessages to items 1 thru {DRAFT_LIST_CAP} of (every message of draftsMailbox whose subject contains "{safe_draft_subject}")
+                set foundDraft to missing value
+
+                repeat with aDraft in draftMessages
+                    try
+                        set draftSubject to subject of aDraft
+                        if draftSubject contains "{safe_draft_subject}" then
+                            set foundDraft to aDraft
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+    """
+
+
+def _resolve_account(
+    account: Optional[str], timeout: Optional[int] = None
+) -> Tuple[Optional[str], Optional[str]]:
     """Resolve an account argument against ``DEFAULT_MAIL_ACCOUNT``.
 
     Returns ``(resolved_account, error_message)``. Tools call this at the top
@@ -34,8 +115,12 @@ def _resolve_account(account: Optional[str]) -> Tuple[Optional[str], Optional[st
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
         return None, (
-            "ERROR: No account specified and no DEFAULT_MAIL_ACCOUNT env var set."
+            "Error: No account specified and no DEFAULT_MAIL_ACCOUNT env var set."
         )
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return None, account_err
     return account, None
 
 
@@ -44,6 +129,47 @@ def _split_addresses(value):
     if not value:
         return []
     return [addr.strip() for addr in value.split(",") if addr and addr.strip()]
+
+
+def _build_recipient_loops(
+    cc: Optional[str],
+    bcc: Optional[str],
+    *,
+    message_var: Optional[str] = None,
+    compact: bool = False,
+    indent: str = "            ",
+    trailing_indent: Optional[str] = None,
+) -> tuple[str, str, list[str], list[str]]:
+    """Build CC/BCC AppleScript loop fragments and parsed address lists."""
+    recipients_cc = _split_addresses(cc)
+    recipients_bcc = _split_addresses(bcc)
+    of_msg = f" of {message_var}" if message_var else ""
+    trail = trailing_indent if trailing_indent is not None else indent
+
+    def _loop(kind: str, addresses: list[str]) -> str:
+        if compact:
+            script = ""
+            for addr in addresses:
+                safe_addr = escape_applescript(addr)
+                script += (
+                    f'make new {kind} recipient at end of {kind} recipients{of_msg} '
+                    f'with properties {{address:"{safe_addr}"}}\n'
+                )
+            return script
+        script = ""
+        for addr in addresses:
+            safe_addr = escape_applescript(addr)
+            script += f'''
+{indent}make new {kind} recipient at end of {kind} recipients{of_msg} with properties {{address:"{safe_addr}"}}
+{trail}'''
+        return script
+
+    return (
+        _loop("cc", recipients_cc),
+        _loop("bcc", recipients_bcc),
+        recipients_cc,
+        recipients_bcc,
+    )
 
 
 def _safe_eml_name(subject):
@@ -258,7 +384,7 @@ def _save_open_message_as_draft(subject, retries=10, delay_seconds=0.5, timeout=
     return False
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
 @inject_preferences
 def create_rich_email_draft(
     account: Optional[str] = None,
@@ -297,7 +423,7 @@ def create_rich_email_draft(
     Returns:
         Confirmation with the generated `.eml` path, missing details, and Mail-open/save status
     """
-    account, account_error = _resolve_account(account)
+    account, account_error = _resolve_account(account, timeout=timeout)
     if account_error:
         return account_error
     if not account.strip():
@@ -318,7 +444,7 @@ def create_rich_email_draft(
         )
     except AppleScriptTimeout:
         return (
-            "ERROR: AppleScript timed out while resolving sender for account "
+            "Error: AppleScript timed out while resolving sender for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
 
@@ -406,6 +532,7 @@ def _send_html_email(
     attachments_script: str = "",
     mode: str = "send",
     sender_override: Optional[str] = None,
+    timeout: Optional[int] = None,
 ) -> str:
     """Send an HTML-formatted email via NSPasteboard clipboard injection.
 
@@ -418,18 +545,10 @@ def _send_html_email(
 
     # Build recipient scripts
     to_lines = ""
-    for addr in [a.strip() for a in to.split(",") if a.strip()]:
+    for addr in _split_addresses(to):
         to_lines += f'make new to recipient at end of to recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
 
-    cc_lines = ""
-    if cc:
-        for addr in [a.strip() for a in cc.split(",") if a.strip()]:
-            cc_lines += f'make new cc recipient at end of cc recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
-
-    bcc_lines = ""
-    if bcc:
-        for addr in [a.strip() for a in bcc.split(",") if a.strip()]:
-            bcc_lines += f'make new bcc recipient at end of bcc recipients with properties {{address:"{escape_applescript(addr)}"}}\n'
+    cc_lines, bcc_lines, _, _ = _build_recipient_loops(cc, bcc, compact=True)
 
     sender_script = _compose_sender_script(
         "newMsg", f'account "{safe_account}"', sender_override
@@ -536,16 +655,9 @@ return "{success_text}"
 '''
 
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
+        output = run_applescript(
+            script, timeout=timeout if timeout is not None else 30
         )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error sending HTML email: {stderr}"
-        output = result.stdout.decode("utf-8", errors="replace").strip()
         # Build confirmation message
         confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
         if cc:
@@ -553,8 +665,15 @@ return "{success_text}"
         if bcc:
             confirm += f"\nBCC: {bcc}"
         return confirm
-    except subprocess.TimeoutExpired:
+    except AppleScriptTimeout:
         return "Error: HTML email script timed out"
+    except Exception as e:
+        err = str(e)
+        if err.startswith("AppleScript error: "):
+            err = err[len("AppleScript error: "):]
+        elif err.startswith("AppleScript execution failed: "):
+            err = err[len("AppleScript execution failed: "):]
+        return f"Error: HTML email send failed: {err}"
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
@@ -571,18 +690,6 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
         A tuple of (resolved_paths, error_message).
         If error_message is not None, resolved_paths should be ignored.
     """
-    home_dir = os.path.expanduser("~")
-    sensitive_dirs = [
-        os.path.join(home_dir, ".ssh"),
-        os.path.join(home_dir, ".gnupg"),
-        os.path.join(home_dir, ".config"),
-        os.path.join(home_dir, ".aws"),
-        os.path.join(home_dir, ".claude"),
-        os.path.join(home_dir, "Library", "LaunchAgents"),
-        os.path.join(home_dir, "Library", "LaunchDaemons"),
-        os.path.join(home_dir, "Library", "Keychains"),
-    ]
-
     resolved_paths: List[str] = []
     raw_paths = [p.strip() for p in attachments.split(",")]
 
@@ -594,20 +701,13 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
         expanded = os.path.expanduser(raw_path)
         resolved = os.path.realpath(expanded)
 
-        # Must be under the user's home directory
-        if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
-            return (
-                [],
-                f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}",
-            )
-
-        # Block sensitive directories
-        for sensitive_dir in sensitive_dirs:
-            if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
-                return (
-                    [],
-                    f"Error: Cannot attach files from sensitive directory: {sensitive_dir}",
-                )
+        path_err = validate_save_path(
+            resolved,
+            path_label="Attachment path",
+            sensitive_action="attach files from",
+        )
+        if path_err:
+            return [], path_err
 
         # File must exist
         if not os.path.isfile(resolved):
@@ -621,7 +721,7 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     return resolved_paths, None
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
 @inject_preferences
 def reply_to_email(
     account: Optional[str] = None,
@@ -635,6 +735,8 @@ def reply_to_email(
     attachments: Optional[str] = None,
     body_html: Optional[str] = None,
     from_address: Optional[str] = None,
+    message_id: Optional[str] = None,
+    recent_days: float = 2.0,
     timeout: Optional[int] = None,
 ) -> str:
     """
@@ -642,7 +744,7 @@ def reply_to_email(
 
     Args:
         account: Account name (e.g., "Gmail", "Work"). Defaults to `DEFAULT_MAIL_ACCOUNT` env var if `account` is omitted.
-        subject_keyword: Keyword to search for in email subjects
+        subject_keyword: Keyword to search for in email subjects (omit when message_id is set)
         reply_body: The body text of the reply
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
@@ -652,17 +754,29 @@ def reply_to_email(
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
-        timeout: Optional per-AppleScript timeout in seconds for the sender alias lookup. Defaults to the standard 120s.
+        message_id: Exact numeric Apple Mail message id from search tools. Preferred over subject_keyword when both are available.
+        recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
+        timeout: Optional per-AppleScript timeout in seconds. Defaults to 120s for the main reply script and up to 30s for alias validation.
 
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
     """
 
-    account, account_error = _resolve_account(account)
+    account, account_error = _resolve_account(account, timeout=timeout)
     if account_error:
         return account_error
-    if not subject_keyword:
-        return "Error: 'subject_keyword' is required"
+    if not message_id and not subject_keyword:
+        return "Error: 'subject_keyword' or 'message_id' is required"
+
+    lookup_script, lookup_error = _build_found_message_lookup(
+        "inboxMailbox",
+        message_id=message_id,
+        subject_keyword=subject_keyword or None,
+        recent_days=recent_days,
+        messages_var="inboxMessages",
+    )
+    if lookup_error:
+        return lookup_error
 
     reply_body = _strip_cdata_wrappers(reply_body) or ""
     body_html = _strip_cdata_wrappers(body_html)
@@ -673,7 +787,7 @@ def reply_to_email(
         )
     except AppleScriptTimeout:
         return (
-            "ERROR: AppleScript timed out while validating sender for account "
+            "Error: AppleScript timed out while validating sender for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
     if sender_error:
@@ -681,7 +795,12 @@ def reply_to_email(
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
-    safe_subject_keyword = escape_applescript(subject_keyword)
+    safe_subject_keyword = escape_applescript(subject_keyword) if subject_keyword else ""
+    not_found_message = (
+        f"Error: No email found for message_id={message_id}"
+        if message_id
+        else f"Error: No email found matching: {safe_subject_keyword}"
+    )
 
     # Write reply body to a temp file to avoid AppleScript string escaping
     # issues with special characters (em dashes, curly quotes, colons, etc.)
@@ -727,25 +846,9 @@ def reply_to_email(
     else:
         reply_command = "set replyMessage to reply foundMessage with opening window"
 
-    # Build CC recipients if provided
-    cc_script = ""
-    if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(",")]
-        for addr in cc_addresses:
-            safe_addr = escape_applescript(addr)
-            cc_script += f'''
-            make new cc recipient at end of cc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build BCC recipients if provided
-    bcc_script = ""
-    if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
-        for addr in bcc_addresses:
-            safe_addr = escape_applescript(addr)
-            bcc_script += f'''
-            make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
+    cc_script, bcc_script, _, _ = _build_recipient_loops(
+        cc, bcc, message_var="replyMessage"
+    )
 
     # Build attachment script if provided
     attachment_script = ""
@@ -841,20 +944,7 @@ tell application "Mail"
 
         set targetAccount to account "{safe_account}"
         {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-        set inboxMessages to every message of inboxMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in inboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
+        {lookup_script}
 
         if foundMessage is not missing value then
             set messageSubject to subject of foundMessage
@@ -910,7 +1000,7 @@ tell application "Mail"
 
     script += f"""
             else
-                set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "{not_found_message}" & return
             end if
 
             -- Clean up temp files
@@ -937,19 +1027,21 @@ tell application "Mail"
     """
 
     try:
-        # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
+        if timeout is None:
+            return run_applescript(script)
+        return run_applescript(script, timeout=timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: AppleScript timed out while replying on account "
+            f"{account!r}. Try again or pass a larger `timeout`."
         )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error in reply: {stderr}"
-        return result.stdout.decode("utf-8", errors="replace").strip()
-    except subprocess.TimeoutExpired:
-        return "Error: Reply script timed out"
+    except Exception as e:
+        err = str(e)
+        if err.startswith("AppleScript error: "):
+            err = err[len("AppleScript error: "):]
+        elif err.startswith("AppleScript execution failed: "):
+            err = err[len("AppleScript execution failed: "):]
+        return f"Error: Reply failed: {err}"
     finally:
         # Belt-and-suspenders cleanup in case AppleScript didn't run
         if os.path.exists(body_temp_path):
@@ -958,7 +1050,7 @@ tell application "Mail"
             os.unlink(html_temp_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
 @inject_preferences
 def compose_email(
     account: Optional[str] = None,
@@ -1000,7 +1092,7 @@ def compose_email(
     if blocked:
         return blocked
 
-    account, account_error = _resolve_account(account)
+    account, account_error = _resolve_account(account, timeout=timeout)
     if account_error:
         return account_error
     if not to:
@@ -1016,7 +1108,7 @@ def compose_email(
         )
     except AppleScriptTimeout:
         return (
-            "ERROR: AppleScript timed out while validating sender for account "
+            "Error: AppleScript timed out while validating sender for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
     if sender_error:
@@ -1051,6 +1143,7 @@ def compose_email(
             attachments_script=attachment_script,
             mode=mode,
             sender_override=sender_override,
+            timeout=timeout,
         )
 
     # --- Plain-text path: existing AppleScript approach ---
@@ -1060,32 +1153,18 @@ def compose_email(
 
     # Build TO recipients (split comma-separated addresses)
     to_script = ""
-    to_addresses = [addr.strip() for addr in to.split(",")]
-    for addr in to_addresses:
+    for addr in _split_addresses(to):
         safe_addr = escape_applescript(addr)
         to_script += f'''
                 make new to recipient at end of to recipients with properties {{address:"{safe_addr}"}}
         '''
 
-    # Build CC recipients if provided
-    cc_script = ""
-    if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(",")]
-        for addr in cc_addresses:
-            safe_addr = escape_applescript(addr)
-            cc_script += f'''
-                make new cc recipient at end of cc recipients with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build BCC recipients if provided
-    bcc_script = ""
-    if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
-        for addr in bcc_addresses:
-            safe_addr = escape_applescript(addr)
-            bcc_script += f'''
-                make new bcc recipient at end of bcc recipients with properties {{address:"{safe_addr}"}}
-            '''
+    cc_script, bcc_script, _, _ = _build_recipient_loops(
+        cc,
+        bcc,
+        indent="                ",
+        trailing_indent="            ",
+    )
 
     safe_to = escape_applescript(to)
     safe_cc = escape_applescript(cc) if cc else ""
@@ -1179,13 +1258,13 @@ def compose_email(
             result = run_applescript(script, timeout=timeout)
     except AppleScriptTimeout:
         return (
-            f"ERROR: AppleScript timed out while composing email for account "
+            f"Error: AppleScript timed out while composing email for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
 @inject_preferences
 def forward_email(
     account: Optional[str] = None,
@@ -1197,6 +1276,8 @@ def forward_email(
     bcc: Optional[str] = None,
     from_address: Optional[str] = None,
     mode: str = "draft",
+    message_id: Optional[str] = None,
+    recent_days: float = 2.0,
     timeout: Optional[int] = None,
 ) -> str:
     """
@@ -1204,7 +1285,7 @@ def forward_email(
 
     Args:
         account: Account name (e.g., "Gmail", "Work"). Defaults to `DEFAULT_MAIL_ACCOUNT` env var if `account` is omitted.
-        subject_keyword: Keyword to search for in email subjects
+        subject_keyword: Keyword to search for in email subjects (omit when message_id is set)
         to: Recipient email address(es), comma-separated for multiple
         message: Optional message to add before forwarded content
         mailbox: Mailbox to search in (default: "INBOX")
@@ -1212,19 +1293,30 @@ def forward_email(
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
         mode: Delivery mode — "draft" (default, save silently), "open" (open compose window for review), or "send" (send immediately)
+        message_id: Exact numeric Apple Mail message id from search tools. Preferred over subject_keyword when both are available.
+        recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
 
     Returns:
         Confirmation message with details of forwarded email
     """
 
-    account, account_error = _resolve_account(account)
+    account, account_error = _resolve_account(account, timeout=timeout)
     if account_error:
         return account_error
-    if not subject_keyword:
-        return "Error: 'subject_keyword' is required"
+    if not message_id and not subject_keyword:
+        return "Error: 'subject_keyword' or 'message_id' is required"
     if not to:
         return "Error: 'to' is required"
+
+    lookup_script, lookup_error = _build_found_message_lookup(
+        "targetMailbox",
+        message_id=message_id,
+        subject_keyword=subject_keyword or None,
+        recent_days=recent_days,
+    )
+    if lookup_error:
+        return lookup_error
 
     message = _strip_cdata_wrappers(message)
 
@@ -1241,7 +1333,7 @@ def forward_email(
         )
     except AppleScriptTimeout:
         return (
-            "ERROR: AppleScript timed out while validating sender for account "
+            "Error: AppleScript timed out while validating sender for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
     if sender_error:
@@ -1249,42 +1341,30 @@ def forward_email(
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
-    safe_subject_keyword = escape_applescript(subject_keyword)
+    safe_subject_keyword = escape_applescript(subject_keyword) if subject_keyword else ""
     safe_to = escape_applescript(to)
     safe_mailbox = escape_applescript(mailbox)
     escaped_message = escape_applescript(message) if message else ""
+    not_found_message = (
+        f"Error: No email found for message_id={message_id}"
+        if message_id
+        else f"Error: No email found matching: {safe_subject_keyword}"
+    )
 
     sender_script = _compose_sender_script(
         "forwardMessage", "targetAccount", sender_override
     )
 
-    # Build CC recipients if provided
-    cc_script = ""
-    if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(",")]
-        for addr in cc_addresses:
-            safe_addr = escape_applescript(addr)
-            cc_script += f'''
-            make new cc recipient at end of cc recipients of forwardMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build BCC recipients if provided
-    bcc_script = ""
-    if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
-        for addr in bcc_addresses:
-            safe_addr = escape_applescript(addr)
-            bcc_script += f'''
-            make new bcc recipient at end of bcc recipients of forwardMessage with properties {{address:"{safe_addr}"}}
-            '''
+    cc_script, bcc_script, _, _ = _build_recipient_loops(
+        cc, bcc, message_var="forwardMessage"
+    )
 
     safe_cc = escape_applescript(cc) if cc else ""
     safe_bcc = escape_applescript(bcc) if bcc else ""
 
     # Build TO recipients (split comma-separated)
     to_script = ""
-    to_addresses = [addr.strip() for addr in to.split(",")]
-    for addr in to_addresses:
+    for addr in _split_addresses(to):
         safe_addr = escape_applescript(addr)
         to_script += f'''
                 make new to recipient at end of to recipients of forwardMessage with properties {{address:"{safe_addr}"}}
@@ -1372,20 +1452,7 @@ tell application "Mail"
             end if
         end try
 
-        set mailboxMessages to every message of targetMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in mailboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
+        {lookup_script}
 
         if foundMessage is not missing value then
             set messageSubject to subject of foundMessage
@@ -1430,7 +1497,7 @@ tell application "Mail"
 
     script += f"""
             else
-                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "{not_found_message}" & return
             end if
 
         on error errMsg
@@ -1445,35 +1512,29 @@ tell application "Mail"
     """
 
     try:
-        if message:
-            # Use osascript directly for AppleScriptObjC (use framework) support
-            result = subprocess.run(
-                ["osascript", "-"],
-                input=script.encode("utf-8"),
-                capture_output=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                stderr = result.stderr.decode("utf-8", errors="replace").strip()
-                return f"Error forwarding email: {stderr}"
-            return result.stdout.decode("utf-8", errors="replace").strip()
-        else:
-            if timeout is None:
-                return run_applescript(script)
-            return run_applescript(script, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "Error: Forward script timed out"
+        if timeout is None:
+            return run_applescript(script)
+        return run_applescript(script, timeout=timeout)
     except AppleScriptTimeout:
         return (
-            f"ERROR: AppleScript timed out while forwarding email for account "
+            f"Error: AppleScript timed out while forwarding email for account "
             f"{account!r}. Try again or pass a larger `timeout`."
         )
+    except Exception as e:
+        if not message:
+            raise
+        err = str(e)
+        if err.startswith("AppleScript error: "):
+            err = err[len("AppleScript error: "):]
+        elif err.startswith("AppleScript execution failed: "):
+            err = err[len("AppleScript execution failed: "):]
+        return f"Error: Forward failed: {err}"
     finally:
         if fwd_html_temp_path and os.path.exists(fwd_html_temp_path):
             os.unlink(fwd_html_temp_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE_TOOL_ANNOTATIONS)
 @inject_preferences
 def manage_drafts(
     account: Optional[str] = None,
@@ -1506,7 +1567,7 @@ def manage_drafts(
         Formatted output based on action
     """
 
-    account, account_error = _resolve_account(account)
+    account, account_error = _resolve_account(account, timeout=timeout)
     if account_error:
         return account_error
 
@@ -1523,7 +1584,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
+                set draftMessages to messages 1 thru {DRAFT_LIST_CAP} of draftsMailbox
                 set draftCount to count of draftMessages
 
                 set outputText to outputText & "Found " & draftCount & " draft(s)" & return & return
@@ -1556,7 +1617,7 @@ def manage_drafts(
             )
         except AppleScriptTimeout:
             return (
-                "ERROR: AppleScript timed out while validating sender for account "
+                "Error: AppleScript timed out while validating sender for account "
                 f"{account!r}. Try again or pass a larger `timeout`."
             )
         if sender_error:
@@ -1650,20 +1711,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {_build_draft_lookup(draft_subject)}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1699,20 +1747,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {_build_draft_lookup(draft_subject)}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1750,20 +1785,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {_build_draft_lookup(draft_subject)}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1798,7 +1820,7 @@ def manage_drafts(
             result = run_applescript(script, timeout=timeout)
     except AppleScriptTimeout:
         return (
-            f"ERROR: AppleScript timed out for manage_drafts action {action!r} on "
+            f"Error: AppleScript timed out for manage_drafts action {action!r} on "
             f"account {account!r}. Try again or pass a larger `timeout`."
         )
     return result

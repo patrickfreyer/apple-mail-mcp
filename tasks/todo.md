@@ -4,31 +4,29 @@ This is the cross-session source of truth for "what's next" on this plugin. In-c
 
 **Convention:** group by phase / PR target. Each item is a single line with enough context that a future session can pick it up cold. Reference file paths and line numbers when known. If an item grew into a real plan, drop a link to the workstream folder under `tasks/<dated-workstream>/`.
 
+**Phase plan (concise):** [`phase-plan-3.1.6.md`](phase-plan-3.1.6.md) · **Full audit:** [`plugin-audit-and-action-plan-2026-05-21.md`](plugin-audit-and-action-plan-2026-05-21.md) · **Plan review status:** [`plan-review-status-2026-05-21.md`](plan-review-status-2026-05-21.md)
+
 ---
 
 ## In flight
 
-- [ ] **Restore shared-agent safety flag compatibility** — current shared OpenClaw/mcporter configs pass `--draft-safe`, but this branch only accepts `--read-only`. Re-add `--draft-safe` as a supported server flag and make send-capable tools draft/open-only when enabled. Live check on 2026-05-21: `python plugin/apple_mail_mcp.py --draft-safe` exits with "unrecognized arguments".
-- [ ] **Add/restore repo-owned portable CLI** — include a maintained `apple-mail` console script in the Python package, not only the generated local mcporter wrapper under `~/.local/share/apple-mail-cli/`. Commands should cover safe account/mailbox/search/draft workflows and be copyable to another Mac via repo clone + editable install.
-- [ ] **Add `apple-mail smoke-test` CLI command** — safe live mailbox test: list accounts, account addresses, unread summary, no-hit search, limited inbox listing, dry-run trash/move previews, and draft-safe send-block verification. Redact subjects/senders by default unless `--verbose` is passed.
-- [ ] **Add `apple-mail perf-test` CLI command** — time core live tools and emit JSON/markdown with durations, result counts, and redacted samples. Include thresholds for metadata (<2s), no-hit search (<3s), limited inbox read (<5s target), dry-run no-hit destructive previews (<5s target), and dashboard overview (<10s target).
-- [ ] **Make coding-agent live testing first-class** — document exact setup for Claude/Codex/OpenClaw agents to use the repo checkout against real Mail.app: config snippet, required macOS Automation/Mail permissions, draft-safe default, and safe command examples.
+- [x] **Make coding-agent live testing first-class** — `docs/AGENT_LIVE_TESTING.md`: setup, permissions, all CLI commands, perf/smoke batteries, post-edit workflow (quick-check → perf-test full).
 - [ ] **Keep one shared tool path across agents** — ensure Claude, OpenClaw, mcporter, and local CLI all point at the same repo checkout and server entrypoint so fixes land once and every agent uses the same implementation.
 
 ## PR 3.1.6 — live performance fixes from mailbox testing
 
 Observed on 2026-05-21 using `ai.openclaw` via both the repo-owned `.venv/bin/apple-mail` CLI and the generated shared `apple-mail` wrapper. Basic metadata/search/dry-run paths are now fast; remaining risk is concentrated in cross-account dashboards, invalid-account handling, and analysis tools.
 
-- [ ] **Fix `inbox_dashboard` timeout** — live `apple-mail -o json inbox-dashboard` hit a 40s wrapper timeout. It calls `get_mailbox_unread_counts(summary_only=True)` and `_get_recent_emails_structured(max_total=20, max_per_account=10)` across every account, including content previews. Make it async/per-account, add account/max/preview flags, and default to metadata-only previews.
-- [ ] **Return clean errors for unknown accounts** — live generated wrapper `list-inbox-emails --account NO_SUCH_ACCOUNT_APPLE_MAIL_CLI_SMOKE` timed out at 40s, while repo CLI returned empty success after ~12s. Validate requested account names up front and return structured `account_not_found` instead of asking Mail for a missing account.
-- [ ] **Optimize `get_inbox_overview` payload and options** — live wrapper overview returned in ~10s with an 8.7KB text payload. Add compact/JSON modes, account scoping, mailbox count toggles, and recent preview limits so agents can request only the needed sections.
-- [ ] **Optimize analysis tools** — live wrapper timings: `get_needs_response --days-back 2 --max-results 3` ~14s, `get_awaiting_reply --days-back 2 --max-results 3` ~6s, `get_top_senders --days-back 2 --top-n 3` ~6s, `get_statistics --scope account_overview --days-back 2` ~23s. Push more filtering/caps into AppleScript before property extraction and add optional timing metadata.
-- [ ] **Expand repo-owned CLI coverage** — current maintained CLI covers accounts, addresses, inbox, search, show, mailboxes, draft, mcp-config, and smoke-test. Add safe wrappers for unread counts, overview, needs-response, top-senders, statistics, dry-run move/trash, attachment lookup, and draft listing so agents can avoid the generated wrapper for most testing.
+- [x] **Fix `inbox_dashboard` timeout** — async per-account recent fetch; `include_preview=False` default; skip `content of aMessage` unless requested.
+- [x] **Return clean errors for unknown accounts** — `validate_account_name()` wired across account-scoped tools (manage, analytics, smart_inbox, compose, search, inbox).
+- [x] **Optimize `get_inbox_overview` payload and options** — `compact` / `json` modes; toggles for mailboxes, recent preview, suggestions; optional account scoping.
+- [x] **Optimize analysis tools** — removed unfiltered `every message of` fallbacks in `smart_inbox.py`; sent scan uses `messages 1 thru N`.
+- [x] **Expand repo-owned CLI coverage** — `unread`, `overview`, `needs-response`, `awaiting-reply`, `top-senders`, `statistics`, `move-dry-run`, `trash-dry-run`, `drafts list`; `perf-test`/`quick-check` with `bad_account`, `dashboard_metadata`, `--verbose-sensitive`; smoke-test `invalid_account` + `draft_safe_send_block`. See `docs/AGENT_LIVE_TESTING.md`.
 - [ ] **Normalize generated wrapper JSON shape** — some wrapper tools return direct JSON arrays/dicts, while others wrap strings under `content`/`structuredContent.result`. Prefer structured dict/list returns from the Python tools so `mcporter` emits predictable JSON for automation.
-- [ ] **Add timing telemetry to tool responses** — optional `include_timing: bool = False` or debug env var that returns AppleScript duration, parse duration, account count, scanned count, returned count, and timeout budget without leaking email content.
+- [ ] **Add timing telemetry to tool responses** — optional `include_timing: bool = False` or debug env var (Phase B / `perf-test`; deferred from Phase A — not yet implemented).
 - [ ] **Add exact-id action paths for destructive tools** — prefer `message_ids` for `move_email`, `manage_trash`, attachment save/list, and status updates so agents can search first, inspect IDs, then act precisely without rescanning broad filters.
 - [ ] **Add redacted benchmark fixtures/tests** — unit-test that performance-oriented AppleScript includes `whose` date/read/sender filters and `items 1 thru N` caps before property extraction. Keep live perf tests opt-in because they require Mail.app.
-- [ ] **Investigate hybrid SQLite read path** — if Apple Events remain too slow for matching result extraction, prototype read-only search/list/statistics against Mail's Envelope Index with macOS-version detection and a clean fallback to AppleScript.
+- [ ] **Investigate hybrid SQLite read path** — **do not start until dashboard/account validation/analysis caps are fixed and benchmarked** (Phases A/B/2). Prototype read-only search/list/statistics against Mail's Envelope Index behind a feature flag; schema is undocumented.
 
 ---
 
@@ -36,10 +34,10 @@ Observed on 2026-05-21 using `ai.openclaw` via both the repo-owned `.venv/bin/ap
 
 From the 3.1.5 audit. Conservative scope only.
 
-- [ ] **Move `SENSITIVE_DIRS` blocklist into `core.py`** — duplicated between `tools/compose.py` (~lines 517–526) and `tools/analytics.py` (~lines 423, 430). Add `core.SENSITIVE_DIRS` constant and `core.validate_save_path(path) -> Optional[str]` helper.
+- [x] **Move `SENSITIVE_DIRS` blocklist into `core.py`** — `core.SENSITIVE_DIRS` + `validate_save_path()`; compose + analytics use shared helper.
 - [ ] **Consolidate `_split_addresses`** in `compose.py` — three near-identical implementations across `compose_email` / `reply_to_email` / `forward_email` (lines 22–26, 270–271, 363–374). Move to a single module-level helper.
 - [ ] **Extract CC/BCC recipient-loop builder** in `compose.py` — four copies (lines 659–674, 986–991, 1131–1146, plus `_send_html_email`). One helper returning `(cc_script, bcc_script, safe_cc, safe_bcc)`.
-- [ ] **`start_mcp.sh` — require Python 3.10+** — currently checks `python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,7) else 1)"`. Bump to 3.10 and verify `fastmcp` imports successfully (not just that venv dir exists). Fixes a confusing failure mode for users on 3.7–3.9.
+- [ ] **`start_mcp.sh` — require Python 3.10+** — ~~currently checks 3.7~~ **done on branch** (`start_mcp.sh` now gates 3.10+). Remaining: verify `fastmcp` imports successfully after venv create.
 - [ ] **Align `fastmcp` pin** — `plugin/requirements.txt` says `==3.1.0`, `pyproject.toml` says `>=3.1.0`. Align both to `>=3.1.0,<4`.
 - [ ] **Replace `except: pass` swallows** in `analytics.py` (line ~334, ~620), `smart_inbox.py` (~227, ~334, ~573), `manage.py` (~227), `compose.py` (~72). Collect failed subjects/accounts into an `errors` list returned in the response.
 - [ ] **Route compose.py direct `subprocess.run` osascript calls through `run_applescript()`** — `_send_html_email` and the reply/forward fast paths bypass timeout/error standardization. Two call sites; preserve `use framework` directives.
@@ -47,7 +45,9 @@ From the 3.1.5 audit. Conservative scope only.
 
 ## PR 3.1.6 — validator follow-ups (small)
 
-- [ ] **Add CI guard for manifest drift** — `tools/validate_manifests.sh` that asserts: (a) versions match across 5 files, (b) tool count claim matches `@mcp.tool` grep, (c) mcpb `tools[]` array entries match the registered tool names. Run as pre-commit.
+- [x] **Add CI guard for manifest drift** — `tools/validate_manifests.sh` + `tools/validate_manifests.py`; `.github/workflows/ci.yml` (mocked pytest only).
+- [x] **Fix stale Python 3.7 references** — `CLAUDE.md` and `apple-mail-mcpb/build-mcpb.sh` embedded README now say 3.10+ (launcher gates 3.10+).
+- [x] **Clean audit hotspot table** — removed resolved `move_email --dry-run` ~61s row from audit critical hotspots (live ~0.61s).
 - [ ] **Top-level marketplace `metadata.version`** — either remove it (it's optional) or document in CLAUDE.md that "1.0.0" describes the marketplace manifest itself and isn't tied to the plugin version. Currently it just looks like a forgotten release.
 - [ ] **`apple-mail-mcpb/manifest.json` `dxt_version`** — currently `0.1`. Latest mcpb spec is `0.2`. Verify against the `apple-mail-mcpb/build-mcpb.sh` mcpb CLI and bump if validation passes.
 
@@ -69,7 +69,7 @@ Each new skill must pass `plugin-dev:skill-reviewer` on the frontmatter before m
 
 Things that would be real wins but aren't scoped yet.
 
-- [ ] **Hybrid SQLite read-path** — Mail.app keeps an Envelope Index at `~/Library/Mail/V*/MailData/Envelope Index`. For read-only operations (search, list, statistics) we could query that directly and skip Apple Events entirely. Order-of-magnitude faster on large mailboxes. Risk: schema isn't documented and changes between macOS releases.
+- [ ] **Hybrid SQLite read-path** — Mail.app keeps an Envelope Index at `~/Library/Mail/V*/MailData/Envelope Index`. **Deferred:** do not implement in 3.1.6 unless AppleScript paths remain too slow after Phases A/B/2 are benchmarked. Feature-flag any spike; schema changes between macOS releases.
 - [ ] **`plugin/venv/` location reconsideration** — validator confirmed current placement is fine, but: (a) `start_mcp.sh` should verify the venv has `fastmcp` importable (not just that the directory exists), (b) consider documenting the ~108 MB footprint in README's install section.
 - [ ] **`plugin-dev:plugin-validator` periodic gate** — run as a pre-commit or CI step on every change to `plugin.json`, `marketplace.json`, `manifest.json`, or `tools/*.py`. Catches the kind of count-drift we hit in 3.1.5.
 - [ ] **`server.json` ↔ PyPI publishing** — `server.json` is set up for MCP registry submission but we never submit. If we do, gate on version bump.
@@ -79,16 +79,19 @@ Things that would be real wins but aren't scoped yet.
 
 ## Maintenance reminders
 
-- After any change to `tools/*.py`: run `.venv/bin/pytest tests/ -q`. Target stays ≥ 97 passing.
-- After any change to manifests, command/skill frontmatter, or directory layout: run `plugin-dev:plugin-validator`. Blocking-on-pass before declaring done.
-- After any change to a skill body or `description`: run `plugin-dev:skill-reviewer` specifically on the frontmatter.
+- After any change to `tools/*.py`: run `.venv/bin/pytest tests/ -q`. Target stays ≥ 146 passing.
+- After any change to manifests, command/skill frontmatter, or directory layout: run `plugin-dev:plugin-validator`. **If unavailable:** run `rg '^@mcp\.tool' plugin/apple_mail_mcp/tools/*.py | wc -l` (expect 27), version grep across five files, and document the missing validator in the PR. Blocking before declaring done when the agent is available.
+- After any change to a skill body or `description`: run `plugin-dev:skill-reviewer` on the frontmatter — same fallback if unavailable.
 - After bumping a version: run `grep -rn "3\.1\." pyproject.toml server.json plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json apple-mail-mcpb/manifest.json` and confirm five hits at the new version.
 
 ---
 
 ## Done (recent — keep last 10, prune older)
 
-- [x] 3.1.5: Modernize `smart_inbox.py`, `manage.py`, `analytics.py`, `compose.py` (DEFAULT_MAIL_ACCOUNT, whose+cap, ignoring case, AppleScriptTimeout, timeout param).
+- [x] 3.1.6 Phase 0: mcpb `get_email_by_id` + 27-tool count sync; SKILL.md `confirm_empty=True`; account validation helper.
+- [x] 3.1.6 Phase A (core): async `inbox_dashboard`, overview compact/json modes, smart_inbox fallback hardening, `tests/test_phase_a_fixes.py`.
+- [x] 3.1.6 Phase B: full agent CLI (`cli.py`), `tests/test_cli.py` + `tests/test_cli_perf.py`, `docs/AGENT_LIVE_TESTING.md` (146 tests total).
+- [x] `--draft-safe` flag + repo `apple-mail` CLI + `smoke-test` (already on branch before Phase 0).
 - [x] 3.1.5: Delete `LOWERCASE_HANDLER` from `core.py` — last caller migrated.
 - [x] 3.1.5: Tests 75 → 97 (added `tests/test_modernization_3_1_5.py`).
 - [x] 3.1.5: Rebuild mcpb `tools[]` array from real registry; fix count claim 27 → 26 in three manifests.

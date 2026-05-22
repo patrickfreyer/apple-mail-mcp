@@ -55,8 +55,8 @@ def main():
     server.DRAFT_SAFE = args.draft_safe or args.read_only
 
     from apple_mail_mcp import mcp  # noqa: E402
+    from apple_mail_mcp.server import SEND_TOOLS
 
-    SEND_TOOLS = ["compose_email", "reply_to_email", "forward_email"]
     if args.read_only:
         for name in SEND_TOOLS:
             try:

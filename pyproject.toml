@@ -36,7 +36,7 @@ classifiers = [
     "Topic :: Communications :: Email",
 ]
 dependencies = [
-    "fastmcp>=3.1.0",
+    "fastmcp>=3.1.0,<4",
 ]
 
 [project.scripts]

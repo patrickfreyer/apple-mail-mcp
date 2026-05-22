@@ -3,7 +3,7 @@
 from typing import Optional
 
 from apple_mail_mcp import server as _server
-from apple_mail_mcp.server import mcp
+from apple_mail_mcp.server import mcp, READ_ONLY_TOOL_ANNOTATIONS
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
     inject_preferences,
@@ -11,6 +11,7 @@ from apple_mail_mcp.core import (
     run_applescript,
     inbox_mailbox_script,
     date_cutoff_script,
+    validate_account_name,
 )
 from apple_mail_mcp.constants import (
     NEWSLETTER_PLATFORM_PATTERNS,
@@ -68,7 +69,7 @@ def _newsletter_filter_condition(sender_var: str = "messageSender") -> str:
     return f"({platform_checks} or {keyword_checks})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_awaiting_reply(
     account: Optional[str] = None,
@@ -98,6 +99,11 @@ def get_awaiting_reply(
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
         return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
 
     escaped_account = escape_applescript(account)
 
@@ -164,7 +170,7 @@ def get_awaiting_reply(
             try
                 set inboxMessages to (every message of inboxMailbox {inbox_whose})
             on error
-                set inboxMessages to every message of inboxMailbox
+                set inboxMessages to {{}}
             end try
             if (count of inboxMessages) > {inbox_cap} then
                 set inboxMessages to items 1 thru {inbox_cap} of inboxMessages
@@ -184,7 +190,7 @@ def get_awaiting_reply(
             try
                 set sentMessages to (every message of sentMailbox {sent_whose})
             on error
-                set sentMessages to every message of sentMailbox
+                set sentMessages to {{}}
             end try
             if (count of sentMessages) > {sent_cap} then
                 set sentMessages to items 1 thru {sent_cap} of sentMessages
@@ -272,7 +278,7 @@ def get_awaiting_reply(
         )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_needs_response(
     account: Optional[str] = None,
@@ -302,6 +308,11 @@ def get_needs_response(
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
         return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
 
     escaped_account = escape_applescript(account)
     escaped_mailbox = escape_applescript(mailbox)
@@ -357,9 +368,10 @@ def get_needs_response(
             end try
 
             if sentMailbox is not missing value then
-                set sentMessages to every message of sentMailbox
-                if (count of sentMessages) > {sent_cap} then
-                    set sentMessages to items 1 thru {sent_cap} of sentMessages
+                if (count of messages of sentMailbox) > {sent_cap} then
+                    set sentMessages to messages 1 thru {sent_cap} of sentMailbox
+                else
+                    set sentMessages to messages of sentMailbox
                 end if
                 repeat with aMessage in sentMessages
                     try
@@ -375,7 +387,7 @@ def get_needs_response(
             try
                 set mailboxMessages to (every message of targetMailbox {unread_whose})
             on error
-                set mailboxMessages to every message of targetMailbox
+                set mailboxMessages to {{}}
             end try
             if (count of mailboxMessages) > {inbox_cap} then
                 set mailboxMessages to items 1 thru {inbox_cap} of mailboxMessages
@@ -503,7 +515,7 @@ def get_needs_response(
         )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 @inject_preferences
 def get_top_senders(
     account: Optional[str] = None,
@@ -534,6 +546,11 @@ def get_top_senders(
         account = _server.DEFAULT_MAIL_ACCOUNT
     if not account:
         return "Error: No account specified and DEFAULT_MAIL_ACCOUNT is not set"
+
+    validation_timeout = 30 if timeout is None else min(timeout, 30)
+    account_err = validate_account_name(account, timeout=validation_timeout)
+    if account_err:
+        return account_err
 
     escaped_account = escape_applescript(account)
     escaped_mailbox = escape_applescript(mailbox)
@@ -618,7 +635,7 @@ def get_top_senders(
             try
                 set mailboxMessages to (every message of targetMailbox {scan_whose})
             on error
-                set mailboxMessages to every message of targetMailbox
+                set mailboxMessages to {{}}
             end try
             if (count of mailboxMessages) > {scan_cap} then
                 set mailboxMessages to items 1 thru {scan_cap} of mailboxMessages

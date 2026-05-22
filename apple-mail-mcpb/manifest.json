@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
   "version": "3.1.5",
-  "description": "Natural language interface for Apple Mail with 26 tools — email search, composition, bulk operations, smart inbox analytics, folder management, and security-hardened destructive operations. Includes Email Management Expert Skill and Interactive UI Dashboard.",
+  "description": "Natural language interface for Apple Mail with 27 tools — email search, composition, bulk operations, smart inbox analytics, folder management, and security-hardened destructive operations. Includes Email Management Expert Skill and Interactive UI Dashboard.",
   "author": {
     "name": "Patrick Freyer"
   },
@@ -103,6 +103,10 @@
     {
       "name": "search_emails",
       "description": "Unified email search across 16 filter parameters: subject, body, sender, date range, attachments, flagged, newsletter detection, threads. Defaults to last 48 hours and the default account (DEFAULT_MAIL_ACCOUNT). Pass recent_days=0 for full-inbox sweeps, all_accounts=True to override default account."
+    },
+    {
+      "name": "get_email_by_id",
+      "description": "Fetch one exact email by the Apple Mail message id returned from search results. Use after search_emails when you need full body or stable metadata without another broad subject search."
     },
     {
       "name": "get_email_thread",

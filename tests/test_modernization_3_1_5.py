@@ -198,9 +198,8 @@ class DefaultAccountFallbackTests(unittest.TestCase):
 
     # --- compose ---
     #
-    # compose_email and forward_email (no message) and manage_drafts route
-    # through run_applescript; reply_to_email uses subprocess.run directly
-    # because it needs AppleScriptObjC (use framework) for clipboard injection.
+    # compose_email, reply_to_email, forward_email, and manage_drafts route
+    # through run_applescript (including AppleScriptObjC use-framework paths).
     # We assert resolution via the script that DOES get captured.
 
     def test_compose_email_uses_default_account(self):
@@ -218,28 +217,14 @@ class DefaultAccountFallbackTests(unittest.TestCase):
         self.assertIn(f'account "{self.ACCOUNT}"', cap.last_script)
 
     def test_reply_to_email_uses_default_account(self):
-        # reply_to_email shells out to osascript; mock subprocess.run instead.
-        captured = {}
-
-        def fake_subprocess_run(cmd, input=None, capture_output=False, timeout=None):
-            captured["input"] = input
-            result = subprocess.CompletedProcess(args=cmd, returncode=0)
-            result.stdout = b"Reply sent successfully!"
-            result.stderr = b""
-            return result
-
-        with patch(
-            "apple_mail_mcp.tools.compose.subprocess.run",
-            side_effect=fake_subprocess_run,
-        ):
+        cap = _ScriptCapture(return_value="Reply sent successfully!")
+        with patch("apple_mail_mcp.tools.compose.run_applescript", side_effect=cap):
             result = compose_tools.reply_to_email(
                 subject_keyword="Foo",
                 reply_body="hi",
             )
         self.assertNotIn("No account specified", result)
-        self.assertIn(
-            f'account "{self.ACCOUNT}"', captured["input"].decode("utf-8")
-        )
+        self.assertIn(f'account "{self.ACCOUNT}"', cap.last_script)
 
     def test_forward_email_uses_default_account(self):
         # No `message` arg -> goes through run_applescript path.

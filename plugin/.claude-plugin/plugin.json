@@ -9,6 +9,18 @@
     "name": "Patrick Freyer",
     "email": "freyer.patrick@bcg.com"
   },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "apple-mail",
+    "email",
+    "ai",
+    "claude",
+    "automation",
+    "macos",
+    "applescript"
+  ],
+  "category": "productivity",
   "commands": [
     "./commands/"
   ],
