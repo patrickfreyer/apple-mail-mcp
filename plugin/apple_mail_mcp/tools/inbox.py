@@ -161,7 +161,7 @@ def _build_list_inbox_text_script(
 
 
 def _build_list_inbox_json_script(
-    account: str, max_emails: int, include_read: bool
+    account: str, max_emails: int, include_read: bool, include_content: bool = False
 ) -> str:
     """Build a JSON-format inbox script for one account."""
     escaped_account = escape_applescript(account)
@@ -191,6 +191,26 @@ def _build_list_inbox_json_script(
         else:
             collection = 'set inboxMessages to messages of inboxMailbox'
 
+    if include_content:
+        content_field = (
+            "set contentPreview to \"\"\n"
+            "                    try\n"
+            "                        set msgContent to content of aMessage\n"
+            "                        set AppleScript's text item delimiters to {return, linefeed, tab}\n"
+            "                        set contentParts to text items of msgContent\n"
+            "                        set AppleScript's text item delimiters to \" \"\n"
+            "                        set contentPreview to contentParts as string\n"
+            "                        set AppleScript's text item delimiters to \"\"\n"
+            "                        if length of contentPreview > 200 then\n"
+            "                            set contentPreview to text 1 thru 200 of contentPreview\n"
+            "                        end if\n"
+            "                    end try"
+        )
+        content_suffix = ' & "|||" & contentPreview'
+    else:
+        content_field = ""
+        content_suffix = ""
+
     return f"""
     tell application "Mail"
         set resultLines to {{}}
@@ -208,7 +228,8 @@ def _build_list_inbox_json_script(
                     set messageSender to sender of aMessage
                     set messageDate to date received of aMessage
                     set messageRead to read status of aMessage
-                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName
+                    {content_field}
+                    set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName{content_suffix}
                 end try
             end repeat
         end try
@@ -396,10 +417,19 @@ def _run_json_one(
     account: str,
     max_emails: int,
     include_read: bool,
-    timeout: Optional[int],
+    include_content: bool | int | None = False,
+    timeout: Optional[int] = None,
 ) -> str:
     """Synchronously run one account's JSON inbox script."""
-    script = _build_list_inbox_json_script(account, max_emails, include_read)
+    # Backward compatibility for older call sites that passed
+    # (account, max_emails, include_read, timeout) before content previews
+    # were added to the JSON path.
+    if timeout is None and type(include_content) is not bool:
+        timeout = include_content
+        include_content = False
+    script = _build_list_inbox_json_script(
+        account, max_emails, include_read, bool(include_content)
+    )
     return run_applescript(script, timeout=timeout if timeout is not None else 120)
 
 
@@ -410,20 +440,23 @@ async def _list_inbox_emails_json(
     include_content: bool,
     timeout: Optional[int],
 ) -> str:
-    """Return inbox emails as a JSON string. Always returns an object with
-    `emails` and (optionally) `errors` keys so callers can detect partial
-    multi-account responses."""
-    # include_content is accepted but not surfaced in JSON (matches prior
-    # behavior — JSON format historically omits content previews).
-    _ = include_content
+    """Return inbox emails as a JSON string. When include_content is True,
+    each record gains a `content_preview` field. Always returns an object
+    with `emails` and (optionally) `errors` keys so callers can detect
+    partial multi-account responses."""
 
     if account:
         try:
             raw = await asyncio.to_thread(
-                _run_json_one, account, max_emails, include_read, timeout
+                _run_json_one,
+                account,
+                max_emails,
+                include_read,
+                include_content,
+                timeout,
             )
             emails = _parse_pipe_delimited_emails(raw)
-            return json.dumps({"emails": emails}, indent=2)
+            return json.dumps(emails, indent=2)
         except AppleScriptTimeout:
             return json.dumps({"emails": [], "errors": [account]}, indent=2)
 
@@ -438,7 +471,12 @@ async def _list_inbox_emails_json(
     async def run_one(acct: str):
         try:
             return acct, await asyncio.to_thread(
-                _run_json_one, acct, max_emails, include_read, timeout
+                _run_json_one,
+                acct,
+                max_emails,
+                include_read,
+                include_content,
+                timeout,
             )
         except AppleScriptTimeout:
             return acct, AppleScriptTimeout(acct)

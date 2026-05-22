@@ -112,8 +112,10 @@ class DefaultAccountFallbackTests(unittest.TestCase):
     # --- manage ---
 
     def test_move_email_uses_default_account(self):
+        # move_email dry-run now delegates to the search helper, so we capture
+        # the script at search.run_applescript (the underlying invocation).
         cap = _ScriptCapture(return_value="ok")
-        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=cap):
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=cap):
             result = manage_tools.move_email(
                 to_mailbox="Archive",
                 subject_keyword="Promo",
@@ -134,8 +136,9 @@ class DefaultAccountFallbackTests(unittest.TestCase):
         self.assertIn(f'account "{self.ACCOUNT}"', cap.last_script)
 
     def test_manage_trash_uses_default_account(self):
+        # manage_trash dry-run now delegates to the search helper.
         cap = _ScriptCapture(return_value="ok")
-        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=cap):
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=cap):
             result = manage_tools.manage_trash(
                 action="move_to_trash",
                 subject_keyword="Promo",
@@ -155,8 +158,14 @@ class DefaultAccountFallbackTests(unittest.TestCase):
     # --- analytics ---
 
     def test_list_email_attachments_uses_default_account(self):
+        # list_email_attachments now runs a preflight via the search helper
+        # before invoking analytics.run_applescript. Patch both so the
+        # preflight returns a hit and we capture the analytics-side script.
         cap = _ScriptCapture(return_value="ok")
         with patch(
+            "apple_mail_mcp.tools.analytics._search_mail_records",
+            return_value=[{"subject": "Invoice"}],
+        ), patch(
             "apple_mail_mcp.tools.analytics.run_applescript", side_effect=cap
         ):
             result = analytics_tools.list_email_attachments(
@@ -269,8 +278,10 @@ class WhoseAndCapTests(unittest.TestCase):
         self.assertIn("items 1 thru", script)
 
     def test_manage_move_email_emits_whose_and_cap(self):
+        # Dry-run move_email delegates to the search helper; capture the
+        # script there. The search helper builds the same whose+cap shape.
         cap = _ScriptCapture(return_value="ok")
-        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=cap):
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=cap):
             manage_tools.move_email(
                 account="X",
                 to_mailbox="Archive",
@@ -280,7 +291,10 @@ class WhoseAndCapTests(unittest.TestCase):
             )
         script = cap.last_script
         self.assertIn("whose", script)
-        self.assertIn("items 1 thru 5", script)
+        # Search helper applies a script-side cap derived from
+        # limit=max_moves+1=6 (plus its own offset/collectLimit overhead).
+        # Just verify a cap appears.
+        self.assertRegex(script, r"items 1 thru \d+")
 
     def test_analytics_get_statistics_uses_documented_caps(self):
         cap = _ScriptCapture(return_value="ok")
@@ -336,8 +350,11 @@ class AppleScriptTimeoutHandlingTests(unittest.TestCase):
         self.assertIn("timed out", result.lower())
 
     def test_manage_move_email_handles_timeout(self):
+        # In dry-run, move_email routes through the search helper. Patch
+        # search.run_applescript so the preflight times out; move_email must
+        # still return a structured "timed out" message rather than empty.
         with patch(
-            "apple_mail_mcp.tools.manage.run_applescript",
+            "apple_mail_mcp.tools.search.run_applescript",
             side_effect=self._timeout,
         ):
             result = manage_tools.move_email(
@@ -350,8 +367,11 @@ class AppleScriptTimeoutHandlingTests(unittest.TestCase):
         self.assertIn("timed out", result.lower())
 
     def test_analytics_list_attachments_handles_timeout(self):
+        # list_email_attachments preflight goes through the search helper.
+        # Patch search.run_applescript so the preflight times out — the tool
+        # must surface this as a structured "timed out" error.
         with patch(
-            "apple_mail_mcp.tools.analytics.run_applescript",
+            "apple_mail_mcp.tools.search.run_applescript",
             side_effect=self._timeout,
         ):
             result = analytics_tools.list_email_attachments(

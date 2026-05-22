@@ -20,7 +20,7 @@ from apple_mail_mcp.core import (
     build_mailbox_ref,
     build_filter_condition,
 )
-from apple_mail_mcp.tools.search import _search_mail_records_sync
+from apple_mail_mcp.tools.search import _search_mail_records_sync as _search_mail_records
 
 
 def _date_to_for_older_than(days: Optional[int]) -> Optional[str]:
@@ -28,6 +28,13 @@ def _date_to_for_older_than(days: Optional[int]) -> Optional[str]:
     if days is None or days <= 0:
         return None
     return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _date_from_for_recent_days(days: Optional[float]) -> Optional[str]:
+    """Return YYYY-MM-DD cutoff date for recent-window filters."""
+    if days is None or days <= 0:
+        return None
+    return (datetime.now() - timedelta(days=float(days))).strftime("%Y-%m-%d")
 
 
 def _format_dry_run_records(title: str, records, result_prefix: str, limit: int) -> str:
@@ -63,6 +70,7 @@ def move_email(
     older_than_days: Optional[int] = None,
     dry_run: bool = False,
     only_read: bool = False,
+    recent_days: float = 2.0,
     timeout: Optional[int] = None,
 ) -> str:
     """
@@ -85,6 +93,8 @@ def move_email(
         older_than_days: Optional age filter - only move emails older than N days
         dry_run: If True, preview what would be moved without acting (default: False)
         only_read: If True, only move emails that have been read (default: False)
+        recent_days: Recent window to search by default (default: 2.0, 0 = unbounded).
+            Ignored when older_than_days is set.
         timeout: Optional AppleScript timeout in seconds (default: 300s).
 
     Returns:
@@ -120,9 +130,15 @@ def move_email(
         whose_conditions.append("read status is true")
 
     date_setup = ""
+    effective_recent_days = recent_days if older_than_days is None else 0
     if older_than_days and older_than_days > 0:
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
         whose_conditions.append("date received < cutoffDate")
+    elif effective_recent_days and effective_recent_days > 0:
+        date_setup = (
+            f"set recentCutoffDate to (current date) - ({float(effective_recent_days)} * days)"
+        )
+        whose_conditions.append("date received >= recentCutoffDate")
 
     whose_clause = " and ".join(whose_conditions)
 
@@ -137,17 +153,25 @@ def move_email(
         dest_ref = f'mailbox "{safe_to}" of targetAccount'
 
     if dry_run:
-        records = _search_mail_records_sync(
-            account=account,
-            mailbox=from_mailbox,
-            subject_terms=subject_terms or None,
-            sender=sender,
-            read_status="read" if only_read else "all",
-            date_to=_date_to_for_older_than(older_than_days),
-            include_content=False,
-            offset=0,
-            limit=max_moves + 1,
-        )
+        try:
+            records = _search_mail_records(
+                account=account,
+                mailbox=from_mailbox,
+                subject_terms=subject_terms or None,
+                sender=sender,
+                read_status="read" if only_read else "all",
+                date_from=_date_from_for_recent_days(effective_recent_days),
+                date_to=_date_to_for_older_than(older_than_days),
+                include_content=False,
+                offset=0,
+                limit=max_moves + 1,
+                timeout=timeout if timeout is not None else 45,
+            )
+        except AppleScriptTimeout:
+            return (
+                f"Error: move_email dry-run timed out on account '{account}'. "
+                "Retry with a larger timeout or tighter filters."
+            )
         return _format_dry_run_records(
             f"DRY RUN - PREVIEW MOVE: {from_mailbox} -> {to_mailbox}",
             records,
@@ -595,6 +619,7 @@ def manage_trash(
     apply_to_all: bool = False,
     older_than_days: Optional[int] = None,
     dry_run: bool = True,
+    recent_days: float = 2.0,
     timeout: Optional[int] = None,
 ) -> str:
     """
@@ -617,6 +642,8 @@ def manage_trash(
         apply_to_all: Must be True to allow operations without subject_keyword or sender filter
         older_than_days: Optional age filter - only affect emails older than N days
         dry_run: If True (default), preview what would be affected without acting
+        recent_days: Recent window to search by default (default: 2.0, 0 = unbounded).
+            Ignored when older_than_days is set.
         timeout: Optional AppleScript timeout in seconds (default: 300s).
 
     Returns:
@@ -632,6 +659,7 @@ def manage_trash(
     safe_mailbox = escape_applescript(mailbox)
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
     effective_timeout = timeout if timeout is not None else 300
+    effective_recent_days = recent_days if older_than_days is None else 0
 
     if action == "empty_trash":
         if not confirm_empty:
@@ -772,6 +800,11 @@ def manage_trash(
         if older_than_days and older_than_days > 0:
             date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
             conditions.append("date received < cutoffDate")
+        elif effective_recent_days and effective_recent_days > 0:
+            date_setup = (
+                f"set recentCutoffDate to (current date) - ({float(effective_recent_days)} * days)"
+            )
+            conditions.append("date received >= recentCutoffDate")
 
         if conditions:
             matching_messages_script = (
@@ -789,16 +822,24 @@ def manage_trash(
             )
 
         if dry_run:
-            records = _search_mail_records_sync(
-                account=account,
-                mailbox=mailbox,
-                subject_terms=subject_terms or None,
-                sender=sender,
-                date_to=_date_to_for_older_than(older_than_days),
-                include_content=False,
-                offset=0,
-                limit=max_deletes + 1,
-            )
+            try:
+                records = _search_mail_records(
+                    account=account,
+                    mailbox=mailbox,
+                    subject_terms=subject_terms or None,
+                    sender=sender,
+                    date_from=_date_from_for_recent_days(effective_recent_days),
+                    date_to=_date_to_for_older_than(older_than_days),
+                    include_content=False,
+                    offset=0,
+                    limit=max_deletes + 1,
+                    timeout=timeout if timeout is not None else 45,
+                )
+            except AppleScriptTimeout:
+                return (
+                    f"Error: manage_trash dry-run timed out on account '{account}'. "
+                    "Retry with a larger timeout or tighter filters."
+                )
             return _format_dry_run_records(
                 "DRY RUN - PREVIEW TRASH",
                 records,

@@ -7,6 +7,7 @@ server. It is a portable, repo-owned alternative to generated local wrappers.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from importlib import metadata
@@ -50,7 +51,10 @@ def _read_text_arg(value: str | None, file_value: str | None) -> str:
 
 def _run_tool(func: Callable[..., Any], json_mode: bool, **kwargs: Any) -> int:
     try:
-        return _print_result(func(**kwargs), json_mode=json_mode)
+        result = func(**kwargs)
+        if asyncio.iscoroutine(result):
+            result = asyncio.run(result)
+        return _print_result(result, json_mode=json_mode)
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
         return 130
@@ -299,27 +303,36 @@ def _cmd_smoke_test(args: argparse.Namespace) -> int:
     accounts = list_accounts()
     selected_account = args.account or (accounts[0] if accounts else None)
     record("accounts", lambda: {"count": len(accounts)})
+    def _await_if_coro(value: Any) -> Any:
+        if asyncio.iscoroutine(value):
+            return asyncio.run(value)
+        return value
+
     if selected_account:
         record(
             "inbox_json",
             lambda: json.loads(
-                list_inbox_emails(
-                    account=selected_account,
-                    max_emails=1,
-                    include_read=True,
-                    include_content=False,
-                    output_format="json",
+                _await_if_coro(
+                    list_inbox_emails(
+                        account=selected_account,
+                        max_emails=1,
+                        include_read=True,
+                        include_content=False,
+                        output_format="json",
+                    )
                 )
             ),
         )
         record(
             "no_hit_search",
             lambda: json.loads(
-                search_emails(
-                    account=selected_account,
-                    subject_keyword="NO_SUCH_SUBJECT_APPLE_MAIL_CLI_SMOKE_20991231",
-                    output_format="json",
-                    limit=1,
+                _await_if_coro(
+                    search_emails(
+                        account=selected_account,
+                        subject_keyword="NO_SUCH_SUBJECT_APPLE_MAIL_CLI_SMOKE_20991231",
+                        output_format="json",
+                        limit=1,
+                    )
                 )
             ),
         )

@@ -698,11 +698,39 @@ async def _search_mail_records(
 def _search_mail_records_sync(**kwargs) -> List[Dict[str, Any]]:
     """Synchronous bridge for sync tools (move_email, manage_trash,
     list_email_attachments) that need preflight records. Returns just the
-    record list — error-account names are dropped here because the sync
-    callers don't surface a partial-success structure. Sync callers should
-    pass an explicit ``account`` so this stays a single-account dispatch
-    and avoids the multi-account gather path."""
-    records, _errors = asyncio.run(_search_mail_records(**kwargs))
+    record list. When a per-account ``AppleScriptTimeout`` was caught
+    inside the async helper, re-raise it here so sync callers can surface
+    a structured "timed out" error rather than silently treating it as
+    "no matches". Sync callers should pass an explicit ``account`` so this
+    stays a single-account dispatch and avoids the multi-account gather
+    path."""
+    account = kwargs.get("account")
+    if account:
+        try:
+            return _search_one_account(
+                account=account,
+                mailbox=kwargs.get("mailbox", "INBOX"),
+                subject_terms=kwargs.get("subject_terms"),
+                sender=kwargs.get("sender"),
+                has_attachments=kwargs.get("has_attachments"),
+                read_status=kwargs.get("read_status", "all"),
+                date_from=kwargs.get("date_from"),
+                date_to=kwargs.get("date_to"),
+                include_content=kwargs.get("include_content", False),
+                content_length=kwargs.get("content_length", 300),
+                offset=kwargs.get("offset", 0),
+                limit=kwargs.get("limit", 100),
+                body_text=kwargs.get("body_text"),
+                timeout=kwargs.get("timeout"),
+            )
+        except AppleScriptTimeout:
+            raise
+
+    records, errors = asyncio.run(_search_mail_records(**kwargs))
+    if errors and not records:
+        raise AppleScriptTimeout(
+            f"AppleScript timed out for account(s): {', '.join(errors)}"
+        )
     return records
 
 

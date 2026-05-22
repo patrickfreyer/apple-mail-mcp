@@ -1,6 +1,6 @@
 {
   "name": "apple-mail",
-  "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 26 MCP tools and an expert email management skill",
+  "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools and an expert email management skill",
   "version": "3.1.5",
   "license": "MIT",
   "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",

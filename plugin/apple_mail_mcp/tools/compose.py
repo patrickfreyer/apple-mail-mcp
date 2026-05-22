@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 from apple_mail_mcp import server as _server
+from apple_mail_mcp import server  # public alias used by tests
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     AppleScriptTimeout,
