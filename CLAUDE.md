@@ -67,3 +67,6 @@ Sync tool-count claims in manifests with `grep -c "^@mcp.tool" plugin/apple_mail
 ## Related folders
 
 `plugin/apple_mail_mcp/` (source of truth) · `plugin/` (Claude plugin) · `apple-mail-mcpb/` · `.claude-plugin/` · `tests/` · `tools/` · `docs/` · `tasks/`
+
+**Repo agent skills:** Add under `.agents/skills/<name>/`; symlink `.claude/skills/<name>` → `../../.agents/skills/<name>` (not `.cursor/skills/`). Commit and push after adding or moving skills.
+**Post-change ship:** Invoke `finalize-apple-mail-mcp` to sync docs, CLAUDE.md, manifests, then commit and push when the user asks.
