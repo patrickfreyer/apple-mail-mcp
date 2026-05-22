@@ -32,6 +32,21 @@ All `@mcp.tool` handlers live here; `apple_mail_mcp/__init__.py` imports these s
 
 Normalized: `get_statistics`, `get_inbox_overview`; also `list_inbox_emails`, `list_mailboxes` (`output_format="json"`).
 
+## Agent-facing selection
+
+Workflow skills under [`../../skills/`](../../skills/) document **when** to call each tool (triage vs archive vs compose). After adding/removing tools, update relevant `plugin/skills/*/SKILL.md` frontmatter tool lists and run **`plugin-dev:skill-reviewer`**.
+
+## Compose defaults (`compose.py`)
+
+| Tool | Default | Notes |
+|------|---------|-------|
+| `compose_email` | `mode="draft"` | Quiet save; `mode="open"` saves then leaves window open |
+| `reply_to_email` | `mode="draft"` (via `send=False`) | Prefer `message_id=` from search/list; `subject_keyword` is fallback |
+| `forward_email` | `mode="draft"` | Same id-first rule as reply |
+| `create_rich_email_draft` | saves + closes | `review_in_mail=True` for saved-open review; blank subject → `.eml` only |
+
+Do not match outgoing rich drafts by subject — `_save_front_compose_window_as_draft()` saves Mail's front compose window. Detail: [`docs/CLAUDE-conventions.md`](../../../docs/CLAUDE-conventions.md) § Compose and draft modes.
+
 ## Related
 
 `../core.py` (bridge), `../server.py` (mcp + annotations), `../../tests/` (mock `run_applescript`), `tasks/phase-3-annotation-matrix.md`.

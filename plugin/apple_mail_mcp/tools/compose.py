@@ -350,20 +350,46 @@ def _send_blocked(mode: Optional[str]) -> Optional[str]:
     return None
 
 
-def _save_open_message_as_draft(subject, retries=10, delay_seconds=0.5, timeout=None):
-    """Ask Mail to save the matching open outgoing message as a draft."""
-    if not subject:
-        return False
-
-    safe_subject = escape_applescript(subject)
+def _save_front_compose_window_as_draft(
+    *,
+    close_after_save=False,
+    retries=10,
+    delay_seconds=0.5,
+    timeout=None,
+):
+    """Ask Mail to save the front compose window as a draft."""
+    close_script = ""
+    if close_after_save:
+        close_script = """
+            delay 0.2
+            close window 1 saving yes
+        """
     script = f'''
     tell application "Mail"
         try
-            set matchingMessages to every outgoing message whose subject is "{safe_subject}"
-            if (count of matchingMessages) is 0 then
+            activate
+            if (count of windows) is 0 then
                 return "not-found"
             end if
-            save item 1 of matchingMessages
+        on error errMsg
+            return "error: " & errMsg
+        end try
+    end tell
+
+    tell application "System Events"
+        try
+            set frontmost of process "Mail" to true
+            delay 0.2
+            keystroke "s" using command down
+        on error errMsg
+            return "error: " & errMsg
+        end try
+    end tell
+
+    tell application "Mail"
+        try
+            delay 0.5
+            {close_script}
             return "saved"
         on error errMsg
             return "error: " & errMsg
@@ -396,7 +422,8 @@ def create_rich_email_draft(
     bcc: Optional[str] = None,
     output_path: Optional[str] = None,
     open_in_mail: bool = True,
-    save_as_draft: bool = False,
+    save_as_draft: bool = True,
+    review_in_mail: bool = False,
     from_address: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> str:
@@ -415,8 +442,9 @@ def create_rich_email_draft(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         output_path: Optional path for the generated `.eml` file
-        open_in_mail: If True, open the generated `.eml` in Mail (default: True)
-        save_as_draft: If True, ask Mail to save the opened compose window into Drafts (default: False)
+        open_in_mail: If True and the subject is nonblank, open the generated `.eml` in Mail and save the front compose window to Drafts (default: True). Blank-subject drafts are written as `.eml` only by default to avoid opening incomplete drafts. Pass False to only create the `.eml` file.
+        save_as_draft: Retained for compatibility; opened Mail drafts are always saved before being closed or left open.
+        review_in_mail: If True, leave the saved compose window open for review. Defaults to closing the saved window after creating the draft.
         from_address: Optional sender address to stamp into the `.eml` `From:` header. Must be one of the account's configured email addresses. When omitted, Mail fills the account's default "Send new messages from" address on open.
         timeout: Optional per-AppleScript timeout in seconds for the helper calls (sender alias lookup and draft save). Defaults to the standard 120s.
 
@@ -485,24 +513,29 @@ def create_rich_email_draft(
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.write_bytes(bytes(message))
 
+    can_open_in_mail = bool(subject and subject.strip())
+    mail_open_skipped = open_in_mail and not can_open_in_mail
     opened = False
     saved = False
-    if open_in_mail:
+    if open_in_mail and can_open_in_mail:
         subprocess.run(["open", "-a", "Mail", str(draft_path)], check=True)
         opened = True
-        if save_as_draft:
-            try:
-                saved = _save_open_message_as_draft(subject, timeout=timeout)
-            except AppleScriptTimeout:
-                saved = False
+        try:
+            saved = _save_front_compose_window_as_draft(
+                close_after_save=not review_in_mail,
+                timeout=timeout,
+            )
+        except AppleScriptTimeout:
+            saved = False
 
     output_lines = ["RICH EMAIL DRAFT", "", "✓ Rich draft prepared successfully!", ""]
     output_lines.append("Account: " + account)
     output_lines.append("Subject: " + (subject if subject else "[empty]"))
     output_lines.append("EML path: " + str(draft_path))
     output_lines.append("Opened in Mail: " + ("yes" if opened else "no"))
-    if open_in_mail:
+    if opened:
         output_lines.append("Saved in Drafts: " + ("yes" if saved else "no"))
+        output_lines.append("Left open for review: " + ("yes" if review_in_mail else "no"))
     if sender_address:
         output_lines.append("From: " + sender_address)
     if recipients_to:
@@ -518,6 +551,10 @@ def create_rich_email_draft(
     output_lines.append(
         "Note: Prefer this `.eml` workflow for HTML email drafts; Mail renders it more reliably than raw HTML injected via AppleScript content."
     )
+    if mail_open_skipped:
+        output_lines.append(
+            "Note: Blank-subject rich drafts are written as `.eml` only by default to avoid opening incomplete drafts."
+        )
     return "\n".join(output_lines)
 
 
@@ -566,10 +603,21 @@ def _send_html_email(
             -- Save as draft: Cmd+S then close
             keystroke "s" using command down
             delay 0.5
+            tell application "Mail"
+                save newMsg
+                close window 1 saving yes
+            end tell
         """
         success_text = "Email saved as draft (HTML)"
     else:  # open
-        post_paste_script = "-- Leaving open for review"
+        post_paste_script = """
+            -- Save first, then leave open for review
+            keystroke "s" using command down
+            delay 0.5
+            tell application "Mail"
+                save newMsg
+            end tell
+        """
         success_text = (
             "Email opened in Mail for review (HTML). Edit and send when ready."
         )
@@ -740,7 +788,7 @@ def reply_to_email(
     timeout: Optional[int] = None,
 ) -> str:
     """
-    Reply to an email matching a subject keyword.
+    Reply to an email by message_id (preferred) or subject keyword.
 
     Args:
         account: Account name (e.g., "Gmail", "Work"). Defaults to `DEFAULT_MAIL_ACCOUNT` env var if `account` is omitted.
@@ -750,11 +798,11 @@ def reply_to_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         send: If True, send immediately; if False (default), save as draft. Ignored if mode is set.
-        mode: Delivery mode — "send" (send immediately), "draft" (default, save silently), or "open" (open compose window for review). Overrides send parameter when set.
+        mode: Delivery mode — "draft" (default, save quietly to Drafts and close), "open" (save first, then leave compose window open for review), or "send" (send immediately). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
-        message_id: Exact numeric Apple Mail message id from search tools. Preferred over subject_keyword when both are available.
+        message_id: Exact numeric Apple Mail message id from search/list tools. Required preference over subject_keyword whenever an id is available.
         recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to 120s for the main reply script and up to 30s for alias validation.
 
@@ -903,13 +951,18 @@ def reply_to_email(
         success_text = "Reply sent successfully!"
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
-        post_paste_action = ""
+        post_paste_action = """
+                delay 0.5
+                tell application "Mail"
+                    save replyMessage
+                end tell"""
         success_text = "Reply opened in Mail for review. Edit and send when ready."
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"
         post_paste_action = """
                 delay 0.5
                 tell application "Mail"
+                    save replyMessage
                     close window 1 saving yes
                 end tell"""
         success_text = "Reply saved as draft!"
@@ -1076,7 +1129,7 @@ def compose_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
-        mode: Delivery mode — "draft" (default, save silently to Drafts), "open" (open compose window for review), or "send" (send immediately)
+        mode: Delivery mode — "draft" (default, save quietly to Drafts), "open" (save first, then leave compose window open for review), or "send" (send immediately)
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
@@ -1186,12 +1239,12 @@ def compose_email(
     elif mode == "open":
         header_text = "OPENING EMAIL FOR REVIEW"
         visible = "true"
-        send_command = "activate"
+        send_command = "save newMessage\n            activate"
         success_text = "✓ Email opened in Mail for review. Edit and send when ready."
     else:  # draft
         header_text = "SAVING EMAIL AS DRAFT"
         visible = "false"
-        send_command = "close window 1 saving yes"
+        send_command = "save newMessage"
         success_text = "✓ Email saved as draft!"
 
     script = f'''
@@ -1292,8 +1345,8 @@ def forward_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
-        mode: Delivery mode — "draft" (default, save silently), "open" (open compose window for review), or "send" (send immediately)
-        message_id: Exact numeric Apple Mail message id from search tools. Preferred over subject_keyword when both are available.
+        mode: Delivery mode — "draft" (default, save quietly to Drafts), "open" (save first, then leave compose window open for review), or "send" (send immediately)
+        message_id: Exact numeric Apple Mail message id from search/list tools. Required preference over subject_keyword whenever an id is available.
         recent_days: When searching by subject_keyword, only scan messages from the last N days (default: 2.0 / 48h). Pass 0 to disable the date window.
         timeout: Optional per-AppleScript timeout in seconds. Defaults to the standard 120s. Raise this when working with large mailboxes or slow accounts.
 
@@ -1428,11 +1481,11 @@ use scripting additions
         success_text = "Email forwarded successfully."
     elif mode == "open":
         header_text = "OPENING FORWARD FOR REVIEW"
-        post_forward_action = "set visible of forwardMessage to true\n            activate"
+        post_forward_action = "set visible of forwardMessage to true\n            save forwardMessage\n            activate"
         success_text = "Forward opened in Mail for review. Edit and send when ready."
     else:
         header_text = "SAVING FORWARD AS DRAFT"
-        post_forward_action = "close window 1 saving yes"
+        post_forward_action = "save forwardMessage\n            close window 1 saving yes"
         success_text = "Forward saved as draft."
 
     script = f'''{use_frameworks}

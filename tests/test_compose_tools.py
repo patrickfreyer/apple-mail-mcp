@@ -17,15 +17,31 @@ def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
     return result
 
 
+def _assert_ordered(testcase, text, *snippets):
+    """Assert snippets appear in text in the provided order."""
+    last_position = -1
+    for snippet in snippets:
+        position = text.find(snippet)
+        testcase.assertGreater(position, last_position)
+        last_position = position
+
+
 class ComposeToolTests(unittest.TestCase):
     def test_create_rich_email_draft_writes_multipart_eml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "weekly-update.eml"
+            scripts = []
+
+            def fake_run_applescript(script, timeout=120):
+                scripts.append(script)
+                if len(scripts) == 1:
+                    return "sender@example.com"
+                return "saved"
 
             with (
                 patch(
                     "apple_mail_mcp.tools.compose.run_applescript",
-                    return_value="sender@example.com",
+                    side_effect=fake_run_applescript,
                 ),
                 patch("apple_mail_mcp.tools.compose.subprocess.run") as mock_run,
             ):
@@ -44,8 +60,56 @@ class ComposeToolTests(unittest.TestCase):
             self.assertIn("<h1>Weekly Update</h1>", payload)
             self.assertIn("Subject: Weekly Update", payload)
             self.assertIn("Opened in Mail: yes", result)
+            self.assertIn("Saved in Drafts: yes", result)
             mock_run.assert_called_once_with(
                 ["open", "-a", "Mail", str(output_path)], check=True
+            )
+            self.assertNotIn("every outgoing message whose subject is", scripts[1])
+            _assert_ordered(
+                self,
+                scripts[1],
+                'keystroke "s" using command down',
+                "close window 1 saving yes",
+            )
+
+    def test_create_rich_email_draft_default_saves_and_closes_mail_window(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "default-saved.eml"
+            scripts = []
+
+            def fake_run_applescript(script, timeout=120):
+                scripts.append(script)
+                if len(scripts) == 1:
+                    return "sender@example.com"
+                return "saved"
+
+            with (
+                patch(
+                    "apple_mail_mcp.tools.compose.run_applescript",
+                    side_effect=fake_run_applescript,
+                ),
+                patch("apple_mail_mcp.tools.compose.subprocess.run") as mock_run,
+            ):
+                result = compose_tools.create_rich_email_draft(
+                    account="Work",
+                    subject="Default Saved",
+                    to="team@example.com",
+                    text_body="Plain fallback",
+                    html_body="<p>Hi</p>",
+                    output_path=str(output_path),
+                )
+
+            mock_run.assert_called_once_with(
+                ["open", "-a", "Mail", str(output_path)], check=True
+            )
+            self.assertIn("Saved in Drafts: yes", result)
+            self.assertIn("Left open for review: no", result)
+            self.assertNotIn("every outgoing message whose subject is", scripts[1])
+            _assert_ordered(
+                self,
+                scripts[1],
+                'keystroke "s" using command down',
+                "close window 1 saving yes",
             )
 
     def test_create_rich_email_draft_allows_partial_details(self):
@@ -69,6 +133,36 @@ class ComposeToolTests(unittest.TestCase):
             self.assertIn("Draft outline", payload)
             self.assertIn("Missing details: subject, to, body", result)
             self.assertIn("Opened in Mail: no", result)
+
+    def test_create_rich_email_draft_empty_subject_does_not_open_mail_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "empty-subject.eml"
+            scripts = []
+
+            def fake_run_applescript(script, timeout=120):
+                scripts.append(script)
+                return "sender@example.com"
+
+            with (
+                patch(
+                    "apple_mail_mcp.tools.compose.run_applescript",
+                    side_effect=fake_run_applescript,
+                ),
+                patch("apple_mail_mcp.tools.compose.subprocess.run") as mock_run,
+            ):
+                result = compose_tools.create_rich_email_draft(
+                    account="Work",
+                    subject="",
+                    output_path=str(output_path),
+                )
+
+            payload = output_path.read_text()
+            self.assertIn("Draft outline", payload)
+            self.assertIn("Missing details: subject, to, body", result)
+            self.assertIn("Opened in Mail: no", result)
+            mock_run.assert_not_called()
+            self.assertEqual(len(scripts), 1)
+            self.assertNotIn("every outgoing message whose subject is", scripts[0])
 
     def test_create_rich_email_draft_can_save_to_drafts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -94,6 +188,51 @@ class ComposeToolTests(unittest.TestCase):
                 )
 
             self.assertIn("Saved in Drafts: yes", result)
+
+
+class SaveFrontComposeWindowAsDraftTests(unittest.TestCase):
+    def test_saves_front_compose_window_without_subject_lookup(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "saved"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools._save_front_compose_window_as_draft(
+                close_after_save=True
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(captured), 1)
+        self.assertNotIn("every outgoing message whose subject is", captured[0])
+        _assert_ordered(
+            self,
+            captured[0],
+            'keystroke "s" using command down',
+            "close window 1 saving yes",
+        )
+
+    def test_can_leave_front_compose_window_open_for_review(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "saved"
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools._save_front_compose_window_as_draft(
+                close_after_save=False
+            )
+
+        self.assertTrue(result)
+        self.assertNotIn("close window 1 saving yes", captured[0])
 
 
 class StripCdataTests(unittest.TestCase):
@@ -232,8 +371,33 @@ class ComposeEmailSenderOverrideTests(unittest.TestCase):
             )
 
         self.assertIn("SAVING EMAIL AS DRAFT", captured[0])
-        self.assertIn("close window 1 saving yes", captured[0])
+        self.assertIn("save newMessage", captured[0])
+        self.assertNotIn("close window 1 saving yes", captured[0])
         self.assertNotIn("send newMessage", captured[0])
+
+    def test_compose_open_mode_saves_before_leaving_open_for_review(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "✓ Email opened in Mail for review."
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="self@example.com",
+                subject="Test",
+                body="Body",
+                mode="open",
+            )
+
+        self.assertIn("OPENING EMAIL FOR REVIEW", captured[0])
+        self.assertIn("save newMessage", captured[0])
+        self.assertIn("activate", captured[0])
+        self.assertIn("review", result)
 
     def test_draft_safe_blocks_explicit_send(self):
         with patch.object(compose_tools.server, "DRAFT_SAFE", True):
@@ -466,8 +630,32 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         script = captured[0]
         self.assertIn("SAVING REPLY AS DRAFT", script)
+        _assert_ordered(self, script, "save replyMessage", "close window 1 saving yes")
         self.assertIn("close window 1 saving yes", script)
         self.assertNotIn("send replyMessage", script)
+
+    def test_reply_open_mode_saves_before_leaving_open_for_review(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "Reply opened in Mail for review."
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply body",
+                mode="open",
+            )
+
+        script = captured[0]
+        self.assertIn("OPENING REPLY FOR REVIEW", script)
+        self.assertIn("save replyMessage", script)
+        self.assertIn("review", result)
 
     def test_default_emits_single_alias_fallback_for_reply_message(self):
         captured = []
@@ -566,8 +754,34 @@ class ForwardEmailSenderOverrideTests(unittest.TestCase):
 
         self.assertEqual(len(captured), 1)
         self.assertIn("SAVING FORWARD AS DRAFT", captured[0])
+        _assert_ordered(
+            self, captured[0], "save forwardMessage", "close window 1 saving yes"
+        )
         self.assertIn("close window 1 saving yes", captured[0])
         self.assertNotIn("send forwardMessage", captured[0])
+
+    def test_forward_open_mode_saves_before_leaving_open_for_review(self):
+        captured = []
+
+        def fake_run(script, timeout=120):
+            captured.append(script)
+            return "Forward opened in Mail for review."
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="recipient@example.com",
+                mode="open",
+            )
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("OPENING FORWARD FOR REVIEW", captured[0])
+        self.assertIn("save forwardMessage", captured[0])
+        self.assertIn("review", result)
 
     def test_default_emits_single_alias_fallback_for_forward_message(self):
         captured = []
@@ -770,7 +984,37 @@ class ComposeRunApplescriptMigrationTests(unittest.TestCase):
 
         self.assertIn("use framework", captured["script"])
         self.assertEqual(captured["timeout"], 90)
+        _assert_ordered(
+            self,
+            captured["script"],
+            'keystroke "s" using command down',
+            "close window 1 saving yes",
+        )
         self.assertIn("Email saved as draft (HTML)", result)
+
+    def test_send_html_email_open_mode_saves_before_leaving_open(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "Email opened in Mail for review (HTML). Edit and send when ready."
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ):
+            result = compose_tools._send_html_email(
+                account="Work",
+                to="team@example.com",
+                subject="Hi",
+                body_plain="Plain",
+                body_html="<p>Hi</p>",
+                mode="open",
+            )
+
+        self.assertIn('keystroke "s" using command down', captured["script"])
+        self.assertNotIn("close window 1 saving yes", captured["script"])
+        self.assertIn("review", result)
 
     def test_forward_with_message_uses_run_applescript(self):
         captured = []

@@ -217,3 +217,19 @@ Generate draft-safe MCP wiring from the repo checkout:
 ```
 
 This adds `--draft-safe` so send tools stay blocked during agent testing.
+
+## Plugin workflow skills (agent UX)
+
+The Claude Code plugin bundles **nine** workflow skills under `plugin/skills/`. They complement live CLI testing: skills guide **tool selection and safety**; this doc guides **verification**.
+
+| Agent task | Start with skill | Live CLI probes (examples) |
+|------------|------------------|----------------------------|
+| Daily “what needs reply?” | `inbox-triage` | `needs-response`, `awaiting-reply`, `overview --format compact` |
+| Folder mess / taxonomy | `mailbox-taxonomy` | `mailboxes --json`, `top-senders`, `statistics --scope account_overview` |
+| Bulk archive / cleanup | `email-archive-cleanup` | `move-dry-run`, `trash-dry-run`, `search` previews before writes |
+| Draft / reply | `email-drafting` | `draft` (quiet default), `draft --open` (saved-open review); reply/forward should use `message_id` when known; send blocked in draft-safe |
+| MCP misbehaving / slow | `apple-mail-operator` | `quick-check`, `accounts`, narrow `search` with `recent_days` |
+
+Full skill map: [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md). User install copy: [`README`](../README.md) § Claude Code Skills.
+
+When editing skills, run **`plugin-dev:skill-reviewer`**. When editing manifests or bundled skill marketing copy, run **`bash tools/validate_manifests.sh`** and **`plugin-dev:plugin-validator`**.

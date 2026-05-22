@@ -74,19 +74,19 @@
     },
     {
       "name": "reply_to_email",
-      "description": "Reply to emails matching a subject keyword. Send or save as draft, optional reply-all, supports CC/BCC."
+      "description": "Reply to an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the compose window for review. Optional reply-all, CC/BCC, HTML body."
     },
     {
       "name": "compose_email",
-      "description": "Compose and send a new email from a specific account (or DEFAULT_MAIL_ACCOUNT). Supports TO/CC/BCC, optional HTML body via the rich-draft path."
+      "description": "Compose a new email from a specific account. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Supports TO/CC/BCC and optional HTML body."
     },
     {
       "name": "forward_email",
-      "description": "Forward emails matching a subject keyword to specified recipients. Optional prepended message, CC/BCC."
+      "description": "Forward an email by message_id (preferred) or subject keyword. Default mode saves quietly to Drafts; mode=open saves first then leaves the window for review. Optional prepended message, CC/BCC."
     },
     {
       "name": "create_rich_email_draft",
-      "description": "Build a rich HTML multipart .eml draft, open it in Mail, and optionally save into Drafts. Use this instead of injecting raw HTML into AppleScript content."
+      "description": "Build a rich HTML multipart .eml draft and save it to Drafts by default (closes the compose window). Use review_in_mail for saved-open review. Prefer over injecting raw HTML into AppleScript content."
     },
     {
       "name": "manage_drafts",

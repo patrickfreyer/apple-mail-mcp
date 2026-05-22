@@ -30,7 +30,7 @@ The result is already chronological. Read top to bottom for context.
 
 ### Find the latest message in a long thread
 
-The last entry returned by `get_email_thread()` is the most recent. Reply to that message using compose MCP tools (`reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`).
+The last entry returned by `get_email_thread()` is the most recent. Prefer replying with `reply_to_email(message_id=...)` when search or list tools already returned the Mail id; use `subject_keyword` only when no id is available. For bulk human review, use `mode="open"` so each saved draft stays visible in Mail. See **`email-drafting`** for compose tool selection.
 
 ## Cross-Account Threads
 

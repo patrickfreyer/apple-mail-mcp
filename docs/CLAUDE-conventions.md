@@ -52,7 +52,23 @@ The anti-patterns below caused real production timeouts on a 24K-message Exchang
 
 ### Rich HTML drafts
 
-`create_rich_email_draft` generates a multipart `.eml` on disk and opens it with Mail.app, rather than injecting HTML into AppleScript's `content` property (Mail stores literal markup). Prefer this for anything HTML.
+`create_rich_email_draft` generates a multipart `.eml` on disk and saves it through Mail.app by default, rather than injecting HTML into AppleScript's `content` property (Mail stores literal markup). Prefer this for anything HTML. Use explicit review mode only when the operator wants Mail left open; saved defaults should not leave fresh compose windows behind.
+
+### Compose and draft modes
+
+`compose_email`, `reply_to_email`, and `forward_email` share a `mode` parameter:
+
+| Mode | Behavior | When agents should use it |
+|------|----------|---------------------------|
+| `draft` (default) | Save to Drafts quietly; do not leave fresh compose windows open | Bulk drafting, background agent work, default under `--draft-safe` |
+| `open` | Save first, then leave the compose window open for human review | User wants each draft to pop up in Mail (e.g. review 10 replies in sequence) |
+| `send` | Send immediately | Explicit user authorization only; blocked when `DRAFT_SAFE` or `READ_ONLY` |
+
+**Reply/forward targeting:** pass `message_id` from `search_emails`, `list_inbox_emails`, or `get_email_by_id` whenever available. `subject_keyword` is a fallback when no id is known — never prefer subject matching when an id is already in context.
+
+**Rich `.eml` drafts:** `create_rich_email_draft` saves the front Mail compose window after opening the file (no subject-based outgoing-message lookup). Use `review_in_mail=True` for saved-open review; blank subjects stay `.eml`-only until a nonblank subject exists.
+
+**Agent guidance:** skills under `plugin/skills/email-drafting/` and `plugin/skills/apple-mail-operator/` document the quiet-default vs saved-open review split. Sync `apple-mail-mcpb/manifest.json` tool descriptions when compose behavior changes.
 
 ---
 
@@ -101,7 +117,23 @@ Every skill under `plugin/skills/` follows the same shape so siblings trigger cr
 
 ### Skills only — no new slash commands
 
-New entry points ship as skills only. `plugin/commands/email-management.md` stays (legacy `/email-management`); all companion workflows (`apple-mail-operator`, `inbox-triage`, `email-management`, `mailbox-taxonomy`, `email-archive-cleanup`, `mail-rules-advisor`, `email-drafting`, `email-style-profile`, `email-attachments`) ship as skills only.
+New entry points ship as skills only. `plugin/commands/email-management.md` stays (legacy `/email-management`); all companion workflows ship as skills only:
+
+| Skill directory | Primary intent |
+|-----------------|----------------|
+| `apple-mail-operator` | MCP bootstrap, navigation, troubleshooting |
+| `inbox-triage` | Fast read-first daily scan |
+| `email-management` | Umbrella Inbox Zero / sustained habits |
+| `mailbox-taxonomy` | Folder design + noise diagnosis |
+| `email-archive-cleanup` | Staged moves, exports, capped trash |
+| `mail-rules-advisor` | Filter/rule prose only (no MCP rule API) |
+| `email-drafting` | Compose / reply / forward / rich drafts |
+| `email-style-profile` | Voice contract before drafting |
+| `email-attachments` | List + save attachments |
+
+**Routing cheat sheet:** [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md). **Narrow skills** may stay shorter than the umbrella template if they include triggers, sibling matrix, performance notes, and destructive red lines. **Umbrella template:** `plugin/skills/email-management/SKILL.md` (also has `references/`, `examples/`, `templates/`).
+
+After adding or editing any skill: run **`plugin-dev:skill-reviewer`**. After manifest or skill-count marketing copy changes: **`plugin-dev:plugin-validator`** + `bash tools/validate_manifests.sh`.
 
 ---
 
