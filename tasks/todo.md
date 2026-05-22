@@ -8,7 +8,26 @@ This is the cross-session source of truth for "what's next" on this plugin. In-c
 
 ## In flight
 
-_(empty — 3.1.5 release-ready; awaiting user direction on commit/tag/publish.)_
+- [ ] **Restore shared-agent safety flag compatibility** — current shared OpenClaw/mcporter configs pass `--draft-safe`, but this branch only accepts `--read-only`. Re-add `--draft-safe` as a supported server flag and make send-capable tools draft/open-only when enabled. Live check on 2026-05-21: `python plugin/apple_mail_mcp.py --draft-safe` exits with "unrecognized arguments".
+- [ ] **Add/restore repo-owned portable CLI** — include a maintained `apple-mail` console script in the Python package, not only the generated local mcporter wrapper under `~/.local/share/apple-mail-cli/`. Commands should cover safe account/mailbox/search/draft workflows and be copyable to another Mac via repo clone + editable install.
+- [ ] **Add `apple-mail smoke-test` CLI command** — safe live mailbox test: list accounts, account addresses, unread summary, no-hit search, limited inbox listing, dry-run trash/move previews, and draft-safe send-block verification. Redact subjects/senders by default unless `--verbose` is passed.
+- [ ] **Add `apple-mail perf-test` CLI command** — time core live tools and emit JSON/markdown with durations, result counts, and redacted samples. Include thresholds for metadata (<2s), no-hit search (<3s), limited inbox read (<5s target), dry-run no-hit destructive previews (<5s target), and dashboard overview (<10s target).
+- [ ] **Make coding-agent live testing first-class** — document exact setup for Claude/Codex/OpenClaw agents to use the repo checkout against real Mail.app: config snippet, required macOS Automation/Mail permissions, draft-safe default, and safe command examples.
+- [ ] **Keep one shared tool path across agents** — ensure Claude, OpenClaw, mcporter, and local CLI all point at the same repo checkout and server entrypoint so fixes land once and every agent uses the same implementation.
+
+## PR 3.1.6 — live performance fixes from mailbox testing
+
+Observed on 2026-05-21 using `ai.openclaw` via the generated `apple-mail` CLI wrapper. Metadata tools were fast, but several message-reading paths still need work.
+
+- [ ] **Profile `list_inbox_emails` matching-result path** — live `list-inbox-emails --account ai.openclaw --max-emails 5 --output-format json` took ~33s. No-hit search is fast, so the bottleneck appears to be extracting/formatting matching messages rather than AppleScript startup alone.
+- [ ] **Profile `search_emails` matching-result path** — live `search-emails --account ai.openclaw --sender github --limit 3 --output-format json` took ~29s while no-hit subject search took ~1.3s. Investigate per-message property access, result cap placement, and JSON serialization.
+- [ ] **Fix `move_email --dry-run` no-hit timeout** — live `move-email --account ai.openclaw --to-mailbox Archive --subject-keyword unlikely-no-hit-for-speed-test-xyz --dry-run true --max-moves 5` timed out at ~61s. This should short-circuit like `manage_trash --dry-run`, which returned in ~1.2s for the same no-hit pattern.
+- [ ] **Optimize `get_inbox_overview`** — live overview took ~40s and returns a very large text payload. Add a compact/JSON mode, limit or parallelize expensive mailbox count sections, and avoid always including recent email previews.
+- [ ] **Optimize `get_needs_response`** — live 2-day scan took ~17s for `ai.openclaw`. Push more filtering into AppleScript `whose` clauses, cap before extracting body/sender details, and expose timing metadata.
+- [ ] **Add timing telemetry to tool responses** — optional `include_timing: bool = False` or debug env var that returns AppleScript duration, parse duration, account count, scanned count, returned count, and timeout budget without leaking email content.
+- [ ] **Add exact-id action paths for destructive tools** — prefer `message_ids` for `move_email`, `manage_trash`, attachment save/list, and status updates so agents can search first, inspect IDs, then act precisely without rescanning broad filters.
+- [ ] **Add redacted benchmark fixtures/tests** — unit-test that performance-oriented AppleScript includes `whose` date/read/sender filters and `items 1 thru N` caps before property extraction. Keep live perf tests opt-in because they require Mail.app.
+- [ ] **Investigate hybrid SQLite read path** — if Apple Events remain too slow for matching result extraction, prototype read-only search/list/statistics against Mail's Envelope Index with macOS-version detection and a clean fallback to AppleScript.
 
 ---
 

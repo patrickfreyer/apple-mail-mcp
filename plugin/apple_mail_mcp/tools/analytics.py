@@ -13,7 +13,7 @@ from apple_mail_mcp.core import (
     inbox_mailbox_script,
 )
 from apple_mail_mcp.constants import SKIP_FOLDERS
-from apple_mail_mcp.tools.search import _search_mail_records
+from apple_mail_mcp.tools.search import _search_mail_records_sync
 
 
 @mcp.tool()
@@ -55,7 +55,7 @@ def list_email_attachments(
 
     # Fast no-hit path: use the optimized search helper first so no-match
     # attachment checks don't scan the inbox with a Python-side loop.
-    preflight_records = _search_mail_records(
+    preflight_records = _search_mail_records_sync(
         account=account,
         mailbox="INBOX",
         subject_terms=[subject_keyword],
