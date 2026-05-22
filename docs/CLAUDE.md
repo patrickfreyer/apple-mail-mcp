@@ -20,7 +20,7 @@ Human- and agent-facing docs that survive outside the codebase. Plugin skills an
 
 **Verifying against real Mail.app** → [`AGENT_LIVE_TESTING.md`](AGENT_LIVE_TESTING.md): setup, permissions, `quick-check` / `perf-test` batteries, safe probes, MCP env vars (`DEFAULT_MAIL_ACCOUNT`, `DEFAULT_MAIL_SIGNATURE`, `USER_EMAIL_PREFERENCES`).
 
-**Plugin shell / manifests / skills** → [`plugin/CLAUDE.md`](../plugin/CLAUDE.md), [`.claude-plugin/CLAUDE.md`](../.claude-plugin/CLAUDE.md), [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md), [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md). Run `plugin-dev:plugin-validator` after manifest edits; `plugin-dev:skill-reviewer` after skill edits.
+**Plugin shell / manifests / skills** → [`plugin/docs/CLAUDE.md`](../plugin/docs/CLAUDE.md), [`.claude-plugin/docs/CLAUDE.md`](../.claude-plugin/docs/CLAUDE.md), [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md), [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md). Run `plugin-dev:plugin-validator` after manifest edits; `plugin-dev:skill-reviewer` after skill edits.
 
 **Planning / backlog** → [`tasks/CLAUDE.md`](../tasks/CLAUDE.md) and [`tasks/todo.md`](../tasks/todo.md).
 
@@ -42,7 +42,7 @@ Nine skills ship under [`plugin/skills/`](../plugin/skills/) and auto-load with 
 
 **Routing index:** [`plugin/skills/CLAUDE.md`](../plugin/skills/CLAUDE.md) (sibling cheat sheet). **Authoring rules:** [`CLAUDE-conventions.md`](CLAUDE-conventions.md) § Skill authoring. **User install blurb:** root [`README.md`](../README.md) § Claude Code Skills.
 
-Legacy slash command: `/email-management` only — all new entry points are skills-only ([`plugin/commands/CLAUDE.md`](../plugin/commands/CLAUDE.md)).
+Legacy slash command: `/email-management` only — all new entry points are skills-only ([`plugin/docs/commands.md`](../plugin/docs/commands.md)).
 
 ## AGENT_LIVE_TESTING.md structure
 

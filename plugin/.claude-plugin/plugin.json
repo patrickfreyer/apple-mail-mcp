@@ -3,11 +3,11 @@
   "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools plus bundled Claude Code workflow skills (Mail operator, triage, inbox zero, taxonomy, archiving, Mail rules advisor, drafting, attachments, writing style)",
   "version": "3.1.7",
   "license": "MIT",
-  "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",
-  "repository": "https://github.com/patrickfreyer/apple-mail-mcp",
+  "homepage": "https://github.com/agenticassets/apple-mail-mcp",
+  "repository": "https://github.com/agenticassets/apple-mail-mcp",
   "author": {
-    "name": "Patrick Freyer",
-    "email": "freyer.patrick@bcg.com"
+    "name": "Agentic Assets",
+    "url": "https://github.com/agenticassets"
   },
   "keywords": [
     "mcp",
@@ -20,7 +20,6 @@
     "macos",
     "applescript"
   ],
-  "category": "productivity",
   "commands": [
     "./commands/"
   ],

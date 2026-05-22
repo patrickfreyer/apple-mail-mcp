@@ -19,6 +19,11 @@ Top-level **Claude Code marketplace** registration → [`plugin/`](../plugin/) v
 ## Local install
 
 ```bash
+# From GitHub (users)
+claude plugin marketplace add agenticassets/apple-mail-mcp
+claude plugin install apple-mail@apple-mail-mcp
+
+# From repo checkout (dev)
 claude plugin marketplace add .
 claude plugin install apple-mail@apple-mail-mcp
 ```
@@ -29,4 +34,4 @@ After edits: `plugin-dev:plugin-validator` + `tools/validate_manifests.sh` (+ `p
 
 ## Related
 
-[`plugin/CLAUDE.md`](../plugin/CLAUDE.md) · [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md) · [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md)
+[`plugin/docs/CLAUDE.md`](../plugin/docs/CLAUDE.md) · [`apple-mail-mcpb/CLAUDE.md`](../apple-mail-mcpb/CLAUDE.md) · [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md)

@@ -4,15 +4,15 @@
   "version": "3.1.7",
   "description": "Natural language interface for Apple Mail with 27 tools — email search, composition, bulk operations, smart inbox analytics, folder management, taxonomy, archiving, drafting, attachments, Mail rules advising, and security-hardened destructive operations. Bundled Claude Code workflow skills plus Interactive UI Dashboard.",
   "author": {
-    "name": "Patrick Freyer"
+    "name": "Agentic Assets"
   },
   "license": "MIT",
-  "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",
+  "homepage": "https://github.com/agenticassets/apple-mail-mcp",
   "repository": {
     "type": "git",
-    "url": "https://github.com/patrickfreyer/apple-mail-mcp.git"
+    "url": "https://github.com/agenticassets/apple-mail-mcp.git"
   },
-  "documentation": "https://github.com/patrickfreyer/apple-mail-mcp#readme",
+  "documentation": "https://github.com/agenticassets/apple-mail-mcp#readme",
   "user_config": {
     "user_preferences": {
       "type": "string",

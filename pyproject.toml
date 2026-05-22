@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Patrick Freyer" },
+    { name = "Agentic Assets" },
 ]
 keywords = [
     "mcp",
@@ -44,10 +44,10 @@ mcp-apple-mail = "apple_mail_mcp.__main__:main"
 apple-mail = "apple_mail_mcp.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/patrickfreyer/apple-mail-mcp"
-Repository = "https://github.com/patrickfreyer/apple-mail-mcp"
-Issues = "https://github.com/patrickfreyer/apple-mail-mcp/issues"
-Changelog = "https://github.com/patrickfreyer/apple-mail-mcp/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/agenticassets/apple-mail-mcp"
+Repository = "https://github.com/agenticassets/apple-mail-mcp"
+Issues = "https://github.com/agenticassets/apple-mail-mcp/issues"
+Changelog = "https://github.com/agenticassets/apple-mail-mcp/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["plugin/apple_mail_mcp"]

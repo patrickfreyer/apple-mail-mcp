@@ -28,18 +28,18 @@ Do not solo large plugin or perf workstreams without at least one plugin-dev exp
 
 | Area | Read |
 |------|------|
-| Plugin wrapper, `start_mcp.sh`, manifests | [`plugin/CLAUDE.md`](plugin/CLAUDE.md) |
+| Plugin wrapper, `start_mcp.sh`, manifests | [`plugin/docs/CLAUDE.md`](plugin/docs/CLAUDE.md) |
 | Package entry, `core.py`, `server.py`, CLI | [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) |
 | Individual MCP tools | [`plugin/apple_mail_mcp/tools/CLAUDE.md`](plugin/apple_mail_mcp/tools/CLAUDE.md) |
 | Skills (9 workflow skills) | [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) |
-| Legacy slash commands | [`plugin/commands/CLAUDE.md`](plugin/commands/CLAUDE.md) |
+| Legacy slash commands | [`plugin/docs/commands.md`](plugin/docs/commands.md) |
 | Tests & mocking AppleScript | [`tests/CLAUDE.md`](tests/CLAUDE.md) |
 | Manifest validation, pre-commit | [`tools/CLAUDE.md`](tools/CLAUDE.md) |
 | Live CLI testing, agent workflows | [`docs/CLAUDE.md`](docs/CLAUDE.md) |
 | Deep tool/skill/plugin rules | [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) |
 | Phase plans & backlog | [`tasks/CLAUDE.md`](tasks/CLAUDE.md) · [`tasks/todo.md`](tasks/todo.md) |
 | MCPB bundle build | [`apple-mail-mcpb/CLAUDE.md`](apple-mail-mcpb/CLAUDE.md) |
-| Marketplace manifest | [`.claude-plugin/CLAUDE.md`](.claude-plugin/CLAUDE.md) |
+| Marketplace manifest | [`.claude-plugin/docs/CLAUDE.md`](.claude-plugin/docs/CLAUDE.md) |
 
 ## Architecture (prose)
 

@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.patrickfreyer/apple-mail",
+  "name": "io.github.agenticassets/apple-mail",
   "description": "Full Apple Mail access for AI — search, compose, organize & analyze emails (macOS)",
   "repository": {
-    "url": "https://github.com/patrickfreyer/apple-mail-mcp",
+    "url": "https://github.com/agenticassets/apple-mail-mcp",
     "source": "github"
   },
   "version": "3.1.7",

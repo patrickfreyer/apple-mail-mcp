@@ -1,20 +1,20 @@
 # Apple Mail MCP Server
 
-<!-- mcp-name: io.github.patrickfreyer/apple-mail -->
+<!-- mcp-name: io.github.agenticassets/apple-mail -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI](https://img.shields.io/pypi/v/mcp-apple-mail)](https://pypi.org/project/mcp-apple-mail/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
-[![GitHub stars](https://img.shields.io/github/stars/patrickfreyer/apple-mail-mcp?style=social)](https://github.com/patrickfreyer/apple-mail-mcp/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/agenticassets/apple-mail-mcp?style=social)](https://github.com/agenticassets/apple-mail-mcp/stargazers)
 
 ## Star History
 
-<a href="https://star-history.com/#patrickfreyer/apple-mail-mcp&Date">
+<a href="https://star-history.com/#agenticassets/apple-mail-mcp&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=patrickfreyer/apple-mail-mcp&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=agenticassets/apple-mail-mcp&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=agenticassets/apple-mail-mcp&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=agenticassets/apple-mail-mcp&type=Date" />
  </picture>
 </a>
 
@@ -27,17 +27,17 @@ An MCP server that gives AI assistants full access to Apple Mail -- read, search
 | [`CLAUDE.md`](CLAUDE.md) | Root navigation hub for agents |
 | [`docs/CLAUDE-conventions.md`](docs/CLAUDE-conventions.md) | Tool performance rules, read-only, skills, plugin-dev |
 | [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md) | Live Mail verification via `apple-mail` CLI |
-| [`plugin/CLAUDE.md`](plugin/CLAUDE.md) | Plugin wrapper & `start_mcp.sh` |
+| [`plugin/docs/CLAUDE.md`](plugin/docs/CLAUDE.md) | Plugin wrapper & `start_mcp.sh` |
 | [`plugin/apple_mail_mcp/CLAUDE.md`](plugin/apple_mail_mcp/CLAUDE.md) | Package entry, `core.py`, CLI |
 | [`plugin/apple_mail_mcp/tools/CLAUDE.md`](plugin/apple_mail_mcp/tools/CLAUDE.md) | MCP tool modules |
 | [`plugin/skills/CLAUDE.md`](plugin/skills/CLAUDE.md) | Skill authoring |
-| [`plugin/commands/CLAUDE.md`](plugin/commands/CLAUDE.md) | Legacy slash commands |
+| [`plugin/docs/commands.md`](plugin/docs/commands.md) | Legacy slash commands |
 | [`tests/CLAUDE.md`](tests/CLAUDE.md) | Test layout & AppleScript mocks |
 | [`tools/CLAUDE.md`](tools/CLAUDE.md) | Manifest validation scripts |
 | [`docs/CLAUDE.md`](docs/CLAUDE.md) | Docs folder index + plugin skill map |
 | [`tasks/CLAUDE.md`](tasks/CLAUDE.md) | Phase plans & backlog |
 | [`apple-mail-mcpb/CLAUDE.md`](apple-mail-mcpb/CLAUDE.md) | Desktop bundle build |
-| [`.claude-plugin/CLAUDE.md`](.claude-plugin/CLAUDE.md) | Marketplace manifest |
+| [`.claude-plugin/docs/CLAUDE.md`](.claude-plugin/docs/CLAUDE.md) | Marketplace manifest |
 
 ## Quick Install
 
@@ -48,7 +48,7 @@ An MCP server that gives AI assistants full access to Apple Mail -- read, search
 One install — MCP server (27 tools), legacy `/email-management` slash command, and **nine** bundled workflow skills under `plugin/skills/` (see table below).
 
 ```bash
-claude plugin marketplace add patrickfreyer/apple-mail-mcp
+claude plugin marketplace add agenticassets/apple-mail-mcp
 claude plugin install apple-mail@apple-mail-mcp
 ```
 
@@ -124,7 +124,7 @@ claude mcp add apple-mail -- mcp-apple-mail
 <details>
 <summary><strong>Claude Desktop MCPB</strong></summary>
 
-1. Download the latest `apple-mail-mcp-*.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
+1. Download the latest `apple-mail-mcp-*.mcpb` from [Releases](https://github.com/agenticassets/apple-mail-mcp/releases)
 2. Open Claude Desktop → Settings → Developer → MCP Servers → Install from file
 3. Select the `.mcpb` file and grant Mail.app permissions
 
@@ -134,7 +134,7 @@ claude mcp add apple-mail -- mcp-apple-mail
 <summary><strong>Manual setup</strong></summary>
 
 ```bash
-git clone https://github.com/patrickfreyer/apple-mail-mcp.git
+git clone https://github.com/agenticassets/apple-mail-mcp.git
 cd apple-mail-mcp/plugin
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
@@ -461,7 +461,7 @@ MIT -- see [LICENSE](LICENSE).
 ## Links
 
 - [Changelog](CHANGELOG.md)
-- [Issues](https://github.com/patrickfreyer/apple-mail-mcp/issues)
-- [Discussions](https://github.com/patrickfreyer/apple-mail-mcp/discussions)
+- [Issues](https://github.com/agenticassets/apple-mail-mcp/issues)
+- [Discussions](https://github.com/agenticassets/apple-mail-mcp/discussions)
 - [FastMCP](https://github.com/jlowin/fastmcp)
 - [Model Context Protocol](https://modelcontextprotocol.io)

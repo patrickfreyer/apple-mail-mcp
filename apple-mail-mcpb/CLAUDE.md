@@ -28,4 +28,4 @@ Version sync: five files per [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conve
 
 ## Related
 
-[`plugin/CLAUDE.md`](../plugin/CLAUDE.md) · [`tools/CLAUDE.md`](../tools/CLAUDE.md)
+[`plugin/docs/CLAUDE.md`](../plugin/docs/CLAUDE.md) · [`tools/CLAUDE.md`](../tools/CLAUDE.md)

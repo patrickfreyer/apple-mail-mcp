@@ -107,7 +107,7 @@ echo -e "\n${YELLOW}Step 7: Creating README...${NC}"
 cat > "${BUILD_DIR}/README.md" << 'EOF'
 # Apple Mail MCP bundle
 
-Portable Apple Mail MCP server for Claude Desktop **plus** a mirrored **`skills/`** tree copied from [`plugin/skills`](https://github.com/patrickfreyer/apple-mail-mcp/tree/main/plugin/skills) for Claude Code workflows.
+Portable Apple Mail MCP server for Claude Desktop **plus** a mirrored **`skills/`** tree copied from [`plugin/skills`](https://github.com/agenticassets/apple-mail-mcp/tree/main/plugin/skills) for Claude Code workflows.
 
 ## What is inside this archive
 
@@ -119,7 +119,7 @@ Portable Apple Mail MCP server for Claude Desktop **plus** a mirrored **`skills/
 | `ui/` *(optional)* | MCP Apps dashboard helpers for `inbox_dashboard` |
 | `skills/` | Bundled Claude Code skills (`SKILL.md` per subdirectory) |
 
-For grouped tool summaries, see the upstream [`README`](https://github.com/patrickfreyer/apple-mail-mcp#readme).
+For grouped tool summaries, see the upstream [`README`](https://github.com/agenticassets/apple-mail-mcp#readme).
 
 ## Claude Desktop install (.mcpb)
 
@@ -159,7 +159,7 @@ Also copies `skills/CLAUDE.md` authoring notes — safe to ignore for runtime.
 - Use narrow `recent_days` / caps before escalating cross-account AppleScript workloads.
 - `export_emails`, `save_email_attachment`, compose send paths imply disk or dispatch risk — preview + confirm.
 
-Support & source: https://github.com/patrickfreyer/apple-mail-mcp
+Support & source: https://github.com/agenticassets/apple-mail-mcp
 EOF
 
 # Step 7: Create the MCPB package
@@ -206,4 +206,4 @@ echo -e "  ${YELLOW}mkdir -p \"$HOME/.claude/skills\"${NC}"
 echo -e "  ${YELLOW}cp -a /tmp/am-mcp/skills/. \"$HOME/.claude/skills/\"${NC}"
 echo -e "\n${GREEN}What ships:${NC}"
 echo -e "  FastMCP server with ${GREEN}27${NC} tools + mirrored plugin workflow skills/"
-echo -e "\nUpstream docs: https://github.com/patrickfreyer/apple-mail-mcp#readme"
+echo -e "\nUpstream docs: https://github.com/agenticassets/apple-mail-mcp#readme"
