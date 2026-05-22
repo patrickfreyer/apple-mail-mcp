@@ -26,12 +26,12 @@ Cross-session source of truth. In-conversation tasks are ephemeral; **this file 
 ### `list_mailboxes` (fixes metadata probe)
 
 - [x] Default **`include_counts=False`** for perf metadata case; counts dominate on 194-mailbox accounts.
-- [ ] Add **`max_mailboxes`** cap + `{truncated, total}` in JSON mode.
+- [x] Add **`max_mailboxes`** cap + `{truncated, total}` in JSON mode.
 
 ### `get_statistics` / `account_overview` (~24s → target &lt;12s)
 
 - [x] Lower scan defaults for short `days_back` (10 mailboxes × 100 messages when `days_back <= 7`; else 20 × 500).
-- [ ] Prefer **`unread count of aMailbox`** over per-message unread scan where scope allows.
+- [ ] Prefer **`unread count of aMailbox`** over per-message unread scan where scope allows. (`mailbox_breakdown` already uses Mail count APIs.)
 - [ ] Replace silent `on error` skips with **`errors[]`** in response.
 
 ### `get_needs_response` (~14.5s → target &lt;8s) — highest priority

@@ -1,7 +1,7 @@
 {
   "name": "apple-mail",
   "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 27 MCP tools plus bundled Claude Code workflow skills (Mail operator, triage, inbox zero, taxonomy, archiving, Mail rules advisor, drafting, attachments, writing style)",
-  "version": "3.1.5",
+  "version": "3.1.7",
   "license": "MIT",
   "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",
   "repository": "https://github.com/patrickfreyer/apple-mail-mcp",

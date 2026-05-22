@@ -59,6 +59,130 @@ def _format_dry_run_records(title: str, records, result_prefix: str, limit: int)
     return "\n".join(lines)
 
 
+def _search_message_ids(
+    *,
+    account: str,
+    mailbox: str,
+    subject_terms: Optional[List[str]] = None,
+    sender: Optional[str] = None,
+    read_status: str = "all",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int,
+    timeout: Optional[int] = None,
+) -> List[str]:
+    """Resolve message IDs through the bounded search helper."""
+    records = _search_mail_records(
+        account=account,
+        mailbox=mailbox,
+        subject_terms=subject_terms or None,
+        sender=sender,
+        read_status=read_status,
+        date_from=date_from,
+        date_to=date_to,
+        include_content=False,
+        offset=0,
+        limit=limit,
+        timeout=timeout,
+    )
+    ids: List[str] = []
+    for record in records:
+        message_id = record.get("message_id")
+        if message_id is None:
+            continue
+        ids.append(str(message_id))
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def _move_email_by_message_ids(
+    *,
+    account: str,
+    from_mailbox: str,
+    to_mailbox: str,
+    message_ids: List[str],
+    max_moves: int,
+    dry_run: bool,
+    timeout: int,
+    dest_ref: str,
+) -> str:
+    normalized_ids = normalize_message_ids(message_ids)
+    if not normalized_ids:
+        return "Error: 'message_ids' must contain one or more numeric Mail ids"
+
+    safe_account = escape_applescript(account)
+    safe_from = escape_applescript(from_mailbox)
+    safe_to = escape_applescript(to_mailbox)
+    id_condition = equals_any_numeric_condition("id", normalized_ids)
+    mode_label = (
+        f"DRY RUN - PREVIEW MOVE BY IDS: {safe_from} -> {safe_to}"
+        if dry_run
+        else f"MOVING EMAILS BY IDS: {safe_from} -> {safe_to}"
+    )
+    move_action = "" if dry_run else "move aMessage to destMailbox"
+    result_prefix = "Would move" if dry_run else "Moved"
+    dest_setup = "" if dry_run else f"""
+                set destMailbox to {dest_ref}"""
+
+    script = f'''
+    tell application "Mail"
+        with timeout of {timeout} seconds
+            set outputText to "{mode_label}" & return & return
+            set moveCount to 0
+
+            try
+                set targetAccount to account "{safe_account}"
+                {build_mailbox_ref(from_mailbox, var_name="sourceMailbox")}
+                {dest_setup}
+
+                set matchingMessages to every message of sourceMailbox whose {id_condition}
+                if (count of matchingMessages) > {max_moves} then
+                    set matchingMessages to items 1 thru {max_moves} of matchingMessages
+                end if
+
+                repeat with aMessage in matchingMessages
+                    try
+                        set messageSubject to subject of aMessage
+                        set messageSender to sender of aMessage
+                        set messageDate to date received of aMessage
+
+                        {move_action}
+
+                        set outputText to outputText & "{result_prefix}: " & messageSubject & return
+                        set outputText to outputText & "   From: " & messageSender & return
+                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+
+                        set moveCount to moveCount + 1
+                    end try
+                end repeat
+
+                set outputText to outputText & "========================================" & return
+                set outputText to outputText & "REQUESTED IDS: {len(normalized_ids)}" & return
+                set outputText to outputText & "TOTAL: " & moveCount & " email(s) {result_prefix.lower()}" & return
+                if moveCount >= {max_moves} then
+                    set outputText to outputText & "(max_moves limit reached)" & return
+                end if
+                set outputText to outputText & "========================================" & return
+
+            on error errMsg
+                return "Error: " & errMsg & return & "Check that account and mailbox names are correct. For nested mailboxes, use '/' separator."
+            end try
+
+            return outputText
+        end timeout
+    end tell
+    '''
+
+    try:
+        return run_applescript(script, timeout=timeout)
+    except AppleScriptTimeout:
+        return (
+            f"Error: move_email timed out after {timeout}s on account "
+            f"'{account}'. Retry with a larger timeout or tighter filters."
+        )
+
+
 # Characters that could break AppleScript strings or mailbox names
 _INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
 
@@ -137,77 +261,16 @@ def move_email(
         dest_ref = f'mailbox "{safe_to}" of targetAccount'
 
     if message_ids is not None:
-        normalized_ids = normalize_message_ids(message_ids)
-        if not normalized_ids:
-            return "Error: 'message_ids' must contain one or more numeric Mail ids"
-
-        id_condition = equals_any_numeric_condition("id", normalized_ids)
-        mode_label = (
-            f"DRY RUN - PREVIEW MOVE BY IDS: {safe_from} -> {safe_to}"
-            if dry_run
-            else f"MOVING EMAILS BY IDS: {safe_from} -> {safe_to}"
+        return _move_email_by_message_ids(
+            account=account,
+            from_mailbox=from_mailbox,
+            to_mailbox=to_mailbox,
+            message_ids=message_ids,
+            max_moves=max_moves,
+            dry_run=dry_run,
+            timeout=effective_timeout,
+            dest_ref=dest_ref,
         )
-        move_action = "" if dry_run else "move aMessage to destMailbox"
-        result_prefix = "Would move" if dry_run else "Moved"
-        dest_setup = "" if dry_run else f"""
-                set destMailbox to {dest_ref}"""
-
-        script = f'''
-    tell application "Mail"
-        with timeout of {effective_timeout} seconds
-            set outputText to "{mode_label}" & return & return
-            set moveCount to 0
-
-            try
-                set targetAccount to account "{safe_account}"
-                {build_mailbox_ref(from_mailbox, var_name="sourceMailbox")}
-                {dest_setup}
-
-                set matchingMessages to every message of sourceMailbox whose {id_condition}
-                if (count of matchingMessages) > {max_moves} then
-                    set matchingMessages to items 1 thru {max_moves} of matchingMessages
-                end if
-
-                repeat with aMessage in matchingMessages
-                    try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
-                        set messageDate to date received of aMessage
-
-                        {move_action}
-
-                        set outputText to outputText & "{result_prefix}: " & messageSubject & return
-                        set outputText to outputText & "   From: " & messageSender & return
-                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-
-                        set moveCount to moveCount + 1
-                    end try
-                end repeat
-
-                set outputText to outputText & "========================================" & return
-                set outputText to outputText & "REQUESTED IDS: {len(normalized_ids)}" & return
-                set outputText to outputText & "TOTAL: " & moveCount & " email(s) {result_prefix.lower()}" & return
-                if moveCount >= {max_moves} then
-                    set outputText to outputText & "(max_moves limit reached)" & return
-                end if
-                set outputText to outputText & "========================================" & return
-
-            on error errMsg
-                return "Error: " & errMsg & return & "Check that account and mailbox names are correct. For nested mailboxes, use '/' separator."
-            end try
-
-            return outputText
-        end timeout
-    end tell
-    '''
-
-        try:
-            return run_applescript(script, timeout=effective_timeout)
-        except AppleScriptTimeout:
-            return (
-                f"Error: move_email timed out after {effective_timeout}s on account "
-                f"'{account}'. Retry with a larger timeout or tighter filters."
-            )
 
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
     if not subject_terms and not sender and not older_than_days:
@@ -216,38 +279,7 @@ def move_email(
             "or older_than_days). This prevents accidentally moving everything."
         )
 
-    # Build whose-clause conditions (pushed down into AppleScript so we
-    # never enumerate `every message of sourceMailbox` on large mailboxes).
-    whose_conditions: List[str] = []
-    if subject_terms:
-        whose_conditions.append(contains_any_condition("subject", subject_terms))
-    if sender:
-        whose_conditions.append(f'sender contains "{escape_applescript(sender)}"')
-    if only_read:
-        whose_conditions.append("read status is true")
-
-    date_setup = ""
     effective_recent_days = recent_days if older_than_days is None else 0
-    if older_than_days and older_than_days > 0:
-        date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        whose_conditions.append("date received < cutoffDate")
-    elif effective_recent_days and effective_recent_days > 0:
-        date_setup = (
-            f"set recentCutoffDate to (current date) - ({float(effective_recent_days)} * days)"
-        )
-        whose_conditions.append("date received >= recentCutoffDate")
-
-    whose_clause = " and ".join(whose_conditions)
-
-    # Build nested mailbox reference for destination
-    mailbox_parts = to_mailbox.split("/")
-    if len(mailbox_parts) > 1:
-        dest_ref = f'mailbox "{escape_applescript(mailbox_parts[-1])}" of '
-        for i in range(len(mailbox_parts) - 2, -1, -1):
-            dest_ref += f'mailbox "{escape_applescript(mailbox_parts[i])}" of '
-        dest_ref += "targetAccount"
-    else:
-        dest_ref = f'mailbox "{safe_to}" of targetAccount'
 
     if dry_run:
         try:
@@ -275,72 +307,41 @@ def move_email(
             "Would move",
             max_moves,
         )
-    else:
-        mode_label = "MOVING EMAILS"
-        move_action = "move aMessage to destMailbox"
-        result_prefix = "Moved"
 
-    dest_setup = "" if dry_run else f"""
-            set destMailbox to {dest_ref}"""
-
-    effective_timeout = timeout if timeout is not None else 300
-
-    script = f'''
-    tell application "Mail"
-        with timeout of {effective_timeout} seconds
-            set outputText to "{mode_label}: {safe_from} -> {safe_to}" & return & return
-            set moveCount to 0
-
-            try
-                set targetAccount to account "{safe_account}"
-                {build_mailbox_ref(from_mailbox, var_name="sourceMailbox")}
-                {dest_setup}
-                {date_setup}
-
-                set matchingMessages to (every message of sourceMailbox whose {whose_clause})
-                if (count of matchingMessages) > {max_moves} then
-                    set matchingMessages to items 1 thru {max_moves} of matchingMessages
-                end if
-
-                repeat with aMessage in matchingMessages
-                    try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
-                        set messageDate to date received of aMessage
-
-                        {move_action}
-
-                        set outputText to outputText & "{result_prefix}: " & messageSubject & return
-                        set outputText to outputText & "   From: " & messageSender & return
-                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-
-                        set moveCount to moveCount + 1
-                    end try
-                end repeat
-
-                set outputText to outputText & "========================================" & return
-                set outputText to outputText & "TOTAL: " & moveCount & " email(s) {result_prefix.lower()}" & return
-                if moveCount >= {max_moves} then
-                    set outputText to outputText & "(max_moves limit reached)" & return
-                end if
-                set outputText to outputText & "========================================" & return
-
-            on error errMsg
-                return "Error: " & errMsg & return & "Check that account and mailbox names are correct. For nested mailboxes, use '/' separator."
-            end try
-
-            return outputText
-        end timeout
-    end tell
-    '''
-
+    search_timeout = timeout if timeout is not None else min(effective_timeout, 120)
     try:
-        return run_applescript(script, timeout=effective_timeout)
+        resolved_ids = _search_message_ids(
+            account=account,
+            mailbox=from_mailbox,
+            subject_terms=subject_terms or None,
+            sender=sender,
+            read_status="read" if only_read else "all",
+            date_from=_date_from_for_recent_days(effective_recent_days),
+            date_to=_date_to_for_older_than(older_than_days),
+            limit=max_moves,
+            timeout=search_timeout,
+        )
     except AppleScriptTimeout:
         return (
-            f"Error: move_email timed out after {effective_timeout}s on account "
-            f"'{account}'. Retry with a larger timeout or tighter filters."
+            f"Error: move_email timed out on account '{account}'. "
+            "Retry with a larger timeout or tighter filters."
         )
+
+    if not resolved_ids:
+        return (
+            f"No matching emails found in {from_mailbox} for account '{account}'."
+        )
+
+    return _move_email_by_message_ids(
+        account=account,
+        from_mailbox=from_mailbox,
+        to_mailbox=to_mailbox,
+        message_ids=resolved_ids,
+        max_moves=max_moves,
+        dry_run=False,
+        timeout=effective_timeout,
+        dest_ref=dest_ref,
+    )
 
 
 @mcp.tool(annotations=WRITE_TOOL_ANNOTATIONS)
@@ -661,29 +662,59 @@ def update_email_status(
             "to filter emails, or set apply_to_all=True to update all messages in the mailbox."
         )
 
-    # Pre-filter conditions (skip no-op updates)
-    if action == "mark_read":
-        conditions = ["read status is false"]
-    elif action == "mark_unread":
-        conditions = ["read status is true"]
-    elif action == "flag":
-        conditions = ["flagged status is false"]
-    else:  # unflag
-        conditions = ["flagged status is true"]
+    if action in {"mark_read", "mark_unread"}:
+        search_read = "unread" if action == "mark_read" else "read"
+        search_timeout = timeout if timeout is not None else min(effective_timeout, 120)
+        try:
+            resolved_ids = _search_message_ids(
+                account=account,
+                mailbox=mailbox,
+                subject_terms=subject_terms or None,
+                sender=sender,
+                read_status=search_read,
+                date_from=None,
+                date_to=_date_to_for_older_than(older_than_days),
+                limit=max_updates,
+                timeout=search_timeout,
+            )
+        except AppleScriptTimeout:
+            return (
+                f"Error: update_email_status timed out after {effective_timeout}s "
+                f"on account '{account}'."
+            )
+        if not resolved_ids:
+            return f"No matching emails found in {mailbox} for account '{account}'."
+        return update_email_status(
+            account=account,
+            action=action,
+            mailbox=mailbox,
+            message_ids=resolved_ids,
+            max_updates=max_updates,
+            timeout=timeout,
+        )
 
+    scan_cap = min(500, max(max_updates * 10, 50))
+    per_msg_checks: List[str] = []
+    if action == "flag":
+        per_msg_checks.append("flagged status of aMessage is false")
+    else:
+        per_msg_checks.append("flagged status of aMessage is true")
     if subject_terms:
-        conditions.append(contains_any_condition("subject", subject_terms))
+        subject_checks = " or ".join(
+            f'messageSubject contains "{escape_applescript(term)}"'
+            for term in subject_terms
+        )
+        per_msg_checks.append(f"({subject_checks})")
     if sender:
-        conditions.append(f'sender contains "{escape_applescript(sender)}"')
-
-    # Date filter — pushed into the whose clause so AppleScript filters in
-    # one pass instead of enumerating + Python-side checking.
+        per_msg_checks.append(
+            f'messageSender contains "{escape_applescript(sender)}"'
+        )
     date_setup = ""
     if older_than_days and older_than_days > 0:
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        conditions.append("date received < cutoffDate")
+        per_msg_checks.append("messageDate < cutoffDate")
 
-    search_condition = " and ".join(conditions)
+    combined_condition = " and ".join(per_msg_checks)
 
     script = f'''
     tell application "Mail"
@@ -696,18 +727,31 @@ def update_email_status(
                 {build_mailbox_ref(mailbox, var_name="targetMailbox")}
                 {date_setup}
 
-                set matchingMessages to every message of targetMailbox whose {search_condition}
-                set matchingCount to count of matchingMessages
-
-                if matchingCount is 0 then
-                    set targetMessages to {{}}
-                else if matchingCount > {max_updates} then
-                    set targetMessages to items 1 thru {max_updates} of matchingMessages
+                set matchingMessages to {{}}
+                set candidateMessages to {{}}
+                set messageCount to count of messages of targetMailbox
+                if messageCount > {scan_cap} then
+                    set scanUpperBound to {scan_cap}
                 else
-                    set targetMessages to matchingMessages
+                    set scanUpperBound to messageCount
+                end if
+                if scanUpperBound > 0 then
+                    set candidateMessages to messages 1 thru scanUpperBound of targetMailbox
                 end if
 
-                repeat with aMessage in targetMessages
+                repeat with aMessage in candidateMessages
+                    if (count of matchingMessages) >= {max_updates} then exit repeat
+                    try
+                        set messageSubject to subject of aMessage
+                        set messageSender to sender of aMessage
+                        set messageDate to date received of aMessage
+                        if {combined_condition} then
+                            set end of matchingMessages to aMessage
+                        end if
+                    end try
+                end repeat
+
+                repeat with aMessage in matchingMessages
                     try
                         {single_action_script}
                         set messageSubject to subject of aMessage
@@ -953,19 +997,38 @@ def manage_trash(
             conditions.append(f'sender contains "{escape_applescript(sender)}"')
 
         if conditions:
-            matching_messages_script = (
-                f"set matchingMessages to every message of trashMailbox whose {' and '.join(conditions)}"
+            search_timeout = timeout if timeout is not None else min(effective_timeout, 120)
+            try:
+                resolved_ids = _search_message_ids(
+                    account=account,
+                    mailbox="Trash",
+                    subject_terms=subject_terms or None,
+                    sender=sender,
+                    limit=max_deletes,
+                    timeout=search_timeout,
+                )
+            except AppleScriptTimeout:
+                return (
+                    f"Error: manage_trash timed out after {effective_timeout}s on "
+                    f"account '{account}'."
+                )
+            if not resolved_ids:
+                return f"No matching emails found in Trash for account '{account}'."
+            return manage_trash(
+                account=account,
+                action="delete_permanent",
+                message_ids=resolved_ids,
+                max_deletes=max_deletes,
+                timeout=timeout,
             )
-        else:
-            # No filters (apply_to_all path) — cap before binding so we don't
-            # materialize the full trash mailbox.
-            matching_messages_script = (
-                f"if (count of messages of trashMailbox) > {max_deletes} then\n"
-                f"                        set matchingMessages to messages 1 thru {max_deletes} of trashMailbox\n"
-                f"                    else\n"
-                f"                        set matchingMessages to messages of trashMailbox\n"
-                f"                    end if"
-            )
+
+        matching_messages_script = (
+            f"if (count of messages of trashMailbox) > {max_deletes} then\n"
+            f"                        set matchingMessages to messages 1 thru {max_deletes} of trashMailbox\n"
+            f"                    else\n"
+            f"                        set matchingMessages to messages of trashMailbox\n"
+            f"                    end if"
+        )
 
         script = f'''
         tell application "Mail"
@@ -1023,38 +1086,6 @@ def manage_trash(
                 "to filter emails, or set apply_to_all=True to move all messages to trash."
             )
 
-        # Date filter — push into whose clause so AppleScript filters in a
-        # single pass instead of enumerating + Python-side date checks.
-        date_setup = ""
-        conditions: List[str] = []
-        if subject_terms:
-            conditions.append(contains_any_condition("subject", subject_terms))
-        if sender:
-            conditions.append(f'sender contains "{escape_applescript(sender)}"')
-        if older_than_days and older_than_days > 0:
-            date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-            conditions.append("date received < cutoffDate")
-        elif effective_recent_days and effective_recent_days > 0:
-            date_setup = (
-                f"set recentCutoffDate to (current date) - ({float(effective_recent_days)} * days)"
-            )
-            conditions.append("date received >= recentCutoffDate")
-
-        if conditions:
-            matching_messages_script = (
-                f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
-            )
-        else:
-            # No filters (apply_to_all path) — cap before binding so we don't
-            # materialize the full mailbox.
-            matching_messages_script = (
-                f"if (count of messages of sourceMailbox) > {max_deletes} then\n"
-                f"                        set matchingMessages to messages 1 thru {max_deletes} of sourceMailbox\n"
-                f"                    else\n"
-                f"                        set matchingMessages to messages of sourceMailbox\n"
-                f"                    end if"
-            )
-
         if dry_run:
             try:
                 records = _search_mail_records(
@@ -1080,64 +1111,35 @@ def manage_trash(
                 "Would trash",
                 max_deletes,
             )
-        else:
-            mode_label = "MOVING EMAILS TO TRASH"
-            move_script = "move aMessage to trashMailbox"
-            result_verb = "Moved to trash"
 
-        trash_setup = "" if dry_run else """
-                    set trashMailbox to mailbox "Trash" of targetAccount"""
-
-        script = f'''
-        tell application "Mail"
-            with timeout of {effective_timeout} seconds
-                set outputText to "{mode_label}" & return & return
-                set deleteCount to 0
-
-                try
-                    set targetAccount to account "{safe_account}"
-                    {build_mailbox_ref(mailbox, var_name="sourceMailbox")}
-                    {trash_setup}
-                    {date_setup}
-
-                    {matching_messages_script}
-                    set matchingCount to count of matchingMessages
-
-                    if matchingCount is 0 then
-                        set targetMessages to {{}}
-                    else if matchingCount > {max_deletes} then
-                        set targetMessages to items 1 thru {max_deletes} of matchingMessages
-                    else
-                        set targetMessages to matchingMessages
-                    end if
-
-                    repeat with aMessage in targetMessages
-                        try
-                            set messageSubject to subject of aMessage
-                            set messageSender to sender of aMessage
-                            set messageDate to date received of aMessage
-
-                            {move_script}
-                            set deleteCount to deleteCount + 1
-
-                            set outputText to outputText & "{result_verb}: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return
-                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-                        end try
-                    end repeat
-
-                    set outputText to outputText & "========================================" & return
-                    set outputText to outputText & "TOTAL: " & deleteCount & " email(s) {result_verb.lower()}" & return
-                    set outputText to outputText & "========================================" & return
-
-                on error errMsg
-                    return "Error: " & errMsg
-                end try
-
-                return outputText
-            end timeout
-        end tell
-        '''
+        search_timeout = timeout if timeout is not None else min(effective_timeout, 120)
+        try:
+            resolved_ids = _search_message_ids(
+                account=account,
+                mailbox=mailbox,
+                subject_terms=subject_terms or None,
+                sender=sender,
+                date_from=_date_from_for_recent_days(effective_recent_days),
+                date_to=_date_to_for_older_than(older_than_days),
+                limit=max_deletes,
+                timeout=search_timeout,
+            )
+        except AppleScriptTimeout:
+            return (
+                f"Error: manage_trash timed out after {effective_timeout}s on "
+                f"account '{account}'."
+            )
+        if not resolved_ids:
+            return f"No matching emails found in {mailbox} for account '{account}'."
+        return manage_trash(
+            account=account,
+            action="move_to_trash",
+            message_ids=resolved_ids,
+            mailbox=mailbox,
+            max_deletes=max_deletes,
+            dry_run=False,
+            timeout=timeout,
+        )
 
     try:
         return run_applescript(script, timeout=effective_timeout)

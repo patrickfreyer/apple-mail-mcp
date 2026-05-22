@@ -772,6 +772,7 @@ def list_mailboxes(
     account: Optional[str] = None,
     include_counts: bool = False,
     output_format: str = "text",
+    max_mailboxes: Optional[int] = None,
 ) -> str:
     """
     List all mailboxes (folders) for a specific account or all accounts.
@@ -781,6 +782,8 @@ def list_mailboxes(
         include_counts: Whether to include message counts for each mailbox (default: False).
             Counts are expensive on large accounts — pass True only for folder audits.
         output_format: "text" (default, human-readable) or "json" (structured list of mailbox dicts)
+        max_mailboxes: Optional cap on mailboxes returned per account in JSON mode. When set,
+            the JSON payload includes ``total``, ``returned``, and ``truncated`` fields.
 
     Returns:
         Formatted list of mailboxes with optional message counts.
@@ -795,7 +798,7 @@ def list_mailboxes(
             return account_err
 
     if output_format == "json":
-        return _list_mailboxes_json(account, include_counts)
+        return _list_mailboxes_json(account, include_counts, max_mailboxes=max_mailboxes)
 
     count_script = (
         """
@@ -877,8 +880,13 @@ def list_mailboxes(
     return result
 
 
-def _list_mailboxes_json(account: Optional[str], include_counts: bool = True) -> str:
-    """Return mailboxes as a JSON list."""
+def _list_mailboxes_json(
+    account: Optional[str],
+    include_counts: bool = True,
+    *,
+    max_mailboxes: Optional[int] = None,
+) -> str:
+    """Return mailboxes as JSON."""
     escaped_account = escape_applescript(account) if account else None
     account_filter = (
         f'if accountName is "{escaped_account}" then'
@@ -886,6 +894,11 @@ def _list_mailboxes_json(account: Optional[str], include_counts: bool = True) ->
         else ""
     )
     account_filter_end = "end if" if account else ""
+    cap_check = ""
+    if max_mailboxes is not None and max_mailboxes > 0:
+        cap_check = f"""
+            if mailboxIndex > {max_mailboxes} then exit repeat
+        """
     def count_fields(var_name: str) -> str:
         if not include_counts:
             return """
@@ -910,7 +923,10 @@ def _list_mailboxes_json(account: Optional[str], include_counts: bool = True) ->
             {account_filter}
             try
                 set accountMailboxes to every mailbox of anAccount
+                set mailboxIndex to 0
                 repeat with currentMailbox in accountMailboxes
+                    set mailboxIndex to mailboxIndex + 1
+                    {cap_check}
                     try
                         set mailboxName to name of currentMailbox
                         {count_fields("currentMailbox")}
@@ -949,7 +965,19 @@ def _list_mailboxes_json(account: Optional[str], include_counts: bool = True) ->
             item["message_count"] = msg_count
             item["unread_count"] = unread_count
         mailboxes.append(item)
-    return json.dumps(mailboxes, indent=2)
+
+    if max_mailboxes is None:
+        return json.dumps(mailboxes, indent=2)
+
+    total = len(mailboxes)
+    truncated = total >= max_mailboxes
+    payload = {
+        "mailboxes": mailboxes,
+        "total": total,
+        "returned": len(mailboxes),
+        "truncated": truncated,
+    }
+    return json.dumps(payload, indent=2)
 
 
 # ---------------------------------------------------------------------------

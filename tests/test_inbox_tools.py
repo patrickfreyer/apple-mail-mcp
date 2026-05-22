@@ -90,6 +90,28 @@ class InboxToolTests(unittest.TestCase):
         self.assertEqual(records[0]["content_preview"], "Hello ||| still content")
 
 
+class ListMailboxesJsonTests(unittest.TestCase):
+    def test_list_mailboxes_json_max_mailboxes_returns_wrapper(self):
+        raw = "Work|||INBOX|||INBOX|||-1|||-1"
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return raw
+
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+            result = inbox_tools.list_mailboxes(
+                account="Work",
+                output_format="json",
+                max_mailboxes=1,
+            )
+
+        payload = json.loads(result)
+        self.assertIn("mailboxes", payload)
+        self.assertTrue(payload["truncated"])
+        self.assertIn("if mailboxIndex > 1 then exit repeat", captured["script"])
+
+
 class OverviewParseTests(unittest.TestCase):
     def test_parse_overview_account_collects_malformed_counts(self):
         raw = "\n".join([
