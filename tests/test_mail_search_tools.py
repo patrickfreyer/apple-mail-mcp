@@ -240,6 +240,40 @@ class SearchToolTests(unittest.TestCase):
 
         self.assertIn("set searchAccounts to every account", captured["script"])
 
+    def test_get_email_by_id_returns_exact_message_json(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return _record_line(
+                12345,
+                "Exact Ticket",
+                content_preview="Full body preview",
+            )
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                search_tools.get_email_by_id(
+                    account="Work",
+                    message_id="12345",
+                    output_format="json",
+                )
+            )
+
+        self.assertEqual(response["item"]["message_id"], "12345")
+        self.assertEqual(response["item"]["subject"], "Exact Ticket")
+        self.assertEqual(response["item"]["content_preview"], "Full body preview")
+        self.assertIn("whose id is 12345", captured["script"])
+
+    def test_get_email_by_id_rejects_non_numeric_ids(self):
+        result = search_tools.get_email_by_id(
+            account="Work",
+            message_id="abc",
+            output_format="json",
+        )
+
+        self.assertIn("message_id must be a numeric", result)
+
     def test_search_emails_body_text_uses_lowercase_handler(self):
         """When body_text is provided, the script should include LOWERCASE_HANDLER."""
         captured = {}

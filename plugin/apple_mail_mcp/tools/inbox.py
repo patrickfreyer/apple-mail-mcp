@@ -21,17 +21,18 @@ def _parse_pipe_delimited_emails(raw: str) -> List[Dict[str, Any]]:
     for line in raw.split("\n"):
         if "|||" not in line:
             continue
-        parts = line.split("|||")
+        parts = line.split("|||", 5)
         if len(parts) >= 5:
-            emails.append(
-                {
-                    "subject": parts[0].strip(),
-                    "sender": parts[1].strip(),
-                    "date": parts[2].strip(),
-                    "is_read": parts[3].strip().lower() == "true",
-                    "account": parts[4].strip(),
-                }
-            )
+            item = {
+                "subject": parts[0].strip(),
+                "sender": parts[1].strip(),
+                "date": parts[2].strip(),
+                "is_read": parts[3].strip().lower() == "true",
+                "account": parts[4].strip(),
+            }
+            if len(parts) > 5 and parts[5].strip():
+                item["content_preview"] = parts[5].strip()
+            emails.append(item)
     return emails
 
 
@@ -64,65 +65,81 @@ def list_inbox_emails(
     if output_format == "json":
         return _list_inbox_emails_json(account, max_emails, include_read, include_content)
 
+    escaped_account = escape_applescript(account) if account else None
+    title = f"INBOX EMAILS - {escaped_account}" if account else "INBOX EMAILS - ALL ACCOUNTS"
+    account_filter = (
+        f'''
+            if accountName is not "{escaped_account}" then
+                set shouldIncludeAccount to false
+            end if
+    '''
+        if account
+        else ""
+    )
+
     script = f"""
     tell application "Mail"
-        set outputText to "INBOX EMAILS - ALL ACCOUNTS" & return & return
+        set outputText to "{title}" & return & return
         set totalCount to 0
         set allAccounts to every account
 
         repeat with anAccount in allAccounts
             set accountName to name of anAccount
+            set shouldIncludeAccount to true
+            {account_filter}
 
-            try
-                {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                set inboxMessages to every message of inboxMailbox
-                set messageCount to count of inboxMessages
+            if shouldIncludeAccount then
+                try
+                    {inbox_mailbox_script("inboxMailbox", "anAccount")}
+                    set inboxMessages to every message of inboxMailbox
+                    set messageCount to count of inboxMessages
 
-                if messageCount > 0 then
-                    set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return
-                    set outputText to outputText & "📧 ACCOUNT: " & accountName & " (" & messageCount & " messages)" & return
-                    set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
+                    if messageCount > 0 then
+                        set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return
+                        set outputText to outputText & "📧 ACCOUNT: " & accountName & " (" & messageCount & " messages)" & return
+                        set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
 
-                    set currentIndex to 0
-                    repeat with aMessage in inboxMessages
-                        set currentIndex to currentIndex + 1
-                        if {max_emails} > 0 and currentIndex > {max_emails} then exit repeat
+                        set includedCount to 0
+                        repeat with aMessage in inboxMessages
 
-                        try
-                            set messageSubject to subject of aMessage
-                            set messageSender to sender of aMessage
-                            set messageDate to date received of aMessage
-                            set messageRead to read status of aMessage
+                            try
+                                set messageSubject to subject of aMessage
+                                set messageSender to sender of aMessage
+                                set messageDate to date received of aMessage
+                                set messageRead to read status of aMessage
 
-                            set shouldInclude to true
-                            if not {str(include_read).lower()} and messageRead then
-                                set shouldInclude to false
-                            end if
-
-                            if shouldInclude then
-                                if messageRead then
-                                    set readIndicator to "✓"
-                                else
-                                    set readIndicator to "✉"
+                                set shouldInclude to true
+                                if not {str(include_read).lower()} and messageRead then
+                                    set shouldInclude to false
                                 end if
 
-                                set outputText to outputText & readIndicator & " " & messageSubject & return
-                                set outputText to outputText & "   From: " & messageSender & return
-                                set outputText to outputText & "   Date: " & (messageDate as string) & return
+                                if shouldInclude then
+                                    if {max_emails} > 0 and includedCount >= {max_emails} then exit repeat
+                                    if messageRead then
+                                        set readIndicator to "✓"
+                                    else
+                                        set readIndicator to "✉"
+                                    end if
 
-                                {content_preview_script(200) if include_content else ""}
+                                    set outputText to outputText & readIndicator & " " & messageSubject & return
+                                    set outputText to outputText & "   From: " & messageSender & return
+                                    set outputText to outputText & "   Date: " & (messageDate as string) & return
 
-                                set outputText to outputText & return
+                                    {content_preview_script(200) if include_content else ""}
 
-                                set totalCount to totalCount + 1
-                            end if
-                        end try
-                    end repeat
-                end if
-            on error errMsg
-                set outputText to outputText & "⚠ Error accessing inbox for account " & accountName & return
-                set outputText to outputText & "   " & errMsg & return & return
-            end try
+                                    set outputText to outputText & return
+
+                                    set totalCount to totalCount + 1
+                                    set includedCount to includedCount + 1
+                                end if
+                            end try
+                        end repeat
+                    end if
+                on error errMsg
+                    set outputText to outputText & "⚠ Error accessing inbox for account " & accountName & return
+                    set outputText to outputText & "   " & errMsg & return & return
+                end try
+            end if
         end repeat
 
         set outputText to outputText & "========================================" & return
@@ -148,7 +165,41 @@ def _list_inbox_emails_json(
     account_filter = f'if accountName is "{escaped_account}" then' if account else ""
     account_filter_end = "end if" if account else ""
 
+    content_field = (
+        """
+                        set contentPreview to ""
+                        try
+                            set msgContent to content of aMessage
+                            set contentPreview to my sanitize_field(msgContent)
+                            if length of contentPreview > 200 then
+                                set contentPreview to text 1 thru 200 of contentPreview & "..."
+                            end if
+                        end try
+        """
+        if include_content
+        else 'set contentPreview to ""'
+    )
+
     script = f"""
+    on sanitize_field(value)
+        try
+            set valueText to value as string
+        on error
+            set valueText to ""
+        end try
+
+        set AppleScript's text item delimiters to {{return, linefeed, tab}}
+        set valueParts to text items of valueText
+        set AppleScript's text item delimiters to " "
+        set valueText to valueParts as string
+        set AppleScript's text item delimiters to "|||"
+        set valueParts to text items of valueText
+        set AppleScript's text item delimiters to " | "
+        set valueText to valueParts as string
+        set AppleScript's text item delimiters to ""
+        return valueText
+    end sanitize_field
+
     tell application "Mail"
         set resultLines to {{}}
         set allAccounts to every account
@@ -158,13 +209,11 @@ def _list_inbox_emails_json(
             try
                 {inbox_mailbox_script("inboxMailbox", "anAccount")}
                 set inboxMessages to every message of inboxMailbox
-                set currentIndex to 0
+                set includedCount to 0
                 repeat with aMessage in inboxMessages
-                    set currentIndex to currentIndex + 1
-                    if {max_emails} > 0 and currentIndex > {max_emails} then exit repeat
                     try
-                        set messageSubject to subject of aMessage
-                        set messageSender to sender of aMessage
+                        set messageSubject to my sanitize_field(subject of aMessage)
+                        set messageSender to my sanitize_field(sender of aMessage)
                         set messageDate to date received of aMessage
                         set messageRead to read status of aMessage
                         set shouldInclude to true
@@ -172,7 +221,10 @@ def _list_inbox_emails_json(
                             set shouldInclude to false
                         end if
                         if shouldInclude then
-                            set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName
+                            if {max_emails} > 0 and includedCount >= {max_emails} then exit repeat
+                            {content_field}
+                            set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & contentPreview
+                            set includedCount to includedCount + 1
                         end if
                     end try
                 end repeat
