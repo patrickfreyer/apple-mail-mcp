@@ -16,7 +16,7 @@ Do **not** add new commands here. Reasons:
 
 1. Skills trigger automatically from user intent (description-driven).
 2. Claude Code often auto-converts plugin commands to skills at install — maintaining both creates drift.
-3. Sibling skills (`email-drafting`, `inbox-triage`, `email-attachments`) will ship skill-only.
+3. Sibling skills ship skill-only — `inbox-triage` is shipped; `email-drafting` and `email-attachments` remain planned.
 
 If you need a new workflow entry point, create `../skills/<name>/SKILL.md` following the `email-management` template. See `../skills/CLAUDE.md`.
 

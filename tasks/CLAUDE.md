@@ -2,35 +2,44 @@
 
 Cross-session planning artifacts. In-conversation work uses ephemeral task lists; **this folder survives between sessions**.
 
-## todo.md vs phase-plan
+## Agent orchestration
+
+When executing [`phase-plan-3.1.7.md`](phase-plan-3.1.7.md) or [`todo.md`](todo.md):
+
+- **Subagents for research and implementation** — delegate coding, tests, docs, and live runs; parallelize independent modules, sequence dependent phases.
+- **Plugin-dev experts always** — `plugin-dev:plugin-validator`, `plugin-dev:plugin-architect`, plus `mcp-integration` / `plugin-structure` / `mcp-builder` skills per phase plan.
+
+## Active files
 
 | File | Role |
 |------|------|
-| [`todo.md`](todo.md) | **Rolling backlog** — checkboxes, file paths, "what's next". Prune done items; add ideas as they surface. Source of truth between sessions. |
-| [`phase-plan-3.1.6.md`](phase-plan-3.1.6.md) | **Release sequencing** — phase gates (0→A→1→B→2→3→4→5), dependency rules, ship targets. Links to audit/review docs. |
+| [`todo.md`](todo.md) | **Rolling backlog** — checkboxes, paths, what's next. Prune done items. |
+| [`phase-plan-3.1.7.md`](phase-plan-3.1.7.md) | **Current release sequencing** — phases 1→4 after 3.1.6 hardening. |
+| [`live-test-baseline-2026-05-21.md`](live-test-baseline-2026-05-21.md) | **Live perf numbers** — production vs light account; root-cause notes. |
+| [`id-first-refactor-spec.md`](id-first-refactor-spec.md) | Future spec (3.1.8+) — not in current phase plan. |
 
-**Convention:** when an item in `todo.md` grows into a workstream, link a dated folder under `tasks/<workstream>/`. Phase plan marks what's done; mirror completions in `todo.md` ("Already done" section).
+## Archive
 
-Current branch context (3.1.6): **206 tests**. Phases 0–2 and most of 4 done; Phase 3 in flight (JSON normalization for remaining tools). See phase plan § Orchestration rule — don't start phase N+1 until exit criteria met.
+Superseded plans live under [`archive/`](archive/). **Do not edit archived files for current work.**
 
-## Other task files
+- [`archive/2026-05-21/`](archive/2026-05-21/) — 3.1.6 audit, phase plan, CLI report, annotation matrix (shipped `f0ca077`).
 
-- `plugin-audit-and-action-plan-2026-05-21.md` — full audit
-- `plan-review-status-2026-05-21.md` — review tracking
-- `phase-3-annotation-matrix.md` — annotation workstream detail
+## Production test account
 
-Root [`PLAN_REVIEW_COMMENTS_2026-05-21.md`](../PLAN_REVIEW_COMMENTS_2026-05-21.md) and [`CLI_TESTING_REPORT_2026-05-21.md`](../CLI_TESTING_REPORT_2026-05-21.md) live at repo root (referenced from phase plan).
+Use **`cayman@agenticassets.ai`** for perf gates (194 mailboxes). **`ai.openclaw`** is light regression only.
 
-## Maintenance reminders (from todo.md)
+```bash
+export DEFAULT_MAIL_ACCOUNT="cayman@agenticassets.ai"
+.venv/bin/apple-mail perf-test --json   # add --include-analysis after Phase 1
+```
 
-- After `tools/*.py` changes: `.venv/bin/pytest tests/ -q`
-- After manifest/skill/layout changes: `plugin-dev:plugin-validator` (fallback: `tools/validate_manifests.sh`)
-- After skill `description` edits: `plugin-dev:skill-reviewer`
-- Version bump: grep all five version files (see [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md))
+## Maintenance
+
+- After `tools/*.py`: `.venv/bin/pytest tests/ -q`
+- After manifests/skills: `tools/validate_manifests.py` + `plugin-dev:plugin-validator`
+- Live workflow: [`docs/AGENT_LIVE_TESTING.md`](../docs/AGENT_LIVE_TESTING.md)
+- Engineering rules: [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md)
 
 ## Related
 
-- Deep engineering rules: [`docs/CLAUDE-conventions.md`](../docs/CLAUDE-conventions.md)
-- Live verification workflow: [`docs/AGENT_LIVE_TESTING.md`](../docs/AGENT_LIVE_TESTING.md)
-- CI guardrails: [`tools/CLAUDE.md`](../tools/CLAUDE.md)
-- Root overview: [`CLAUDE.md`](../CLAUDE.md)
+- Root overview: [`CLAUDE.md`](../CLAUDE.md) → [`tasks/CLAUDE.md`](CLAUDE.md) link in table

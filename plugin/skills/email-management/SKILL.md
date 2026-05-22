@@ -1,6 +1,6 @@
 ---
 name: email-management
-description: This skill should be used when the user asks to "help me get to inbox zero", "clean up my inbox", "organize my email", "set up folders", "I'm drowning in email", or otherwise wants to triage, organize, or reduce volume in their Apple Mail inbox. Covers daily triage routines, folder structure design, bulk cleanup with safety limits, and Inbox Zero methodology using the apple-mail MCP tools (get_inbox_overview, search_emails, move_email, update_email_status, manage_trash, get_statistics). Do NOT use for composing or replying to a specific message (see email-drafting), one-off triage runs over a specific time window (see inbox-triage), or attachment handling (see email-attachments).
+description: This skill should be used when the user asks to "help me get to inbox zero", "clean up my inbox", "organize my email", "set up folders", "I'm drowning in email", or otherwise wants to organize or reduce volume in their Apple Mail inbox. Covers folder structure design, bulk cleanup with safety limits, and Inbox Zero methodology using the apple-mail MCP tools (get_inbox_overview, search_emails, move_email, update_email_status, manage_trash, get_statistics). Do NOT use for composing or replying to a specific message (use compose MCP tools), a quick read-first scan of recent mail (see inbox-triage), or attachment handling (use list_email_attachments and save_email_attachment).
 ---
 
 # Email Management
@@ -13,9 +13,9 @@ Use when the request is about reducing inbox volume, designing or reshaping a fo
 
 Do NOT use for:
 
-- Composing or replying to a specific message — see `email-drafting`.
+- Composing or replying to a specific message — use compose MCP tools (`compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`).
 - A one-off pass over the last N hours of mail — see `inbox-triage`.
-- Downloading or saving attachments — see `email-attachments`.
+- Downloading or saving attachments — use `list_email_attachments` and `save_email_attachment`.
 
 For finding a single specific email, call `search_emails()` directly without invoking this skill.
 
@@ -34,9 +34,9 @@ When in doubt, run a narrow query first and widen only if results are insufficie
 | Request signal | Route to |
 |----------------|----------|
 | "Help me get to inbox zero" / "clean up my inbox" / "organize email" | This skill |
-| "Write an email to..." / "reply to..." / "draft a..." | `email-drafting` |
+| "Write an email to..." / "reply to..." / "draft a..." | Compose MCP tools (`compose_email`, `reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`) |
 | "Triage what came in today" / "what needs my attention right now" | `inbox-triage` |
-| "Save the attachment from..." | `email-attachments` |
+| "Save the attachment from..." | `list_email_attachments` / `save_email_attachment` |
 | "Find the email about X" | Call `search_emails()` directly |
 | "Delete all emails from..." / "archive everything older than..." | This skill, Cleanup section |
 
@@ -66,12 +66,13 @@ Pattern: identify candidates with `search_emails()`, preview the count and sampl
 
 ## Workflow: Daily Inbox Triage
 
-Goal: process inbox to zero or near-zero in 15 to 30 minutes.
+Goal: process inbox to zero or near-zero in 15 to 30 minutes. For a **5–10 minute scan** only, use the **`inbox-triage`** skill instead.
 
 1. Get overview: `get_inbox_overview()` to see unread counts, recent messages, and suggested actions.
-2. Surface priorities: `search_emails(subject_keyword="urgent")` and variants for "action required", "deadline". Use the default 48-hour window unless the user requests otherwise.
+2. Surface priorities: `get_needs_response(days_back=2, max_results=10)` for likely replies; optionally `get_awaiting_reply(days_back=7)` for follow-ups you sent. Use keyword `search_emails` only when the user names a topic.
+3. Drill down: after list/search returns a `message_id`, use `get_email_by_id(message_id=...)` for full content — do not re-search by subject.
 3. Decide per message using the four-option rule: respond, defer, file, or delete.
-   - For responses, hand off to the `email-drafting` skill.
+   - For responses, use compose MCP tools (`reply_to_email`, `compose_email`, `create_rich_email_draft`).
    - To defer, flag with `update_email_status(action="flag", subject_keyword="...")`.
    - To file, use `move_email(to_mailbox="...", max_moves=1)`.
    - To delete, use `manage_trash(action="move_to_trash")` with an explicit cap.
@@ -106,9 +107,9 @@ Goal: drain the inbox by processing every message exactly once.
 1. Survey: `get_inbox_overview()` and `get_statistics(scope="account_overview")` to size the problem.
 2. Process top-down with the five-D framework on each message:
    - Delete: spam, expired notifications — `manage_trash(action="move_to_trash")`.
-   - Delegate: forward via the `email-drafting` skill.
+   - Delegate: forward via `forward_email`.
    - Defer: flag and move to a "Follow Up" mailbox.
-   - Do: respond now if under two minutes (`email-drafting`).
+   - Do: respond now if under two minutes (`reply_to_email` or `compose_email`).
    - File: `move_email(to_mailbox="...")` for reference material.
 3. Keep folders sparing: an "Action Required", "Waiting For", and "Reference" trio handles most cases.
 4. Maintain daily — Inbox Zero is a habit, not a one-time event.
@@ -124,8 +125,12 @@ Mindset:
 | Goal | Tool | Notes |
 |------|------|-------|
 | Inbox snapshot | `get_inbox_overview()` | Always the first call |
+| Daily 5-min scan | `inbox-triage` skill | Uses needs-response + list, not full cleanup |
+| Likely need reply | `get_needs_response(days_back=2)` | Fast subject-only by default |
+| Follow-ups you sent | `get_awaiting_reply(days_back=7)` | Optional daily check |
 | Full dashboard | `inbox_dashboard()` | Heavier, richer view |
 | Find a specific email | `search_emails(subject_keyword="...")` | Defaults to last 48 hours |
+| Read one message by id | `get_email_by_id(message_id="...")` | After search/list returns an id |
 | Search by sender | `search_emails(sender="...")` | Same defaults apply |
 | Search email bodies | `search_emails(body_text="...", include_content=True)` | Slower; use when subject is unknown |
 | Cross-account search | `search_emails(account=None, all_accounts=True)` | Costly on Exchange; use sparingly |

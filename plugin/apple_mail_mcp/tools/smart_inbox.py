@@ -1,5 +1,6 @@
 """Smart inbox tools: follow-up tracking, actionable email detection, and sender analytics."""
 
+from collections import Counter
 from typing import Optional
 
 from apple_mail_mcp import server as _server
@@ -285,6 +286,7 @@ def get_needs_response(
     mailbox: str = "INBOX",
     days_back: int = 7,
     max_results: int = 20,
+    scan_body: bool = False,
     timeout: Optional[int] = None,
 ) -> str:
     """Identify unread emails that likely need a response from you.
@@ -299,6 +301,8 @@ def get_needs_response(
         mailbox: Mailbox to scan (default: "INBOX")
         days_back: How many days back to look (default: 7)
         max_results: Maximum results to return (default: 20)
+        scan_body: When True, scan message body for question marks (slower).
+            Subject-only detection is usually enough for daily triage (default: False).
         timeout: Optional AppleScript timeout in seconds. Defaults to 120s.
 
     Returns:
@@ -319,10 +323,23 @@ def get_needs_response(
 
     newsletter_condition = _newsletter_filter_condition("messageSender")
 
-    # A1: cap message collection. days_back narrows further; cap is a safety
-    # ceiling for huge unread backlogs.
-    inbox_cap = max(max_results * 10, 200)
-    sent_cap = 200
+    # Cap message collection. Tighter caps keep daily triage under agent budgets.
+    inbox_cap = min(max(max_results * 5, 50), 100)
+    sent_cap = 100
+
+    body_scan_block = (
+        """
+                                try
+                                    set msgContent to content of aMessage
+                                    if length of msgContent > 500 then
+                                        set msgContent to text 1 thru 500 of msgContent
+                                    end if
+                                    if msgContent contains "?" then set hasQuestion to true
+                                end try
+"""
+        if scan_body
+        else ""
+    )
 
     if days_back > 0:
         unread_whose = "whose read status is false and date received >= cutoffDate"
@@ -437,13 +454,7 @@ def get_needs_response(
                             if not alreadyReplied then
                                 -- Determine priority
                                 set hasQuestion to (messageSubject contains "?")
-                                try
-                                    set msgContent to content of aMessage
-                                    if length of msgContent > 500 then
-                                        set msgContent to text 1 thru 500 of msgContent
-                                    end if
-                                    if msgContent contains "?" then set hasQuestion to true
-                                end try
+                                {body_scan_block}
 
                                 set isFlagged to false
                                 try
@@ -558,16 +569,13 @@ def get_top_senders(
     date_cutoff = date_cutoff_script(days_back, "cutoffDate")
     date_check = "if messageDate < cutoffDate then exit repeat" if days_back > 0 else ""
 
-    # A1: cap message scan. 2000 is the ceiling; max_results*50 narrows further
-    # for small top_n requests. We deliberately do NOT use a `whose` clause for
-    # the read filter — we want the full sender distribution — but we DO use
-    # one for the date filter when days_back > 0 so Mail doesn't enumerate the
-    # full mailbox just to discard old messages.
-    scan_cap = min(2000, max(top_n * 50, 200))
-    if days_back > 0:
-        scan_whose = "whose date received >= cutoffDate"
-    else:
-        scan_whose = ""
+    # Cap message scan. Prefer a bounded newest-first slice + Python aggregation
+    # over `whose` filters that materialize huge inboxes.
+    scan_cap = min(500, max(top_n * 15, 75))
+    if days_back > 14:
+        scan_cap = min(scan_cap, 300)
+    if days_back >= 30:
+        scan_cap = min(scan_cap, 100)
 
     # Build the extraction key: either full sender or domain.
     if group_by_domain:
@@ -603,14 +611,7 @@ def get_top_senders(
 '''
         title_label = "TOP SENDERS"
 
-    # A2/A3: return the raw (key, count) pairs unsorted; Python does the
-    # sort + top-N. The AppleScript still aggregates so we ship only one
-    # line per unique sender, not one per message, across the IPC boundary.
-    # Output schema (parsed below):
-    #   TOTAL|||<totalAnalysed>
-    #   UNIQUE|||<uniqueCount>
-    #   ENTRY|||<senderKey>|||<count>
-    #   ...
+    # Return one ROW|||sender per message; Python aggregates with Counter.
     script = f'''
     tell application "Mail"
         try
@@ -629,20 +630,13 @@ def get_top_senders(
 
             {date_cutoff}
 
-            -- A1: bind a date-filtered + capped slice rather than enumerating
-            -- `every message`, which on a 24K mailbox forces Mail to materialize
-            -- the full list before we touch a single field.
             try
-                set mailboxMessages to (every message of targetMailbox {scan_whose})
+                set mailboxMessages to messages 1 thru {scan_cap} of targetMailbox
             on error
                 set mailboxMessages to {{}}
             end try
-            if (count of mailboxMessages) > {scan_cap} then
-                set mailboxMessages to items 1 thru {scan_cap} of mailboxMessages
-            end if
 
-            set senderKeys to {{}}
-            set senderCounts to {{}}
+            set outputLines to {{}}
             set totalAnalysed to 0
 
             repeat with aMessage in mailboxMessages
@@ -655,38 +649,11 @@ def get_top_senders(
 
                     {extract_key}
 
-                    -- Update count. We keep aggregation in AppleScript so the
-                    -- payload sent to Python is O(unique senders), not O(messages).
-                    set foundSender to false
-                    set idx to 1
-                    repeat with existingKey in senderKeys
-                        if existingKey as string is senderKey then
-                            set item idx of senderCounts to (item idx of senderCounts) + 1
-                            set foundSender to true
-                            exit repeat
-                        end if
-                        set idx to idx + 1
-                    end repeat
-                    if not foundSender then
-                        set end of senderKeys to senderKey
-                        set end of senderCounts to 1
-                    end if
+                    set end of outputLines to "ROW|||" & senderKey
                 end try
             end repeat
 
-            -- Emit raw (key, count) pairs unsorted. Python performs the
-            -- sort + top-N, which keeps AppleScript out of an O(N^2)
-            -- selection sort on the Mail side.
-            set outputLines to {{}}
             set end of outputLines to "TOTAL|||" & (totalAnalysed as string)
-            set end of outputLines to "UNIQUE|||" & ((count of senderKeys) as string)
-            set entryIdx to 1
-            repeat with existingKey in senderKeys
-                set kText to existingKey as string
-                set cVal to item entryIdx of senderCounts
-                set end of outputLines to "ENTRY|||" & kText & "|||" & (cVal as string)
-                set entryIdx to entryIdx + 1
-            end repeat
 
             set AppleScript's text item delimiters to linefeed
             set outputText to outputLines as string
@@ -711,34 +678,23 @@ def get_top_senders(
     if raw.startswith("ERROR|||"):
         return f"Error: {raw.split('|||', 1)[1]}"
 
-    # Parse the AppleScript payload.
+    # Parse ROW lines and aggregate in Python (fast Counter vs AppleScript O(n^2)).
     total_analysed = 0
-    unique_count = 0
-    entries: list[tuple[str, int]] = []
+    sender_counts: Counter[str] = Counter()
     for line in raw.splitlines():
         if line.startswith("TOTAL|||"):
             try:
                 total_analysed = int(line.split("|||", 1)[1].strip())
             except ValueError:
                 total_analysed = 0
-        elif line.startswith("UNIQUE|||"):
-            try:
-                unique_count = int(line.split("|||", 1)[1].strip())
-            except ValueError:
-                unique_count = 0
-        elif line.startswith("ENTRY|||"):
-            parts = line.split("|||", 2)
-            if len(parts) == 3:
-                key = parts[1].strip()
-                try:
-                    cnt = int(parts[2].strip())
-                except ValueError:
-                    continue
-                entries.append((key, cnt))
+        elif line.startswith("ROW|||"):
+            key = line.split("|||", 1)[1].strip()
+            if key:
+                sender_counts[key] += 1
 
-    # Sort + top-N in Python (was an O(N^2) AppleScript selection sort).
-    entries.sort(key=lambda kv: kv[1], reverse=True)
-    top_entries = entries[:top_n]
+    unique_count = len(sender_counts)
+    entries = sender_counts.most_common(top_n)
+    top_entries = entries
 
     # Reproduce the original output format exactly.
     lines = [

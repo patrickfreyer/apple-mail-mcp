@@ -27,7 +27,38 @@ PERF_THRESHOLDS_MS: dict[str, int] = {
     "overview": 10000,
     "bad_account": 2000,
     "dashboard": 5000,
+    "needs_response": 8000,
+    "awaiting_reply": 5000,
+    "top_senders": 5000,
+    "statistics_overview": 12000,
 }
+
+PERF_PROFILES: dict[str, dict[str, int]] = {
+    "light": {"overview": 10000},
+    "production": {"overview": 15000},
+}
+DEFAULT_PERF_PROFILE = "production"
+
+
+def metadata_threshold_ms(mailbox_count: int) -> int:
+    return 2000 + max(0, mailbox_count - 20) * 35
+
+
+def resolve_perf_thresholds(profile: str = DEFAULT_PERF_PROFILE) -> dict[str, int]:
+    thresholds = dict(PERF_THRESHOLDS_MS)
+    overrides = PERF_PROFILES.get(profile, PERF_PROFILES[DEFAULT_PERF_PROFILE])
+    thresholds.update(overrides)
+    return thresholds
+
+
+def _mailbox_count(account: str) -> int:
+    from apple_mail_mcp.tools.inbox import list_mailboxes
+
+    raw = list_mailboxes(
+        account=account, include_counts=False, output_format="json"
+    )
+    parsed = _parse_tool_result(_await_if_coro(raw))
+    return len(parsed) if isinstance(parsed, list) else 0
 
 
 def _version() -> str:
@@ -216,8 +247,18 @@ def _evaluate_perf_case(
         }
 
 
-def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
-    from apple_mail_mcp.tools.analytics import _get_recent_emails_structured_async
+def build_perf_cases(
+    account: str,
+    *,
+    quick: bool = False,
+    include_analysis: bool = False,
+    profile: str = DEFAULT_PERF_PROFILE,
+    mailbox_count: int | None = None,
+) -> list[PerfCase]:
+    from apple_mail_mcp.tools.analytics import (
+        _get_recent_emails_structured_async,
+        get_statistics,
+    )
     from apple_mail_mcp.tools.inbox import (
         get_inbox_overview,
         get_mailbox_unread_counts,
@@ -228,6 +269,16 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
     )
     from apple_mail_mcp.tools.manage import manage_trash, move_email
     from apple_mail_mcp.tools.search import search_emails
+    from apple_mail_mcp.tools.smart_inbox import (
+        get_awaiting_reply,
+        get_needs_response,
+        get_top_senders,
+    )
+
+    thresholds = resolve_perf_thresholds(profile)
+    if mailbox_count is None:
+        mailbox_count = _mailbox_count(account)
+    metadata_threshold = metadata_threshold_ms(mailbox_count)
 
     async def _dashboard_metadata_probe() -> dict[str, Any]:
         unread = await asyncio.to_thread(get_mailbox_unread_counts, summary_only=True)
@@ -243,7 +294,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
         PerfCase(
             name="metadata",
             category="metadata",
-            threshold_ms=PERF_THRESHOLDS_MS["metadata"],
+            threshold_ms=metadata_threshold,
             runner=lambda: {
                 "accounts": list_accounts(),
                 "addresses": list_account_addresses(),
@@ -261,7 +312,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
         PerfCase(
             name="no_hit_search",
             category="no_hit_search",
-            threshold_ms=PERF_THRESHOLDS_MS["no_hit_search"],
+            threshold_ms=thresholds["no_hit_search"],
             runner=lambda: search_emails(
                 account=account,
                 subject_keyword=NO_HIT_SUBJECT,
@@ -272,7 +323,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
         PerfCase(
             name="inbox",
             category="inbox",
-            threshold_ms=PERF_THRESHOLDS_MS["inbox"],
+            threshold_ms=thresholds["inbox"],
             runner=lambda: list_inbox_emails(
                 account=account,
                 max_emails=1 if quick else 2,
@@ -291,7 +342,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
             PerfCase(
                 name="dry_run_move",
                 category="dry_run",
-                threshold_ms=PERF_THRESHOLDS_MS["dry_run"],
+                threshold_ms=thresholds["dry_run"],
                 runner=lambda: move_email(
                     account=account,
                     to_mailbox="Archive",
@@ -303,7 +354,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
             PerfCase(
                 name="dry_run_trash",
                 category="dry_run",
-                threshold_ms=PERF_THRESHOLDS_MS["dry_run"],
+                threshold_ms=thresholds["dry_run"],
                 runner=lambda: manage_trash(
                     account=account,
                     action="move_to_trash",
@@ -315,7 +366,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
             PerfCase(
                 name="overview",
                 category="overview",
-                threshold_ms=PERF_THRESHOLDS_MS["overview"],
+                threshold_ms=thresholds["overview"],
                 runner=lambda: get_inbox_overview(
                     account=account,
                     output_format="compact",
@@ -327,7 +378,7 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
             PerfCase(
                 name="bad_account",
                 category="bad_account",
-                threshold_ms=PERF_THRESHOLDS_MS["bad_account"],
+                threshold_ms=thresholds["bad_account"],
                 expect_error=True,
                 runner=lambda: list_inbox_emails(
                     account=INVALID_ACCOUNT,
@@ -338,11 +389,49 @@ def build_perf_cases(account: str, *, quick: bool = False) -> list[PerfCase]:
             PerfCase(
                 name="dashboard_metadata",
                 category="dashboard",
-                threshold_ms=PERF_THRESHOLDS_MS["dashboard"],
+                threshold_ms=thresholds["dashboard"],
                 runner=lambda: _await_if_coro(_dashboard_metadata_probe()),
             ),
         ]
     )
+
+    if include_analysis and not quick:
+        cases.extend(
+            [
+                PerfCase(
+                    name="needs_response",
+                    category="needs_response",
+                    threshold_ms=thresholds["needs_response"],
+                    runner=lambda: get_needs_response(account=account, days_back=2),
+                ),
+                PerfCase(
+                    name="awaiting_reply",
+                    category="awaiting_reply",
+                    threshold_ms=thresholds["awaiting_reply"],
+                    runner=lambda: get_awaiting_reply(account=account, days_back=7),
+                ),
+                PerfCase(
+                    name="top_senders",
+                    category="top_senders",
+                    threshold_ms=thresholds["top_senders"],
+                    runner=lambda: get_top_senders(
+                        account=account, days_back=30, mailbox="INBOX"
+                    ),
+                ),
+                PerfCase(
+                    name="statistics_overview",
+                    category="statistics",
+                    threshold_ms=thresholds["statistics_overview"],
+                    runner=lambda: get_statistics(
+                        account=account,
+                        scope="account_overview",
+                        days_back=2,
+                        output_format="json",
+                    ),
+                ),
+            ]
+        )
+
     return cases
 
 
@@ -350,20 +439,32 @@ def run_perf_battery(
     account: str | None = None,
     *,
     quick: bool = False,
+    include_analysis: bool = False,
+    profile: str = DEFAULT_PERF_PROFILE,
     verbose_sensitive: bool = False,
 ) -> dict[str, Any]:
+    thresholds = resolve_perf_thresholds(profile)
     selected_account, account_error = _resolve_test_account(account)
     if not selected_account:
         return {
             "ok": False,
             "account": None,
             "quick": quick,
-            "thresholds_ms": PERF_THRESHOLDS_MS,
+            "include_analysis": include_analysis,
+            "profile": profile,
+            "thresholds_ms": thresholds,
             "cases": [],
             "error": account_error,
         }
 
-    cases = build_perf_cases(selected_account, quick=quick)
+    mailbox_count = _mailbox_count(selected_account)
+    cases = build_perf_cases(
+        selected_account,
+        quick=quick,
+        include_analysis=include_analysis,
+        profile=profile,
+        mailbox_count=mailbox_count,
+    )
     results = [
         _evaluate_perf_case(case, verbose_sensitive=verbose_sensitive)
         for case in cases
@@ -374,7 +475,11 @@ def run_perf_battery(
         "ok": ok,
         "account": selected_account,
         "quick": quick,
-        "thresholds_ms": PERF_THRESHOLDS_MS,
+        "include_analysis": include_analysis,
+        "profile": profile,
+        "mailbox_count": mailbox_count,
+        "metadata_threshold_ms": metadata_threshold_ms(mailbox_count),
+        "thresholds_ms": thresholds,
         "total_duration_ms": round(total_ms, 1),
         "cases": results,
     }
@@ -588,6 +693,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verbose-sensitive",
         action="store_true",
         help="Include account names and other sensitive fields in perf samples",
+    )
+    perf.add_argument(
+        "--include-analysis",
+        action="store_true",
+        help="Add analysis cases (needs-response, awaiting-reply, top-senders, statistics)",
+    )
+    perf.add_argument(
+        "--profile",
+        choices=sorted(PERF_PROFILES),
+        default=DEFAULT_PERF_PROFILE,
+        help="Threshold profile: light (small account) vs production (large mailbox)",
     )
 
     quick = subparsers.add_parser(
@@ -964,7 +1080,14 @@ def _print_perf_report(payload: dict[str, Any], *, json_mode: bool) -> None:
         return
 
     mode = "quick" if payload.get("quick") else "full"
-    print(f"perf-test ({mode}) account={payload.get('account')}")
+    analysis = " +analysis" if payload.get("include_analysis") else ""
+    profile = payload.get("profile", DEFAULT_PERF_PROFILE)
+    mailbox_count = payload.get("mailbox_count")
+    mailbox_note = f" mailboxes={mailbox_count}" if mailbox_count is not None else ""
+    print(
+        f"perf-test ({mode}{analysis}, profile={profile}) "
+        f"account={payload.get('account')}{mailbox_note}"
+    )
     for item in payload.get("cases", []):
         status = "pass" if item.get("pass") else "FAIL"
         duration = item.get("duration_ms")
@@ -985,6 +1108,8 @@ def _cmd_perf_test(args: argparse.Namespace) -> int:
     payload = run_perf_battery(
         args.account,
         quick=args.quick,
+        include_analysis=args.include_analysis,
+        profile=args.profile,
         verbose_sensitive=args.verbose_sensitive,
     )
     _print_perf_report(payload, json_mode=args.json)
@@ -995,6 +1120,8 @@ def _cmd_quick_check(args: argparse.Namespace) -> int:
     payload = run_perf_battery(
         args.account,
         quick=True,
+        include_analysis=False,
+        profile=DEFAULT_PERF_PROFILE,
         verbose_sensitive=args.verbose_sensitive,
     )
     _print_perf_report(payload, json_mode=args.json)

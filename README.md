@@ -18,7 +18,7 @@
  </picture>
 </a>
 
-An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **27 tools**, **206** unit tests, Python **3.10+**.
+An MCP server that gives AI assistants full access to Apple Mail -- read, search, compose, organize, and analyze emails via natural language. Built with [FastMCP](https://github.com/jlowin/fastmcp) (`fastmcp>=3.1.0,<4`). **27 tools**, **221** unit tests, Python **3.10+**.
 
 ## Documentation map
 
@@ -45,7 +45,7 @@ An MCP server that gives AI assistants full access to Apple Mail -- read, search
 
 ### Claude Code Plugin (Recommended)
 
-Two commands — gets you the MCP server, `/email-management` slash command, and the Email Management Expert skill:
+One install — MCP server (27 tools), `/email-management` slash command, and two skills (`email-management`, `inbox-triage`):
 
 ```bash
 claude plugin marketplace add patrickfreyer/apple-mail-mcp
@@ -75,6 +75,7 @@ python3 -m venv .venv
 .venv/bin/apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --body "Draft body"
 .venv/bin/apple-mail quick-check --account "Gmail" --json
 .venv/bin/apple-mail perf-test --account "Gmail" --json
+.venv/bin/apple-mail perf-test --include-analysis --account "Gmail" --json
 .venv/bin/apple-mail smoke-test --account "Gmail" --json
 ```
 
@@ -332,10 +333,13 @@ apple-mail draft --account "Gmail" --to person@example.com --subject "Draft" --b
 apple-mail mcp-config --repo "$(pwd)"
 apple-mail quick-check --account "Gmail" --json
 apple-mail perf-test --account "Gmail" --json
+apple-mail perf-test --include-analysis --account "Gmail" --json
 apple-mail smoke-test --account "Gmail" --json
 ```
 
 Live verification guide: [`docs/AGENT_LIVE_TESTING.md`](docs/AGENT_LIVE_TESTING.md).
+
+Use `perf-test --include-analysis` to gate triage tools (`needs-response`, `awaiting-reply`, `top-senders`, `statistics`) in addition to the core battery.
 
 The CLI keeps write operations draft-first. It intentionally does not expose
 send/delete shortcuts; use the MCP tools with `--draft-safe` for shared agents.
@@ -351,13 +355,23 @@ Use `create_rich_email_draft` when you need a visually formatted email, newslett
 
 This is more reliable than injecting raw HTML into AppleScript `content`, which Mail often stores as literal markup.
 
-## Email Management Skill
+## Claude Code Skills
 
-A companion [Claude Code Skill](plugin/skills/email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). When installed as a plugin, the skill is loaded automatically. For standalone MCP installs, copy it manually:
+Two companion skills ship with the plugin and load automatically on install:
+
+| Skill | Purpose |
+|-------|---------|
+| [`email-management`](plugin/skills/email-management/) | Sustained organization, Inbox Zero, folder workflows |
+| [`inbox-triage`](plugin/skills/inbox-triage/) | 5–10 min daily read-first scan (needs-response, awaiting-reply, top senders) |
+
+For standalone MCP installs, copy manually:
 
 ```bash
 cp -r plugin/skills/email-management ~/.claude/skills/email-management
+cp -r plugin/skills/inbox-triage ~/.claude/skills/inbox-triage
 ```
+
+The plugin MCP server starts with **`--draft-safe`** by default (see `plugin/.claude-plugin/plugin.json`).
 
 ## Requirements
 
@@ -388,7 +402,7 @@ apple-mail-mcp/
 │   ├── .claude-plugin/
 │   │   └── plugin.json        # Plugin manifest
 │   ├── commands/              # /email-management slash command
-│   ├── skills/                # Email Management Expert skill
+│   ├── skills/                # email-management + inbox-triage skills
 │   ├── apple_mail_mcp/        # Python MCP server package (27 tools)
 │   ├── apple_mail_mcp.py      # Entry point
 │   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)

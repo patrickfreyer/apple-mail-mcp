@@ -98,16 +98,51 @@ class PerfThresholdTests(unittest.TestCase):
 
 class PerfBatteryTests(unittest.TestCase):
     def test_build_perf_cases_quick_subset(self):
-        cases = cli.build_perf_cases("Work", quick=True)
+        with patch.object(cli, "_mailbox_count", return_value=9):
+            cases = cli.build_perf_cases("Work", quick=True)
         self.assertEqual(len(cases), 3)
         self.assertEqual([case.name for case in cases], ["metadata", "no_hit_search", "inbox"])
 
     def test_build_perf_cases_full_battery(self):
-        cases = cli.build_perf_cases("Work", quick=False)
+        with patch.object(cli, "_mailbox_count", return_value=9):
+            cases = cli.build_perf_cases("Work", quick=False)
         self.assertEqual(len(cases), 8)
         self.assertEqual(cases[-1].name, "dashboard_metadata")
         self.assertEqual(cases[-2].name, "bad_account")
         self.assertTrue(cases[-2].expect_error)
+
+    def test_build_perf_cases_include_analysis(self):
+        with patch.object(cli, "_mailbox_count", return_value=9):
+            cases = cli.build_perf_cases("Work", quick=False, include_analysis=True)
+        self.assertEqual(len(cases), 12)
+        names = [case.name for case in cases]
+        self.assertIn("needs_response", names)
+        self.assertIn("awaiting_reply", names)
+        self.assertIn("top_senders", names)
+        self.assertIn("statistics_overview", names)
+
+    def test_build_perf_cases_quick_ignores_analysis(self):
+        with patch.object(cli, "_mailbox_count", return_value=9):
+            cases = cli.build_perf_cases("Work", quick=True, include_analysis=True)
+        self.assertEqual(len(cases), 3)
+
+    def test_build_perf_cases_metadata_uses_scaled_threshold(self):
+        with patch.object(cli, "_mailbox_count", return_value=194):
+            cases = cli.build_perf_cases("Work", quick=True, mailbox_count=194)
+        self.assertEqual(cases[0].threshold_ms, cli.metadata_threshold_ms(194))
+
+    def test_metadata_threshold_ms(self):
+        self.assertEqual(cli.metadata_threshold_ms(9), 2000)
+        self.assertEqual(cli.metadata_threshold_ms(20), 2000)
+        self.assertEqual(cli.metadata_threshold_ms(194), 8090)
+
+    def test_resolve_perf_thresholds_production_overview(self):
+        thresholds = cli.resolve_perf_thresholds("production")
+        self.assertEqual(thresholds["overview"], 15000)
+
+    def test_resolve_perf_thresholds_light_overview(self):
+        thresholds = cli.resolve_perf_thresholds("light")
+        self.assertEqual(thresholds["overview"], 10000)
 
     def test_run_perf_battery_aggregates_results(self):
         def fake_evaluate(case: cli.PerfCase, *, verbose_sensitive: bool = False) -> dict:
@@ -229,7 +264,25 @@ class PerfCliCommandTests(unittest.TestCase):
             code = cli.main(["quick-check", "--account", "Work"])
 
         self.assertEqual(code, 0)
-        mock_run.assert_called_once_with("Work", quick=True, verbose_sensitive=False)
+        mock_run.assert_called_once_with(
+            "Work", quick=True, include_analysis=False, profile="production", verbose_sensitive=False
+        )
+
+    def test_perf_test_include_analysis_flag(self):
+        with (
+            patch.object(cli, "run_perf_battery", return_value={"ok": True, "cases": []}) as mock_run,
+            patch("builtins.print"),
+        ):
+            code = cli.main(["perf-test", "--include-analysis", "--profile", "light", "--json"])
+
+        self.assertEqual(code, 0)
+        mock_run.assert_called_once_with(
+            None,
+            quick=False,
+            include_analysis=True,
+            profile="light",
+            verbose_sensitive=False,
+        )
 
     def test_resolve_test_account_prefers_explicit(self):
         with patch("apple_mail_mcp.tools.inbox.list_accounts", return_value=["Personal"]):

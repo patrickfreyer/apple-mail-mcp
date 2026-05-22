@@ -1,6 +1,28 @@
 # CLAUDE.md
 
-Navigation hub for **apple-mail-mcp**: one Python MCP server (**27 tools**, **206 tests**, `fastmcp>=3.1.0,<4`) shipped as PyPI package (`mcp-apple-mail`), Claude Code plugin (`plugin/`), and Claude Desktop `.mcpb` (`apple-mail-mcpb/`). Marketplace entry: `.claude-plugin/marketplace.json`.
+Navigation hub for **apple-mail-mcp**: one Python MCP server (**27 tools**, **221 tests**, `fastmcp>=3.1.0,<4`) shipped as PyPI package (`mcp-apple-mail`), Claude Code plugin (`plugin/`), and Claude Desktop `.mcpb` (`apple-mail-mcpb/`). Marketplace entry: `.claude-plugin/marketplace.json`.
+
+## Agent orchestration (required)
+
+**Always use subagents** for both **research and implementation** — not just exploration. Delegate real fixes, tests, docs, and live verification to subagents; the lead agent orchestrates and reviews.
+
+| When | Subagent |
+|------|----------|
+| Code changes, tests, docs | `generalPurpose` |
+| Codebase search / file discovery | `explore` |
+| pytest, live CLI, shell tasks | `shell` |
+| Independent workstreams | Run subagents **in parallel** |
+| Dependent steps (e.g. perf gates before tool edits) | Run subagents **sequentially** |
+
+**Always use plugin-dev experts** for plugin, MCP, marketplace, and skill work — invoke before and after substantive changes:
+
+| Expert | Use for |
+|--------|---------|
+| **`plugin-dev:plugin-validator`** | Manifest drift, tool counts, marketplace readiness |
+| **`plugin-dev:plugin-architect`** | Plugin structure, MCP wiring, agent workflow gaps |
+| Skills: **`mcp-integration`**, **`plugin-structure`**, **`mcp-builder`** | MCP server design, `.mcp.json` / `plugin.json`, tool quality |
+
+Do not solo large plugin or perf workstreams without at least one plugin-dev expert pass.
 
 ## When working in…
 
@@ -27,7 +49,7 @@ Navigation hub for **apple-mail-mcp**: one Python MCP server (**27 tools**, **20
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e . pytest
-.venv/bin/pytest tests/                    # 206 tests
+.venv/bin/pytest tests/                    # 221 tests
 .venv/bin/apple-mail quick-check --json    # live Mail smoke (~30s)
 .venv/bin/python plugin/apple_mail_mcp.py --read-only
 ```

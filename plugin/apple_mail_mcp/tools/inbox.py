@@ -760,7 +760,7 @@ def list_account_addresses() -> Dict[str, List[str]]:
 @inject_preferences
 def list_mailboxes(
     account: Optional[str] = None,
-    include_counts: bool = True,
+    include_counts: bool = False,
     output_format: str = "text",
 ) -> str:
     """
@@ -768,7 +768,8 @@ def list_mailboxes(
 
     Args:
         account: Optional account name to filter (e.g., "Gmail", "Work"). If None, shows all accounts.
-        include_counts: Whether to include message counts for each mailbox (default: True)
+        include_counts: Whether to include message counts for each mailbox (default: False).
+            Counts are expensive on large accounts — pass True only for folder audits.
         output_format: "text" (default, human-readable) or "json" (structured list of mailbox dicts)
 
     Returns:

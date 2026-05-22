@@ -2,6 +2,8 @@
 
 Source of truth for the MCP server and repo CLI. Packaged on PyPI as **`mcp-apple-mail`** (`pyproject.toml` → `plugin/apple_mail_mcp/`).
 
+Tool/CLI work: delegate to subagents for implementation; use **`plugin-dev:plugin-validator`** after tool-count or manifest changes. See root [`CLAUDE.md`](../../CLAUDE.md) § Agent orchestration.
+
 ## Entry flow
 
 **MCP:** `__main__.py` → orphan watcher → `--read-only` / `--draft-safe` → set `server.READ_ONLY` / `server.DRAFT_SAFE` → import package (registers tools) → remove `SEND_TOOLS` if read-only → `mcp.run()`.

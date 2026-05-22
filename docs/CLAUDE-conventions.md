@@ -101,7 +101,7 @@ Every skill under `plugin/skills/` follows the same shape so siblings trigger cr
 
 ### Skills only — no new slash commands
 
-New entry points ship as skills only. `plugin/commands/email-management.md` stays (shipped); planned siblings (`email-drafting`, `inbox-triage`, `email-attachments`) are skill-only.
+New entry points ship as skills only. `plugin/commands/email-management.md` stays (shipped); `inbox-triage` is shipped skill-only; planned siblings (`email-drafting`, `email-attachments`) remain skill-only.
 
 ---
 

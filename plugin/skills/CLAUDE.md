@@ -2,6 +2,8 @@
 
 Skills are the **primary entry point** for email workflows in Claude Code. They teach the model when and how to call MCP tools — they do not implement tool logic.
 
+New or edited skills: delegate drafting to subagents; run **`plugin-dev:plugin-validator`** and **`plugin-dev:skill-reviewer`** before merge. See root [`CLAUDE.md`](../../CLAUDE.md) § Agent orchestration.
+
 ## Skills-only policy
 
 **Ship new entry points as skills only.** Do not add new files under `commands/`. The existing `commands/email-management.md` stays for backward compatibility; Claude Code may auto-convert commands to skills at install time, so authoring both is duplicative.
@@ -10,9 +12,9 @@ Skills are the **primary entry point** for email workflows in Claude Code. They 
 
 | Directory | Status |
 |-----------|--------|
-| `email-management/` | Shipped — template for all siblings |
+| `email-management/` | Shipped — sustained organization & inbox zero |
+| `inbox-triage/` | Shipped — 5–10 min daily read-first scan |
 | `email-drafting/` | Planned — compose, reply, forward |
-| `inbox-triage/` | Planned — one-off recent-mail passes |
 | `email-attachments/` | Planned — download/save attachments |
 
 ## SKILL.md conventions (summary)

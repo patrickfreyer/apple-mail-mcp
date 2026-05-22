@@ -2,6 +2,11 @@
 
 Human- and agent-facing docs that survive outside the codebase. Plugin skills and root `README.md` cover user install; this folder covers **agent workflows** and **deep engineering conventions**.
 
+## Agent orchestration
+
+- Use **subagents** for research **and** implementation (not research-only).
+- Use **plugin-dev experts** (`plugin-dev:plugin-validator`, `plugin-dev:plugin-architect`) whenever docs or conventions touch manifests, skills, or MCP integration.
+
 ## Files
 
 | Doc | Audience | Purpose |
@@ -36,4 +41,4 @@ CI never touches Mail.app. Manifest validation + pytest only ([`tools/CLAUDE.md`
 
 - User-facing install: root [`README.md`](../README.md)
 - Cross-session backlog: [`tasks/todo.md`](../tasks/todo.md)
-- Phase sequencing: [`tasks/phase-plan-3.1.6.md`](../tasks/phase-plan-3.1.6.md)
+- Phase sequencing: [`tasks/phase-plan-3.1.7.md`](../tasks/phase-plan-3.1.7.md) · live baseline: [`tasks/live-test-baseline-2026-05-21.md`](../tasks/live-test-baseline-2026-05-21.md)

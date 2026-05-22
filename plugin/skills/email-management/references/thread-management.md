@@ -30,7 +30,7 @@ The result is already chronological. Read top to bottom for context.
 
 ### Find the latest message in a long thread
 
-The last entry returned by `get_email_thread()` is the most recent. Reply to that message using the canonical reply path — see the `email-drafting` skill for compose and reply guidance.
+The last entry returned by `get_email_thread()` is the most recent. Reply to that message using compose MCP tools (`reply_to_email`, `forward_email`, `create_rich_email_draft`, `manage_drafts`).
 
 ## Cross-Account Threads
 

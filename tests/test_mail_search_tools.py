@@ -42,6 +42,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _clear_default_mail_account():
+    """Multi-account dispatch tests must not inherit DEFAULT_MAIL_ACCOUNT from env."""
+    from apple_mail_mcp import server as _srv
+
+    return patch.object(_srv, "DEFAULT_MAIL_ACCOUNT", None)
+
+
 class SearchToolTests(unittest.TestCase):
     def test_search_emails_pagination_consistency(self):
         captured = {}
@@ -317,7 +324,9 @@ class SearchToolTests(unittest.TestCase):
             # Subsequent per-account calls return no records.
             return ""
 
-        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+        with _clear_default_mail_account(), patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
             _run(
                 search_tools.search_emails(
                     account=None,
@@ -430,7 +439,9 @@ class SearchToolTests(unittest.TestCase):
             # Work returns one record.
             return _record_line(700, "Work email", account="Work")
 
-        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+        with _clear_default_mail_account(), patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
             response = json.loads(
                 _run(
                     search_tools.search_emails(
@@ -625,7 +636,9 @@ class SearchToolTests(unittest.TestCase):
                 return "A\nB\nC"
             return ""
 
-        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+        with _clear_default_mail_account(), patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
             with patch(
                 "apple_mail_mcp.tools.search.asyncio.to_thread",
                 wraps=asyncio.to_thread,
@@ -718,7 +731,9 @@ class ListInboxEmailsTests(unittest.TestCase):
                 raise AppleScriptTimeout("TU timed out")
             return "Hello|||sender@example.com|||today|||false|||Work"
 
-        with patch("apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run):
+        with _clear_default_mail_account(), patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", side_effect=fake_run
+        ):
             raw = _run(inbox_tools.list_inbox_emails(output_format="json", max_emails=5))
 
         payload = json.loads(raw)
