@@ -92,7 +92,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 </details>
 
-## Tools (22)
+## Tools (27)
 
 ### Reading & Search
 | Tool | Description |
@@ -102,6 +102,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
 | `search_emails` | Unified search — subject, sender, body text, dates, attachments, cross-account |
+| `get_email_by_id` | Fetch one exact email by the Apple Mail message id returned from search results |
 | `get_email_thread` | Conversation thread view |
 
 ### Organization
@@ -158,6 +159,27 @@ Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_
   }
 }
 ```
+
+### Draft-Safe Mode
+
+Pass `--draft-safe` to keep read, search, draft, and open-for-review workflows available while blocking actual sends. This is the recommended mode for shared agent workspaces.
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "/path/to/plugin/start_mcp.sh",
+      "args": ["--draft-safe"]
+    }
+  }
+}
+```
+
+In draft-safe mode:
+
+- `compose_email`, `reply_to_email`, and `forward_email` default to draft behavior
+- explicit `mode="send"` calls return an error
+- `manage_drafts action="send"` returns an error
 
 ### User Preferences (Optional)
 
