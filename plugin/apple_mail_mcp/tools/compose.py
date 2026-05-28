@@ -793,8 +793,12 @@ tell application "Mail"
             {cc_script}
             {bcc_script}
 
-            -- Add attachments
-            {attachment_script}
+            -- Add attachments (must be scoped to replyMessage so `last paragraph` resolves;
+            -- bare `make new attachment ... at after the last paragraph` inside `tell application "Mail"`
+            -- raises "Can't get last paragraph" because the reference has no implicit owner)
+            tell replyMessage
+                {attachment_script}
+            end tell
 
             -- Paste reply body (HTML already on clipboard from Step 1)
             set visible of replyMessage to true
