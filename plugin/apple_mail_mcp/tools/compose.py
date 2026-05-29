@@ -346,6 +346,7 @@ def _send_html_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     attachments_script: str = "",
+    attachment_info: str = "",
     mode: str = "send",
     sender_override: Optional[str] = None,
 ) -> str:
@@ -410,6 +411,20 @@ def _send_html_email(
     tmp.close()
     html_temp_path = tmp.name
 
+    # Build the attachments block. Must run AFTER the HTML paste so that
+    # Cmd+A in the body doesn't select-and-replace the attachment placeholder.
+    # Empty block when no attachments — keeps AppleScript valid either way.
+    if attachments_script.strip():
+        attachments_block = (
+            'tell application "Mail"\n'
+            '    tell newMsg\n'
+            f'        {attachments_script}\n'
+            '    end tell\n'
+            'end tell'
+        )
+    else:
+        attachments_block = "-- (no attachments)"
+
     script = f'''
 use framework "Foundation"
 use framework "AppKit"
@@ -426,7 +441,8 @@ pb's clearContents()
 set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
 pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
 
--- Step 2: Create compose window (empty body so signature doesn't interfere)
+-- Step 2: Create compose window (empty body so signature doesn't interfere).
+-- Attachments are deliberately NOT added here — see Step 4b for why.
 tell application "Mail"
     set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
     {sender_script}
@@ -434,7 +450,6 @@ tell application "Mail"
         {to_lines}
         {cc_lines}
         {bcc_lines}
-        {attachments_script}
     end tell
     activate
 end tell
@@ -442,7 +457,9 @@ end tell
 -- Step 3: Wait for compose window to render
 delay 2.5
 
--- Step 4: Tab from header fields into body, then paste
+-- Step 4a: Tab from header fields into body, then paste HTML.
+-- The Cmd+A here selects the entire body (which is why we can't have the
+-- attachment placed yet — it would be selected and replaced by the paste).
 tell application "System Events"
     set frontmost of process "Mail" to true
     delay 0.5
@@ -460,7 +477,15 @@ tell application "System Events"
         delay 0.2
         keystroke "v" using command down
         delay 0.5
+    end tell
+end tell
 
+-- Step 4b: Attach files AFTER the HTML paste so they aren't clobbered by Cmd+A.
+{attachments_block}
+
+-- Step 4c: Final action (send / save draft / leave open)
+tell application "System Events"
+    tell process "Mail"
         {post_paste_script}
     end tell
 end tell
@@ -494,6 +519,8 @@ return "{success_text}"
             confirm += f"\nCC: {cc}"
         if bcc:
             confirm += f"\nBCC: {bcc}"
+        if attachment_info:
+            confirm += f"\nAttachments:\n{attachment_info.rstrip()}"
         return confirm
     except subprocess.TimeoutExpired:
         return "Error: HTML email script timed out"
@@ -956,6 +983,7 @@ def compose_email(
             cc=cc,
             bcc=bcc,
             attachments_script=attachment_script,
+            attachment_info=attachment_info,
             mode=mode,
             sender_override=sender_override,
         )
