@@ -1,5 +1,7 @@
 """Apple Mail MCP - Modular package."""
 
+__version__ = "3.1.4"
+
 from apple_mail_mcp.server import mcp
 
 # UI availability flag

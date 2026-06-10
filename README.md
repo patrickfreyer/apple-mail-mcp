@@ -266,6 +266,21 @@ apple-mail-mcp/
 3. Commit and push
 4. Open a Pull Request
 
+## Releasing
+
+Follow these steps when cutting a new release to keep all version strings in sync:
+
+1. Bump `__version__` in `plugin/apple_mail_mcp/__init__.py` to the new version.
+2. Update `apple-mail-mcpb/manifest.json` (`"version"` field) to match.
+3. Update `pyproject.toml` (`version = ...` under `[project]`) to match.
+4. Update both version fields in `server.json` (`"version"` and `"packages"[0]["version"]`) to match.
+5. Run `python3 scripts/check_versions.py` — it must print **OK** before you proceed.
+6. Commit, tag, and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+7. Create a GitHub release from the tag.
+8. Build and publish to PyPI: `python -m build && twine upload dist/*` (requires PyPI credentials).
+
+> The test suite also enforces version consistency (`tests/test_version_consistency.py`), so any CI run on a branch with mismatched versions will fail fast.
+
 ## License
 
 MIT -- see [LICENSE](LICENSE).
