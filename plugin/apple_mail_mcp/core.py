@@ -1,6 +1,7 @@
 """Core helpers: AppleScript execution, escaping, parsing, and preference injection."""
 
 import atexit
+import re
 import signal
 import subprocess
 import threading
@@ -88,6 +89,12 @@ def _popen_factory(*args, **kwargs) -> subprocess.Popen:
 # ---------------------------------------------------------------------------
 
 
+# Handler definitions ("on name(...)" / "to name(...)") are only legal at the
+# top level of an AppleScript — never inside a block.  "on error" is a try
+# clause, not a handler definition, so it must not trigger the guard.
+_HANDLER_DEFINITION_RE = re.compile(r"^\s*(?:on|to)\s+(?!error\b)\w+", re.MULTILINE)
+
+
 def _apply_applescript_timeout(script: str, timeout: int) -> str:
     """Wrap *script* in an AppleScript ``with timeout`` block.
 
@@ -95,14 +102,23 @@ def _apply_applescript_timeout(script: str, timeout: int) -> str:
     AppleScript interpreter a chance to exit cleanly before the Python-side
     ``communicate(timeout=…)`` fires.
 
-    Scripts that contain a top-level ``use`` declaration (e.g. ASObjC
-    ``use framework "Foundation"`` in compose.py) cannot legally be nested
-    inside a block, so those are returned unchanged.
+    Two classes of script cannot legally be nested inside a block and are
+    returned unchanged:
+
+    * scripts with a top-level ``use`` declaration (e.g. ASObjC
+      ``use framework "Foundation"`` in compose.py);
+    * scripts that define handlers (``on name(...)`` / ``to name(...)``) —
+      handler definitions are only legal at the top level, so wrapping them
+      fails with 'Expected "end" but found "on"' (-2741, issue #63).  These
+      scripts keep their own inner ``with timeout`` blocks, and the
+      Python-side ``communicate(timeout=…)`` kill still covers them.
 
     Nested ``with timeout`` blocks are legal in AppleScript, so this wrap is
     compatible with per-tool timeouts already present in manage.py / search.py.
     """
     if any(line.lstrip().startswith("use ") for line in script.splitlines()):
+        return script
+    if _HANDLER_DEFINITION_RE.search(script):
         return script
     inner = max(timeout - 5, 5)
     return f"with timeout of {inner} seconds\n{script}\nend timeout"

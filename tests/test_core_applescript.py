@@ -79,6 +79,67 @@ class TestApplyApplescriptTimeout(unittest.TestCase):
         self.assertIn("with timeout of", result)
         self.assertIn("end timeout", result)
 
+    def test_leaves_handler_script_unchanged(self):
+        """Scripts defining an 'on name(...)' handler are returned as-is.
+
+        Handler definitions are only legal at the top level of an AppleScript;
+        wrapping them in 'with timeout' raises
+        'Expected "end" but found "on" (-2741)' (issue #63).
+        """
+        from apple_mail_mcp.core import _apply_applescript_timeout
+        script = (
+            "on sanitize_field(value)\n"
+            "    return value\n"
+            "end sanitize_field\n"
+            'tell application "Mail"\n'
+            "    get subject of first message\n"
+            "end tell"
+        )
+        result = _apply_applescript_timeout(script, timeout=120)
+        self.assertEqual(result, script)
+
+    def test_indented_handler_also_skipped(self):
+        """Handler definitions with leading whitespace are also detected."""
+        from apple_mail_mcp.core import _apply_applescript_timeout
+        script = (
+            "    on stripPrefixes(subj)\n"
+            "        return subj\n"
+            "    end stripPrefixes\n"
+            "set x to 1"
+        )
+        result = _apply_applescript_timeout(script, timeout=120)
+        self.assertEqual(result, script)
+
+    def test_to_handler_also_skipped(self):
+        """The 'to name(...)' handler form is also detected and skipped."""
+        from apple_mail_mcp.core import _apply_applescript_timeout
+        script = "to greet(x)\n    return x\nend greet\ngreet(\"hi\")"
+        result = _apply_applescript_timeout(script, timeout=120)
+        self.assertEqual(result, script)
+
+    def test_on_error_clause_still_wrapped(self):
+        """'on error' clauses inside try blocks are NOT handler definitions."""
+        from apple_mail_mcp.core import _apply_applescript_timeout
+        script = (
+            'tell application "Mail"\n'
+            "    try\n"
+            "        get subject of first message\n"
+            "    on error errMsg\n"
+            '        return "failed"\n'
+            "    end try\n"
+            "end tell"
+        )
+        result = _apply_applescript_timeout(script, timeout=120)
+        self.assertIn("with timeout of", result)
+        self.assertIn("end timeout", result)
+
+    def test_lowercase_handler_template_skipped(self):
+        """A script embedding the shared LOWERCASE_HANDLER template is skipped."""
+        from apple_mail_mcp.core import _apply_applescript_timeout, LOWERCASE_HANDLER
+        script = LOWERCASE_HANDLER + '\ntell application "Mail"\nend tell'
+        result = _apply_applescript_timeout(script, timeout=120)
+        self.assertEqual(result, script)
+
 
 # ---------------------------------------------------------------------------
 # In-flight children registry
