@@ -461,7 +461,17 @@ delay 2.5
 -- The Cmd+A here selects the entire body (which is why we can't have the
 -- attachment placed yet — it would be selected and replaced by the paste).
 tell application "System Events"
-    set frontmost of process "Mail" to true
+    -- Poll until Mail is genuinely frontmost before driving the keyboard.
+    -- A single `set frontmost` + fixed delay can fire the tab/paste keystrokes
+    -- before the compose window has focus, producing a silent empty send.
+    set focusWaited to 0
+    repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
+        try
+            set frontmost of process "Mail" to true
+        end try
+        delay 0.1
+        set focusWaited to focusWaited + 1
+    end repeat
     delay 0.5
     tell process "Mail"
         -- Tab through: To -> Cc -> Bcc -> Subject -> Body
@@ -827,12 +837,34 @@ tell application "Mail"
                 {attachment_script}
             end tell
 
-            -- Paste reply body (HTML already on clipboard from Step 1)
+            -- Paste reply body (HTML already on clipboard from Step 1).
+            -- The body is inserted via a blind Cmd+V into the compose window, so the
+            -- window MUST have keyboard focus when the keystroke fires. If Mail is not
+            -- frontmost at that moment (common on the first compose of a session, when
+            -- another app holds focus, or when the machine is busy), the paste lands
+            -- nowhere and an EMPTY reply is sent with no error returned.
+            --
+            -- We deliberately do NOT verify the paste by reading `content of
+            -- replyMessage` afterwards: Mail's GUI editor buffer is decoupled from the
+            -- scriptable `content` property, so reading it always returns the pre-paste
+            -- value (verified empirically — it reports 0 chars even after a successful
+            -- paste). A content-read-back guard would therefore false-fail every send.
+            -- Instead we make the paste deterministic by polling until Mail is genuinely
+            -- frontmost (re-asserting focus each iteration) before issuing the keystroke.
             set visible of replyMessage to true
             activate
-            delay 1.5
 
             tell application "System Events"
+                set focusWaited to 0
+                repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
+                    try
+                        set frontmost of process "Mail" to true
+                    end try
+                    delay 0.1
+                    set focusWaited to focusWaited + 1
+                end repeat
+                -- settle delay so the compose window's body holds keyboard focus
+                delay 0.8
                 tell process "Mail"
                     keystroke "v" using command down
                 end tell

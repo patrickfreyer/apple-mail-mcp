@@ -641,5 +641,102 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
         self.assertTrue(result.startswith("Error: 'from_address'"))
 
 
+class PasteFocusHardeningTests(unittest.TestCase):
+    """Regression guard for the silent empty-send bug.
+
+    The HTML body is inserted via a blind Cmd+V into the compose window, which
+    only lands if Mail is frontmost when the keystroke fires. The original code
+    relied on a single `activate` + fixed `delay`, which intermittently sent an
+    empty message when the window had not yet gained focus. The fix polls until
+    Mail is genuinely frontmost before pasting. These tests assert the poll is
+    present in the generated AppleScript and runs BEFORE the paste keystroke.
+
+    They also lock in the deliberate decision NOT to verify via
+    `content of <message>`: Mail's GUI editor buffer is decoupled from the
+    scriptable `content` property, so a content-read-back guard would
+    false-fail every send.
+    """
+
+    FOCUS_POLL = (
+        'repeat until (frontmost of process "Mail") '
+        "or (focusWaited is greater than or equal to 40)"
+    )
+    PASTE = 'keystroke "v" using command down'
+
+    def _render_reply(self, **overrides):
+        kwargs = dict(
+            account="Work",
+            subject_keyword="test",
+            reply_body="Reply body text",
+            body_html="<p>Reply body text</p>",
+            send=True,
+        )
+        kwargs.update(overrides)
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            compose_tools.reply_to_email(**kwargs)
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def _render_compose_html(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="x@example.com",
+                subject="s",
+                body="Body text",
+                body_html="<p>Body text</p>",
+                mode="send",
+            )
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def test_reply_polls_for_focus_before_pasting(self):
+        script = self._render_reply()
+        self.assertIn(self.FOCUS_POLL, script)
+        self.assertLess(
+            script.index(self.FOCUS_POLL),
+            script.index(self.PASTE),
+            "focus poll must run before the paste keystroke",
+        )
+
+    def test_reply_drops_fragile_fixed_predelay(self):
+        # The fragile original inserted a single `delay 1.5` between `activate`
+        # and the paste, with no frontmost re-assertion. The fix replaces that
+        # fixed gamble with a focus poll, so the 1.5s pre-paste delay is gone.
+        script = self._render_reply()
+        self.assertNotIn("delay 1.5", script)
+
+    def test_reply_does_not_read_back_content_as_guard(self):
+        # Mail's `content` property does not reflect a GUI paste, so any
+        # `content of replyMessage` verification would false-fail every send.
+        script = self._render_reply()
+        self.assertNotIn("content of replyMessage", script)
+
+    def test_compose_html_polls_for_focus_before_pasting(self):
+        script = self._render_compose_html()
+        self.assertIn(self.FOCUS_POLL, script)
+        self.assertLess(
+            script.index(self.FOCUS_POLL),
+            script.index(self.PASTE),
+            "focus poll must run before the paste keystroke",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
