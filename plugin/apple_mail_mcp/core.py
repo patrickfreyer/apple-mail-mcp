@@ -1,9 +1,111 @@
 """Core helpers: AppleScript execution, escaping, parsing, and preference injection."""
 
+import atexit
+import signal
 import subprocess
+import threading
 from typing import Optional, List, Dict, Any, Tuple
 
 from apple_mail_mcp.server import USER_PREFERENCES
+
+
+# ---------------------------------------------------------------------------
+# In-flight osascript child tracking
+# ---------------------------------------------------------------------------
+# All live Popen objects for in-flight osascript calls.  Guarded by
+# _inflight_lock so callers on any thread can safely add/remove entries.
+_inflight_children: set = set()
+_inflight_lock = threading.Lock()
+
+# Sentinel so we only register atexit + signal handlers once.
+_cleanup_registered = False
+_cleanup_lock = threading.Lock()
+
+
+def _kill_inflight_children() -> None:
+    """Kill every in-flight osascript child that is still alive.
+
+    Called from atexit and chained signal handlers so that graceful
+    SIGTERM/SIGHUP/normal-exit paths do not leave orphaned osascript
+    processes behind.  The AppleScript-level ``with timeout`` block (see
+    _apply_applescript_timeout) is the safety net for SIGKILL / os._exit,
+    where these handlers never run.
+    """
+    with _inflight_lock:
+        procs = list(_inflight_children)
+    for proc in procs:
+        try:
+            proc.kill()
+            proc.wait()
+        except Exception:
+            pass
+
+
+def _register_cleanup_once() -> None:
+    """Register atexit and SIGTERM/SIGHUP handlers exactly once, thread-safely.
+
+    Signal handlers may only be set from the main thread; the try/except
+    guards against ImportError or ValueError when called from a worker thread
+    so that module import never crashes in non-main-thread contexts.
+    """
+    global _cleanup_registered
+    with _cleanup_lock:
+        if _cleanup_registered:
+            return
+        _cleanup_registered = True
+
+    atexit.register(_kill_inflight_children)
+
+    # Chain onto any previously installed signal handlers rather than
+    # clobbering them (e.g. FastMCP installs its own SIGTERM handler).
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            old_handler = signal.getsignal(sig)
+
+            def _make_handler(old, signum_capture=sig):
+                def _handler(signum, frame):
+                    _kill_inflight_children()
+                    if callable(old) and old not in (
+                        signal.SIG_DFL,
+                        signal.SIG_IGN,
+                    ):
+                        old(signum, frame)
+                return _handler
+
+            signal.signal(sig, _make_handler(old_handler))
+        except (ValueError, OSError):
+            # Not on the main thread or signal not available — skip silently.
+            pass
+
+
+def _popen_factory(*args, **kwargs) -> subprocess.Popen:
+    """Thin wrapper around subprocess.Popen; injectable for unit tests."""
+    return subprocess.Popen(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# AppleScript timeout injection
+# ---------------------------------------------------------------------------
+
+
+def _apply_applescript_timeout(script: str, timeout: int) -> str:
+    """Wrap *script* in an AppleScript ``with timeout`` block.
+
+    The inner timeout is ``max(timeout - 5, 5)`` seconds, giving the
+    AppleScript interpreter a chance to exit cleanly before the Python-side
+    ``communicate(timeout=…)`` fires.
+
+    Scripts that contain a top-level ``use`` declaration (e.g. ASObjC
+    ``use framework "Foundation"`` in compose.py) cannot legally be nested
+    inside a block, so those are returned unchanged.
+
+    Nested ``with timeout`` blocks are legal in AppleScript, so this wrap is
+    compatible with per-tool timeouts already present in manage.py / search.py.
+    """
+    if any(line.lstrip().startswith("use ") for line in script.splitlines()):
+        return script
+    inner = max(timeout - 5, 5)
+    return f"with timeout of {inner} seconds\n{script}\nend timeout"
 
 
 def inject_preferences(func):
@@ -51,24 +153,56 @@ def _sanitize_for_json(text: str) -> str:
 
 
 def run_applescript(script: str, timeout: int = 120) -> str:
-    """Execute AppleScript via stdin pipe for reliable multi-line handling."""
+    """Execute AppleScript via stdin pipe for reliable multi-line handling.
+
+    Two-layer defence against orphaned osascript children (issue #58):
+
+    1. The script is wrapped in an AppleScript ``with timeout`` block so the
+       interpreter self-terminates even when the parent process is SIGKILLed
+       or exits via os._exit() (e.g. the orphan-watcher in __main__.py).
+
+    2. The live Popen object is tracked in ``_inflight_children``.  An atexit
+       handler and chained SIGTERM/SIGHUP handlers call kill() on any survivors
+       so graceful-exit paths also clean up.
+    """
+    # Ensure signal/atexit handlers are registered (idempotent, main-thread only).
+    _register_cleanup_once()
+
+    # Inject an AppleScript-level timeout so the child self-terminates even if
+    # the Python process is killed before communicate() can enforce its timeout.
+    wrapped = _apply_applescript_timeout(script, timeout)
+
+    proc = _popen_factory(
+        ["osascript", "-"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    with _inflight_lock:
+        _inflight_children.add(proc)
+
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=timeout,
+        stdout, stderr = proc.communicate(
+            input=wrapped.encode("utf-8"), timeout=timeout
         )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            if stderr:
-                raise Exception(f"AppleScript error: {stderr}")
-        output = result.stdout.decode("utf-8", errors="replace").strip()
-        return _sanitize_for_json(output)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
         raise Exception("AppleScript execution timed out")
     except Exception as e:
         raise Exception(f"AppleScript execution failed: {str(e)}")
+    finally:
+        with _inflight_lock:
+            _inflight_children.discard(proc)
+
+    if proc.returncode != 0:
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        if stderr_text:
+            raise Exception(f"AppleScript error: {stderr_text}")
+
+    output = stdout.decode("utf-8", errors="replace").strip()
+    return _sanitize_for_json(output)
 
 
 def normalize_search_terms(
