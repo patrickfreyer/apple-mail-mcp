@@ -101,7 +101,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `list_inbox_emails` | List emails with account/read-status filtering and optional content preview |
 | `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
-| `search_emails` | Unified search — subject, sender, body text, dates, attachments, cross-account |
+| `search_emails` | Unified search — subject, sender, body text, dates, attachments, flag status/color, cross-account |
 | `get_email_thread` | Conversation thread view |
 
 ### Organization

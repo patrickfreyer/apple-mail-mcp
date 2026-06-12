@@ -86,7 +86,7 @@
     },
     {
       "name": "search_emails",
-      "description": "Unified email search with 16 filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged, newsletter detection, thread view. Supports cross-account search, JSON output, and uses fast native Mail.app filtering."
+      "description": "Unified email search with filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged (with optional flag color), newsletter detection, thread view. Supports cross-account search, JSON output, and uses fast native Mail.app filtering."
     },
     {
       "name": "update_email_status",

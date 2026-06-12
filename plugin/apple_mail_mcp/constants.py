@@ -43,6 +43,12 @@ FLAG_COLORS = {
     "grey": 6,
 }
 
+# Reverse mapping: flag index -> canonical color name (the "grey" alias is
+# accepted on input only; index 6 always reports as "gray").
+FLAG_COLOR_NAMES = {
+    index: name for name, index in FLAG_COLORS.items() if name != "grey"
+}
+
 # Thread subject prefixes to strip when matching threads
 THREAD_PREFIXES = ["Re:", "Fwd:", "FW:", "RE:", "Fw:"]
 
