@@ -319,8 +319,10 @@ def update_email_status(
         message_ids: Optional list of exact Mail message ids for precise targeting
         older_than_days: Optional age filter - only update emails older than N days
         flag_color: Optional flag color for the "flag" action: "red", "orange",
-            "yellow", "green", "blue", "purple", or "gray". Omit for the default
-            red flag. Re-colors messages that are already flagged.
+            "yellow", "green", "blue", "purple", or "gray". Omit to flag
+            without setting a color — Mail shows its default (red), or the
+            message's previous color if one remains from an earlier flag.
+            Re-colors messages that are already flagged.
 
     Returns:
         Confirmation message with details of updated emails
