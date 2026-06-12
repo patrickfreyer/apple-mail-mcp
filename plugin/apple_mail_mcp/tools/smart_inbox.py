@@ -6,6 +6,7 @@ from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     inject_preferences,
     escape_applescript,
+    read_flag_index_script,
     run_applescript,
     inbox_mailbox_script,
     date_cutoff_script,
@@ -308,6 +309,7 @@ def get_needs_response(
             set highPriority to {{}}
             set normalPriority to {{}}
             set totalChecked to 0
+            set flagColorNames to {{{_FLAG_COLOR_NAME_LIST}}}
 
             repeat with aMessage in mailboxMessages
                 if (count of highPriority) + (count of normalPriority) >= {max_results} then exit repeat
@@ -349,14 +351,10 @@ def get_needs_response(
                                     if msgContent contains "?" then set hasQuestion to true
                                 end try
 
-                                set flagIndex to -1
-                                try
-                                    set flagIndex to flag index of aMessage
-                                end try
+                                {read_flag_index_script("flagIndex")}
                                 set isFlagged to (flagIndex is not -1)
                                 set flagLabel to "flagged"
                                 if flagIndex >= 0 and flagIndex < 7 then
-                                    set flagColorNames to {{{_FLAG_COLOR_NAME_LIST}}}
                                     set flagLabel to "flagged " & item (flagIndex + 1) of flagColorNames
                                 end if
 

@@ -414,6 +414,31 @@ def skip_folders_condition(var_name: str = "mailboxName") -> str:
     return f"{var_name} is not in {{{folder_list}}}"
 
 
+def resolve_flag_color(flag_color: str) -> int:
+    """Map a flag color name to Mail's `flag index` value (0-6).
+
+    Raises ValueError for colors outside Mail's seven indexed flags.
+    """
+    from apple_mail_mcp.constants import FLAG_COLORS
+
+    flag_index = FLAG_COLORS.get(flag_color.strip().lower())
+    if flag_index is None:
+        valid = ", ".join(c for c in FLAG_COLORS if c != "grey")
+        raise ValueError(f"Invalid flag_color '{flag_color}'. Use: {valid}")
+    return flag_index
+
+
+def read_flag_index_script(var_name: str = "messageFlagIndex") -> str:
+    """Return AppleScript snippet reading a message's flag index into var_name.
+
+    The variable defaults to -1 (unflagged) when the property is unreadable.
+    """
+    return f"""set {var_name} to -1
+                                                try
+                                                    set {var_name} to flag index of aMessage
+                                                end try"""
+
+
 def build_mailbox_ref(
     mailbox: str,
     account_var: str = "targetAccount",

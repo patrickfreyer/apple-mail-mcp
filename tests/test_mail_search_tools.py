@@ -332,7 +332,28 @@ class SearchToolTests(unittest.TestCase):
             )
 
         self.assertIn("messageFlagIndex is 0", captured["script"])
-        self.assertIn("set messageFlagIndex to flag index of aMessage", captured["script"])
+        # Read in both the scan loop and the record emission block.
+        self.assertEqual(
+            captured["script"].count("set messageFlagIndex to flag index of aMessage"),
+            2,
+        )
+
+    def test_search_emails_body_search_skips_flag_read_without_flag_filter(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            search_tools.search_emails(account="Work", body_text="invoice")
+
+        # Only the record emission block reads flag index; the per-message
+        # scan loop must not pay for it when no flag filter is set.
+        self.assertEqual(
+            captured["script"].count("set messageFlagIndex to flag index of aMessage"),
+            1,
+        )
 
     def test_search_emails_rejects_invalid_flag_color(self):
         with patch("apple_mail_mcp.tools.search.run_applescript") as mock_run:

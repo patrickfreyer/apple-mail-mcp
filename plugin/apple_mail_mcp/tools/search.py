@@ -7,12 +7,14 @@ from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.constants import FLAG_COLORS, FLAG_COLOR_NAMES
+from apple_mail_mcp.constants import FLAG_COLOR_NAMES
 from apple_mail_mcp.core import (
     contains_any_condition,
     inject_preferences,
     escape_applescript,
     normalize_search_terms,
+    resolve_flag_color,
+    read_flag_index_script,
     run_applescript,
     LOWERCASE_HANDLER,
 )
@@ -212,10 +214,7 @@ def _search_mail_records(
 
     flag_index: Optional[int] = None
     if flag_color is not None:
-        flag_index = FLAG_COLORS.get(flag_color.strip().lower())
-        if flag_index is None:
-            valid = ", ".join(c for c in FLAG_COLORS if c != "grey")
-            raise ValueError(f"Invalid flag_color '{flag_color}'. Use: {valid}")
+        flag_index = resolve_flag_color(flag_color)
         if flagged is False:
             raise ValueError(
                 "flag_color cannot be combined with flagged=False "
@@ -307,6 +306,10 @@ def _search_mail_records(
     # Build body search per-message filter block
     if use_body_search:
         escaped_body = escape_applescript(body_text.lower()) if body_text else ""
+        # Only pay the per-message flag-index read when a flag filter needs it.
+        flag_read_script = ""
+        if flag_index is not None or flagged is not None:
+            flag_read_script = read_flag_index_script()
         # Build per-message conditions for subject, sender, read_status, dates, attachments
         per_msg_conditions = []
         if subject_terms:
@@ -352,10 +355,7 @@ def _search_mail_records(
                                     set messageSender to sender of aMessage
                                     set messageRead to read status of aMessage
                                     set messageDate to date received of aMessage
-                                    set messageFlagIndex to -1
-                                    try
-                                        set messageFlagIndex to flag index of aMessage
-                                    end try
+                                    {flag_read_script}
                                     set lowerSubject to my lowercase(messageSubject)
                                     set lowerSender to my lowercase(messageSender)
                                     set msgContent to ""
@@ -481,10 +481,7 @@ def _search_mail_records(
                                                 set messageRead to read status of aMessage
                                                 set messageDate to date received of aMessage
                                                 set receivedAt to my iso_datetime(messageDate)
-                                                set messageFlagIndex to -1
-                                                try
-                                                    set messageFlagIndex to flag index of aMessage
-                                                end try
+                                                {read_flag_index_script()}
                                                 set contentPreview to ""
 
                                                 if {str(include_content).lower()} then

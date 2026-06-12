@@ -4,8 +4,8 @@ import os
 from typing import Optional, List
 
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.constants import FLAG_COLORS
 from apple_mail_mcp.core import (
+    resolve_flag_color,
     contains_any_condition,
     equals_any_numeric_condition,
     inject_preferences,
@@ -333,10 +333,10 @@ def update_email_status(
         if action != "flag":
             return "Error: 'flag_color' is only valid with action='flag'"
         flag_color = flag_color.strip().lower()
-        flag_index = FLAG_COLORS.get(flag_color)
-        if flag_index is None:
-            valid = ", ".join(c for c in FLAG_COLORS if c != "grey")
-            return f"Error: Invalid flag_color '{flag_color}'. Use: {valid}"
+        try:
+            flag_index = resolve_flag_color(flag_color)
+        except ValueError as exc:
+            return f"Error: {exc}"
 
     # Build action scripts
     if action == "mark_read":
