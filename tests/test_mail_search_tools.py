@@ -281,6 +281,90 @@ class ManageToolTests(unittest.TestCase):
         self.assertIn("id is 202", captured["script"])
         self.assertIn("set read status of targetMessages to true", captured["script"])
 
+    def test_update_email_status_flag_color_sets_flag_index(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "updated"
+
+        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=fake_run):
+            result = manage_tools.update_email_status(
+                account="Work",
+                mailbox="INBOX",
+                message_ids=["101"],
+                action="flag",
+                flag_color="Orange",
+            )
+
+        self.assertEqual(result, "updated")
+        self.assertIn("set flag index of targetMessages to 1", captured["script"])
+        self.assertIn("Flagged (orange)", captured["script"])
+        self.assertNotIn("set flagged status", captured["script"])
+
+    def test_update_email_status_flag_without_color_uses_flagged_status(self):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "updated"
+
+        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=fake_run):
+            manage_tools.update_email_status(
+                account="Work",
+                mailbox="INBOX",
+                message_ids=["101"],
+                action="flag",
+            )
+
+        self.assertIn("set flagged status of targetMessages to true", captured["script"])
+        self.assertNotIn("flag index", captured["script"])
+
+    def test_update_email_status_flag_color_filter_path_matches_other_colors(self):
+        captured = {}
+
+        def fake_run(script, timeout=300):
+            captured["script"] = script
+            return "updated"
+
+        with patch("apple_mail_mcp.tools.manage.run_applescript", side_effect=fake_run):
+            manage_tools.update_email_status(
+                account="Work",
+                mailbox="INBOX",
+                subject_keyword="invoice",
+                action="flag",
+                flag_color="green",
+            )
+
+        self.assertIn("flag index is not 3", captured["script"])
+        self.assertIn("set flag index of aMessage to 3", captured["script"])
+
+    def test_update_email_status_rejects_invalid_flag_color(self):
+        with patch("apple_mail_mcp.tools.manage.run_applescript") as mock_run:
+            result = manage_tools.update_email_status(
+                account="Work",
+                mailbox="INBOX",
+                message_ids=["101"],
+                action="flag",
+                flag_color="magenta",
+            )
+
+        self.assertIn("Invalid flag_color", result)
+        mock_run.assert_not_called()
+
+    def test_update_email_status_rejects_flag_color_with_other_actions(self):
+        with patch("apple_mail_mcp.tools.manage.run_applescript") as mock_run:
+            result = manage_tools.update_email_status(
+                account="Work",
+                mailbox="INBOX",
+                message_ids=["101"],
+                action="mark_read",
+                flag_color="red",
+            )
+
+        self.assertIn("only valid with action='flag'", result)
+        mock_run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

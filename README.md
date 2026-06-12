@@ -110,7 +110,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `list_mailboxes` | Folder hierarchy with message counts |
 | `create_mailbox` | Create new mailboxes (supports nested paths) |
 | `move_email` | Move/archive emails with filters (subject, sender, date, read status, dry-run) |
-| `update_email_status` | Mark read/unread, flag/unflag — by filters or message IDs |
+| `update_email_status` | Mark read/unread, flag/unflag (optional flag color) — by filters or message IDs |
 | `manage_trash` | Soft delete, permanent delete, empty trash (with dry-run) |
 
 ### Composition

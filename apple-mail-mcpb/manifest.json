@@ -90,7 +90,7 @@
     },
     {
       "name": "update_email_status",
-      "description": "Update email status in batch — mark as read/unread, flag/unflag. Requires at least one filter or explicit apply_to_all for safety."
+      "description": "Update email status in batch — mark as read/unread, flag/unflag with optional flag color. Requires at least one filter or explicit apply_to_all for safety."
     },
     {
       "name": "manage_trash",

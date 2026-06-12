@@ -4,6 +4,7 @@ import os
 from typing import Optional, List
 
 from apple_mail_mcp.server import mcp
+from apple_mail_mcp.constants import FLAG_COLORS
 from apple_mail_mcp.core import (
     contains_any_condition,
     equals_any_numeric_condition,
@@ -298,6 +299,7 @@ def update_email_status(
     apply_to_all: bool = False,
     message_ids: Optional[List[str]] = None,
     older_than_days: Optional[int] = None,
+    flag_color: Optional[str] = None,
 ) -> str:
     """
     Update email status - mark as read/unread or flag/unflag emails.
@@ -316,12 +318,24 @@ def update_email_status(
         apply_to_all: Must be True to allow updates without any filter
         message_ids: Optional list of exact Mail message ids for precise targeting
         older_than_days: Optional age filter - only update emails older than N days
+        flag_color: Optional flag color for the "flag" action: "red", "orange",
+            "yellow", "green", "blue", "purple", or "gray". Omit for the default
+            red flag. Re-colors messages that are already flagged.
 
     Returns:
         Confirmation message with details of updated emails
     """
 
     safe_account = escape_applescript(account)
+
+    flag_index: Optional[int] = None
+    if flag_color is not None:
+        if action != "flag":
+            return "Error: 'flag_color' is only valid with action='flag'"
+        flag_index = FLAG_COLORS.get(flag_color.strip().lower())
+        if flag_index is None:
+            valid = ", ".join(sorted(set(FLAG_COLORS) - {"grey"}))
+            return f"Error: Invalid flag_color '{flag_color}'. Use: {valid}"
 
     # Build action scripts
     if action == "mark_read":
@@ -333,9 +347,14 @@ def update_email_status(
         single_action_script = "set read status of aMessage to false"
         action_label = "Marked as unread"
     elif action == "flag":
-        bulk_action_script = "set flagged status of targetMessages to true"
-        single_action_script = "set flagged status of aMessage to true"
-        action_label = "Flagged"
+        if flag_index is not None:
+            bulk_action_script = f"set flag index of targetMessages to {flag_index}"
+            single_action_script = f"set flag index of aMessage to {flag_index}"
+            action_label = f"Flagged ({flag_color.strip().lower()})"
+        else:
+            bulk_action_script = "set flagged status of targetMessages to true"
+            single_action_script = "set flagged status of aMessage to true"
+            action_label = "Flagged"
     elif action == "unflag":
         bulk_action_script = "set flagged status of targetMessages to false"
         single_action_script = "set flagged status of aMessage to false"
@@ -422,7 +441,12 @@ def update_email_status(
     elif action == "mark_unread":
         conditions = ["read status is true"]
     elif action == "flag":
-        conditions = ["flagged status is false"]
+        if flag_index is not None:
+            # Unflagged messages have flag index -1, so this also matches
+            # already-flagged messages that need re-coloring.
+            conditions = [f"flag index is not {flag_index}"]
+        else:
+            conditions = ["flagged status is false"]
     else:  # unflag
         conditions = ["flagged status is true"]
 
