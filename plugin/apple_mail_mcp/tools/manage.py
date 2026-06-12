@@ -349,8 +349,16 @@ def update_email_status(
         action_label = "Marked as unread"
     elif action == "flag":
         if flag_index is not None:
-            bulk_action_script = f"set flag index of targetMessages to {flag_index}"
-            single_action_script = f"set flag index of aMessage to {flag_index}"
+            # flag index and flagged status are independent properties; set
+            # both so coloring an unflagged message activates the flag.
+            bulk_action_script = (
+                f"set flag index of targetMessages to {flag_index}\n"
+                "                            set flagged status of targetMessages to true"
+            )
+            single_action_script = (
+                f"set flag index of aMessage to {flag_index}\n"
+                "                            set flagged status of aMessage to true"
+            )
             action_label = f"Flagged ({flag_color})"
         else:
             bulk_action_script = "set flagged status of targetMessages to true"
@@ -443,9 +451,12 @@ def update_email_status(
         conditions = ["read status is true"]
     elif action == "flag":
         if flag_index is not None:
-            # Unflagged messages have flag index -1, so this also matches
-            # already-flagged messages that need re-coloring.
-            conditions = [f"flag index is not {flag_index}"]
+            # Match unflagged messages AND already-flagged ones needing a
+            # re-color; also match a residual matching index whose flag is
+            # inactive (flag index survives unflagging).
+            conditions = [
+                f"(flag index is not {flag_index} or flagged status is false)"
+            ]
         else:
             conditions = ["flagged status is false"]
     else:  # unflag

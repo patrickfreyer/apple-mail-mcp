@@ -316,8 +316,9 @@ class SearchToolTests(unittest.TestCase):
         with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
             search_tools.search_emails(account="Work", flag_color="purple")
 
-        self.assertIn("flag index is 5", captured["script"])
-        self.assertNotIn("flagged status", captured["script"])
+        self.assertIn(
+            "(flagged status is true and flag index is 5)", captured["script"]
+        )
 
     def test_search_emails_flag_color_in_body_search_path(self):
         captured = {}
@@ -412,7 +413,8 @@ class ManageToolTests(unittest.TestCase):
         self.assertEqual(result, "updated")
         self.assertIn("set flag index of targetMessages to 1", captured["script"])
         self.assertIn("Flagged (orange)", captured["script"])
-        self.assertNotIn("set flagged status", captured["script"])
+        # flag index alone doesn't activate the flag; both must be set.
+        self.assertIn("set flagged status of targetMessages to true", captured["script"])
 
     def test_update_email_status_flag_without_color_uses_flagged_status(self):
         captured = {}
@@ -448,8 +450,11 @@ class ManageToolTests(unittest.TestCase):
                 flag_color="green",
             )
 
-        self.assertIn("flag index is not 3", captured["script"])
+        self.assertIn(
+            "(flag index is not 3 or flagged status is false)", captured["script"]
+        )
         self.assertIn("set flag index of aMessage to 3", captured["script"])
+        self.assertIn("set flagged status of aMessage to true", captured["script"])
 
     def test_update_email_status_rejects_invalid_flag_color(self):
         with patch("apple_mail_mcp.tools.manage.run_applescript") as mock_run:

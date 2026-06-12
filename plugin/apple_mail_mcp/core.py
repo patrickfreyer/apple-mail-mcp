@@ -432,10 +432,15 @@ def read_flag_index_script(var_name: str = "messageFlagIndex") -> str:
     """Return AppleScript snippet reading a message's flag index into var_name.
 
     The variable defaults to -1 (unflagged) when the property is unreadable.
+    `flag index` and `flagged status` are independent properties in Mail —
+    unflagging only clears the boolean, leaving a residual index — so the
+    read is gated on `flagged status` to treat such messages as unflagged.
     """
     return f"""set {var_name} to -1
                                                 try
-                                                    set {var_name} to flag index of aMessage
+                                                    if flagged status of aMessage then
+                                                        set {var_name} to flag index of aMessage
+                                                    end if
                                                 end try"""
 
 

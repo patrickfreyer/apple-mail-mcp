@@ -239,7 +239,11 @@ def _search_mail_records(
             else:
                 filter_conditions.append("(count of mail attachments) = 0")
         if flag_index is not None:
-            filter_conditions.append(f"flag index is {flag_index}")
+            # flag index survives unflagging; require the active-flag boolean
+            # so residual indexes on unflagged messages don't match.
+            filter_conditions.append(
+                f"(flagged status is true and flag index is {flag_index})"
+            )
         elif flagged is not None:
             filter_conditions.append(
                 f"flagged status is {'true' if flagged else 'false'}"
