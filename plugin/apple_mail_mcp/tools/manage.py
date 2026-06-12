@@ -332,9 +332,10 @@ def update_email_status(
     if flag_color is not None:
         if action != "flag":
             return "Error: 'flag_color' is only valid with action='flag'"
-        flag_index = FLAG_COLORS.get(flag_color.strip().lower())
+        flag_color = flag_color.strip().lower()
+        flag_index = FLAG_COLORS.get(flag_color)
         if flag_index is None:
-            valid = ", ".join(sorted(set(FLAG_COLORS) - {"grey"}))
+            valid = ", ".join(c for c in FLAG_COLORS if c != "grey")
             return f"Error: Invalid flag_color '{flag_color}'. Use: {valid}"
 
     # Build action scripts
@@ -350,7 +351,7 @@ def update_email_status(
         if flag_index is not None:
             bulk_action_script = f"set flag index of targetMessages to {flag_index}"
             single_action_script = f"set flag index of aMessage to {flag_index}"
-            action_label = f"Flagged ({flag_color.strip().lower()})"
+            action_label = f"Flagged ({flag_color})"
         else:
             bulk_action_script = "set flagged status of targetMessages to true"
             single_action_script = "set flagged status of aMessage to true"
