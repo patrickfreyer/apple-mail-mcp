@@ -72,7 +72,7 @@ claude mcp add apple-mail -- mcp-apple-mail
 <details>
 <summary><strong>Claude Desktop MCPB</strong></summary>
 
-1. Download `apple-mail-mcp-v2.2.0.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
+1. Download the latest `apple-mail-mcp-vX.Y.Z.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
 2. Open Claude Desktop → Settings → Developer → MCP Servers → Install from file
 3. Select the `.mcpb` file and grant Mail.app permissions
 
