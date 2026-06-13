@@ -7,11 +7,14 @@ from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
 from apple_mail_mcp.server import mcp
+from apple_mail_mcp.constants import FLAG_COLOR_NAMES
 from apple_mail_mcp.core import (
     contains_any_condition,
     inject_preferences,
     escape_applescript,
     normalize_search_terms,
+    resolve_flag_color,
+    read_flag_index_script,
     run_applescript,
     LOWERCASE_HANDLER,
 )
@@ -63,11 +66,15 @@ def _parse_search_records(output: str) -> List[Dict[str, Any]]:
 
     records = []
     for line in output.splitlines():
-        parts = line.split("|||", 8)
-        if len(parts) < 8:
+        parts = line.split("|||", 9)
+        if len(parts) < 9:
             continue
 
         internet_message_id = parts[1].strip()
+        try:
+            flag_index = int(parts[8].strip())
+        except ValueError:
+            flag_index = -1
         record = {
             "message_id": parts[0].strip(),
             "internet_message_id": internet_message_id,
@@ -77,15 +84,18 @@ def _parse_search_records(output: str) -> List[Dict[str, Any]]:
             "account": parts[5].strip(),
             "is_read": parts[6].strip().lower() == "true",
             "received_date": parts[7].strip(),
+            "is_flagged": flag_index >= 0,
         }
+        if flag_index in FLAG_COLOR_NAMES:
+            record["flag_color"] = FLAG_COLOR_NAMES[flag_index]
         if internet_message_id:
             # Apple Mail requires: message:// scheme, angle brackets (percent-encoded),
             # and raw @ in the Message-ID. Normalize ID in case angle brackets are
             # present or missing (AppleScript returns both forms).
             msg_id = internet_message_id.strip("<>")
             record["mail_link"] = f"message://%3C{quote(msg_id, safe='@')}%3E"
-        if len(parts) > 8 and parts[8].strip():
-            record["content_preview"] = parts[8].strip()
+        if len(parts) > 9 and parts[9].strip():
+            record["content_preview"] = parts[9].strip()
         records.append(record)
 
     return records
@@ -118,7 +128,12 @@ def _format_search_records_text(
         lines.append("")
         for item in records:
             indicator = "\u2713" if item["is_read"] else "\u2709"
-            lines.append(f"{indicator} {item['subject']}")
+            subject_line = f"{indicator} {item['subject']}"
+            if item.get("flag_color"):
+                subject_line += f" \u2691 {item['flag_color']}"
+            elif item.get("is_flagged"):
+                subject_line += " \u2691"
+            lines.append(subject_line)
             lines.append(f"   From: {item['sender']}")
             lines.append(f"   Date: {item['received_date']}")
             lines.append(f"   Mailbox: {item['mailbox']}")
@@ -170,6 +185,8 @@ def _search_mail_records(
     subject_terms: Optional[List[str]] = None,
     sender: Optional[str] = None,
     has_attachments: Optional[bool] = None,
+    flagged: Optional[bool] = None,
+    flag_color: Optional[str] = None,
     read_status: str = "all",
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -195,6 +212,15 @@ def _search_mail_records(
     if read_status not in {"all", "read", "unread"}:
         raise ValueError("Invalid read_status. Use: all, read, unread")
 
+    flag_index: Optional[int] = None
+    if flag_color is not None:
+        flag_index = resolve_flag_color(flag_color)
+        if flagged is False:
+            raise ValueError(
+                "flag_color cannot be combined with flagged=False "
+                "(a colored flag implies the message is flagged)"
+            )
+
     escaped_sender = escape_applescript(sender) if sender else None
 
     # When body_text is provided, we must iterate per-message (can't use whose clause)
@@ -212,6 +238,16 @@ def _search_mail_records(
                 filter_conditions.append("(count of mail attachments) > 0")
             else:
                 filter_conditions.append("(count of mail attachments) = 0")
+        if flag_index is not None:
+            # flag index survives unflagging; require the active-flag boolean
+            # so residual indexes on unflagged messages don't match.
+            filter_conditions.append(
+                f"(flagged status is true and flag index is {flag_index})"
+            )
+        elif flagged is not None:
+            filter_conditions.append(
+                f"flagged status is {'true' if flagged else 'false'}"
+            )
         if read_status == "read":
             filter_conditions.append("read status is true")
         elif read_status == "unread":
@@ -274,6 +310,10 @@ def _search_mail_records(
     # Build body search per-message filter block
     if use_body_search:
         escaped_body = escape_applescript(body_text.lower()) if body_text else ""
+        # Only pay the per-message flag-index read when a flag filter needs it.
+        flag_read_script = ""
+        if flag_index is not None or flagged is not None:
+            flag_read_script = read_flag_index_script()
         # Build per-message conditions for subject, sender, read_status, dates, attachments
         per_msg_conditions = []
         if subject_terms:
@@ -297,6 +337,12 @@ def _search_mail_records(
             per_msg_conditions.append("(count of mail attachments of aMessage) > 0")
         elif has_attachments is False:
             per_msg_conditions.append("(count of mail attachments of aMessage) = 0")
+        if flag_index is not None:
+            per_msg_conditions.append(f"messageFlagIndex is {flag_index}")
+        elif flagged is True:
+            per_msg_conditions.append("messageFlagIndex is not -1")
+        elif flagged is False:
+            per_msg_conditions.append("messageFlagIndex is -1")
 
         # Body text condition is always present in body search mode
         per_msg_conditions.append(f'lowerContent contains "{escaped_body}"')
@@ -313,6 +359,7 @@ def _search_mail_records(
                                     set messageSender to sender of aMessage
                                     set messageRead to read status of aMessage
                                     set messageDate to date received of aMessage
+                                    {flag_read_script}
                                     set lowerSubject to my lowercase(messageSubject)
                                     set lowerSender to my lowercase(messageSender)
                                     set msgContent to ""
@@ -438,6 +485,7 @@ def _search_mail_records(
                                                 set messageRead to read status of aMessage
                                                 set messageDate to date received of aMessage
                                                 set receivedAt to my iso_datetime(messageDate)
+                                                {read_flag_index_script()}
                                                 set contentPreview to ""
 
                                                 if {str(include_content).lower()} then
@@ -463,7 +511,7 @@ def _search_mail_records(
                                                     set readValue to "true"
                                                 end if
 
-                                                set recordLine to messageId & "|||" & internetMessageId & "|||" & messageSubject & "|||" & messageSender & "|||" & mailboxName & "|||" & accountName & "|||" & readValue & "|||" & receivedAt & "|||" & contentPreview
+                                                set recordLine to messageId & "|||" & internetMessageId & "|||" & messageSubject & "|||" & messageSender & "|||" & mailboxName & "|||" & accountName & "|||" & readValue & "|||" & receivedAt & "|||" & (messageFlagIndex as string) & "|||" & contentPreview
                                                 set end of recordLines to recordLine
                                                 set collectLimit to collectLimit - 1
                                                 if collectLimit <= 0 then exit repeat
@@ -511,6 +559,8 @@ def search_emails(
     subject_keywords: Optional[List[str]] = None,
     sender: Optional[str] = None,
     has_attachments: Optional[bool] = None,
+    flagged: Optional[bool] = None,
+    flag_color: Optional[str] = None,
     read_status: str = "all",
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -537,6 +587,9 @@ def search_emails(
         subject_keywords: Optional list of subject keywords; matches any keyword
         sender: Optional sender email or name to filter by
         has_attachments: Optional filter for emails with attachments (True/False/None)
+        flagged: Optional filter for flagged emails (True/False/None)
+        flag_color: Optional filter for a specific flag color: "red", "orange",
+            "yellow", "green", "blue", "purple", or "gray". Implies flagged=True.
         read_status: Filter by read status: "all", "read", "unread" (default: "all")
         date_from: Optional start date filter (format: "YYYY-MM-DD")
         date_to: Optional end date filter (format: "YYYY-MM-DD")
@@ -568,6 +621,8 @@ def search_emails(
             subject_terms=subject_terms,
             sender=sender,
             has_attachments=has_attachments,
+            flagged=flagged,
+            flag_color=flag_color,
             read_status=read_status,
             date_from=date_from,
             date_to=date_to,

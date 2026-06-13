@@ -6,6 +6,7 @@ from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     inject_preferences,
     escape_applescript,
+    read_flag_index_script,
     run_applescript,
     inbox_mailbox_script,
     date_cutoff_script,
@@ -15,6 +16,13 @@ from apple_mail_mcp.constants import (
     NEWSLETTER_PLATFORM_PATTERNS,
     NEWSLETTER_KEYWORD_PATTERNS,
     THREAD_PREFIXES,
+    FLAG_COLOR_NAMES,
+)
+
+# AppleScript list literal of color names indexed by flag index, e.g.
+# {"red", "orange", ...} — item (flagIndex + 1) of this list is the name.
+_FLAG_COLOR_NAME_LIST = ", ".join(
+    f'"{FLAG_COLOR_NAMES[i]}"' for i in sorted(FLAG_COLOR_NAMES)
 )
 
 
@@ -301,6 +309,7 @@ def get_needs_response(
             set highPriority to {{}}
             set normalPriority to {{}}
             set totalChecked to 0
+            set flagColorNames to {{{_FLAG_COLOR_NAME_LIST}}}
 
             repeat with aMessage in mailboxMessages
                 if (count of highPriority) + (count of normalPriority) >= {max_results} then exit repeat
@@ -342,17 +351,19 @@ def get_needs_response(
                                     if msgContent contains "?" then set hasQuestion to true
                                 end try
 
-                                set isFlagged to false
-                                try
-                                    set isFlagged to flagged status of aMessage
-                                end try
+                                {read_flag_index_script("flagIndex")}
+                                set isFlagged to (flagIndex is not -1)
+                                set flagLabel to "flagged"
+                                if flagIndex >= 0 and flagIndex < 7 then
+                                    set flagLabel to "flagged " & item (flagIndex + 1) of flagColorNames
+                                end if
 
                                 set emailEntry to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||"
                                 if hasQuestion or isFlagged then
                                     if hasQuestion and isFlagged then
-                                        set emailEntry to emailEntry & "HIGH (flagged + question)"
+                                        set emailEntry to emailEntry & "HIGH (" & flagLabel & " + question)"
                                     else if isFlagged then
-                                        set emailEntry to emailEntry & "HIGH (flagged)"
+                                        set emailEntry to emailEntry & "HIGH (" & flagLabel & ")"
                                     else
                                         set emailEntry to emailEntry & "MEDIUM (contains question)"
                                     end if

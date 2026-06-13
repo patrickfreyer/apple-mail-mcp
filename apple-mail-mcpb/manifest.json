@@ -86,11 +86,11 @@
     },
     {
       "name": "search_emails",
-      "description": "Unified email search with 16 filter parameters: account, mailbox, subject, body, sender, date range, read status, attachments, flagged, newsletter detection, thread view. Supports cross-account search, JSON output, and uses fast native Mail.app filtering."
+      "description": "Unified email search with filter parameters: account, mailbox, subject, body text (slower, per-message), sender, date range, read status, attachments, flagged (with optional flag color). Supports cross-account search, JSON output, and uses fast native Mail.app filtering. For thread view use get_email_thread; for newsletter detection use the smart inbox tools."
     },
     {
       "name": "update_email_status",
-      "description": "Update email status in batch — mark as read/unread, flag/unflag. Requires at least one filter or explicit apply_to_all for safety."
+      "description": "Update email status in batch — mark as read/unread, flag/unflag with optional flag color. Requires at least one filter or explicit apply_to_all for safety."
     },
     {
       "name": "manage_trash",
