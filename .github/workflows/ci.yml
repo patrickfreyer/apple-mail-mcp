@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Version drift guard
+        run: python scripts/check_versions.py
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest fastmcp
+
+      - name: Run test suite
+        env:
+          PYTHONPATH: plugin
+        run: python -m pytest tests/ -q
+
+  build-and-verify:
+    name: Build wheel + verify packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      # This is the guard against the 2.2.0-style regression: a wheel that
+      # ships only dist-info and the console script but NOT the
+      # apple_mail_mcp/ package. verify_wheel.py inspects the artifact and
+      # does a clean-venv install + import + entry-point check.
+      - name: Verify the built wheel is installable & contains the package
+        run: python scripts/verify_wheel.py
