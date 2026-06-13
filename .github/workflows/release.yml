@@ -74,3 +74,46 @@ jobs:
 
       - name: Publish distribution to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Build .mcpb + attach to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload the .mcpb asset
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the .mcpb bundle
+        run: bash apple-mail-mcpb/build-mcpb.sh
+
+      # Same "don't ship a broken artifact" guard as the wheel: the bundle must
+      # contain the apple_mail_mcp package and must not leak venv/ or pycache.
+      - name: Verify the .mcpb contains the apple_mail_mcp package
+        run: |
+          MCPB=$(ls apple-mail-mcp-v*.mcpb)
+          echo "bundle: $MCPB"
+          for f in apple_mail_mcp/__init__.py apple_mail_mcp/__main__.py; do
+            if ! unzip -l "$MCPB" | grep -q "$f"; then
+              echo "::error::$MCPB is missing $f"; exit 1
+            fi
+          done
+          if unzip -l "$MCPB" | grep -qE '/venv/|__pycache__'; then
+            echo "::error::$MCPB leaked venv/ or __pycache__"; exit 1
+          fi
+
+      - name: Build release notes from CHANGELOG
+        run: python scripts/extract_changelog.py > RELEASE_BODY.md
+
+      - name: Create / update the GitHub Release with the bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_BODY.md
+          generate_release_notes: true
+          files: apple-mail-mcp-v*.mcpb
+          fail_on_unmatched_files: true

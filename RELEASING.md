@@ -50,10 +50,17 @@ publisher:
    git tag v3.1.7
    git push origin v3.1.7
    ```
-5. The **Release** workflow runs automatically: it checks the tag matches the
-   version, builds, runs `verify_wheel.py`, and publishes to PyPI.
+5. The **Release** workflow runs automatically and does three things:
+   - checks the tag matches the version, builds, runs `verify_wheel.py`, and
+     **publishes to PyPI**;
+   - builds the **`.mcpb` bundle** (`apple-mail-mcpb/build-mcpb.sh`), verifies it
+     contains the `apple_mail_mcp` package, and **creates the GitHub Release with
+     the bundle attached** (notes pulled from `CHANGELOG.md` via
+     `scripts/extract_changelog.py`).
 6. Confirm: `uvx mcp-apple-mail` (or `pip install -U mcp-apple-mail`) pulls the
-   new version and starts cleanly.
+   new version and starts cleanly, and the GitHub Release has the `.mcpb` asset.
+
+> No manual `.mcpb` build or release upload is needed — the tag drives all of it.
 
 ## Verifying a build locally (before tagging)
 

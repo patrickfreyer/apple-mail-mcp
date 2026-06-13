@@ -5,6 +5,15 @@ All notable changes to **mcp-apple-mail** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Release workflow now builds and attaches the `.mcpb` bundle** to the GitHub
+  Release automatically on each tag (verifies the bundle contains the
+  `apple_mail_mcp` package and doesn't leak `venv/`/`__pycache__`).
+- **`scripts/extract_changelog.py`** — pulls the current version's section from
+  this file to use as the GitHub Release body.
+
 ## [3.1.7] - 2026-06-12
 
 First 3.x release actually published to PyPI. Versions 3.0.0–3.1.6 were tagged
