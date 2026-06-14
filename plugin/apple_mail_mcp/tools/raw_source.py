@@ -51,12 +51,38 @@ def _apply_size_cap(source: str, max_bytes: int) -> str:
     return prefix + marker
 
 
+def _headers_only(source: str) -> str:
+    """Return the RFC 822 header block (everything up to the first blank line).
+
+    Per RFC 5322 §2.1, the header section is terminated by a CRLF (or LF in
+    relaxed form) that is followed by another CRLF/LF — i.e. the first empty
+    line. The terminator itself is included in the returned block so the
+    caller sees a well-formed header section.
+    """
+    # Match CRLF or LF line endings. Search for the earliest header/body
+    # separator (\n\n or \r\n\r\n).
+    crlf = source.find("\r\n\r\n")
+    lf = source.find("\n\n")
+
+    candidates = [c for c in (crlf, lf) if c != -1]
+    if not candidates:
+        # No blank line found — treat the whole payload as headers.
+        return source
+
+    sep_pos = min(candidates)
+    # Include the terminating blank line in the returned block.
+    if source[sep_pos:sep_pos + 4] == "\r\n\r\n":
+        return source[: sep_pos + 4]
+    return source[: sep_pos + 2]
+
+
 @mcp.tool()
 def get_email_source(
     account: str,
     subject_keyword: Optional[str] = None,
     message_id: Optional[str] = None,
     mailbox: str = "INBOX",
+    headers_only: bool = False,
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> str:
     """Return the raw RFC 822 source of a single message.
@@ -82,13 +108,17 @@ def get_email_source(
 
     Output sizing: messages can be large (a plain note is ~200 KB; with
     attachments far larger). ``max_bytes`` caps the returned payload and
-    appends a truncation marker when exceeded.
+    appends a truncation marker when exceeded. ``headers_only=True`` returns
+    only the RFC 822 header block (everything up to and including the first
+    blank line) — usually sufficient for URL/header inspection and avoids
+    returning base64 bodies. Cap applies after the headers_only filter.
 
     Args:
         account: Account name (e.g., ``"Gmail"``, ``"Work"``).
         subject_keyword: Substring to match against subject (first hit).
         message_id: RFC 822 Message-Id for exact match (preferred when known).
         mailbox: Mailbox name (default: ``"INBOX"``).
+        headers_only: When ``True``, return only the header block.
         max_bytes: Byte cap on the returned payload (default 256 KB).
 
     Returns:
@@ -135,5 +165,8 @@ def get_email_source(
     # Don't post-process error returns from the AppleScript layer.
     if isinstance(result, str) and result.startswith("Error:"):
         return result
+
+    if headers_only:
+        result = _headers_only(result)
 
     return _apply_size_cap(result, max_bytes)

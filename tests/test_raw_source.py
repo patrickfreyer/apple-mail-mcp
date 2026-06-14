@@ -103,10 +103,68 @@ class SizeCapTests(unittest.TestCase):
         self.assertEqual(raw_source_tools.DEFAULT_MAX_BYTES, 256 * 1024)
 
 
+class HeadersOnlyTests(unittest.TestCase):
+    def test_headers_only_strips_body(self):
+        sample = (
+            "From: alice@example.com\r\n"
+            "Subject: Hello\r\n"
+            "Message-Id: <abc@example.com>\r\n"
+            "\r\n"
+            "Body with a link: https://example.com/path\r\n"
+        )
+
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value=sample
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="Hello",
+                headers_only=True,
+            )
+
+        self.assertIn("From: alice@example.com", result)
+        self.assertIn("Subject: Hello", result)
+        self.assertNotIn("Body with a link", result)
+        # Header block ends with the separating blank line.
+        self.assertTrue(result.endswith("\r\n\r\n"))
+
+    def test_headers_only_with_lf_only_separator(self):
+        sample = (
+            "From: alice@example.com\n"
+            "Subject: Hello\n"
+            "\n"
+            "body\n"
+        )
+
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value=sample
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                headers_only=True,
+            )
+
+        self.assertNotIn("body", result)
+        self.assertTrue(result.endswith("\n\n"))
+
+    def test_headers_only_with_no_blank_line_returns_full_payload(self):
+        sample = "From: alice@example.com\nSubject: stub\n"
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value=sample
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                headers_only=True,
+            )
+        self.assertEqual(result, sample)
+
+
 class ErrorPassthroughTests(unittest.TestCase):
-    def test_applescript_error_returns_are_not_capped(self):
+    def test_applescript_error_returns_are_not_post_processed(self):
         # AppleScript-layer error returns should pass straight through
-        # without being subjected to the cap logic.
+        # without being subjected to cap or headers_only.
         with patch.object(
             raw_source_tools,
             "run_applescript",
@@ -115,6 +173,7 @@ class ErrorPassthroughTests(unittest.TestCase):
             result = raw_source_tools.get_email_source(
                 account="Work",
                 subject_keyword="x",
+                headers_only=True,
                 max_bytes=10,
             )
 
