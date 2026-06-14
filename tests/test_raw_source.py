@@ -64,5 +64,62 @@ class GetEmailSourceTests(unittest.TestCase):
         mock_run.assert_not_called()
 
 
+class SizeCapTests(unittest.TestCase):
+    def test_under_cap_returns_source_unchanged(self):
+        sample = "From: a@example.com\n\nshort body\n"
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value=sample
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                max_bytes=1024,
+            )
+        self.assertEqual(result, sample)
+        self.assertNotIn("truncated", result)
+
+    def test_over_cap_truncates_with_marker(self):
+        # Build a payload safely over a small cap.
+        big_body = "x" * 5000
+        sample = f"From: a@example.com\n\n{big_body}\n"
+        cap = 1024
+
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value=sample
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                max_bytes=cap,
+            )
+
+        self.assertIn("[... truncated:", result)
+        self.assertIn(f"cap {cap} bytes", result)
+        self.assertIn(f"original size {len(sample.encode('utf-8'))} bytes", result)
+        # Prefix is preserved.
+        self.assertTrue(result.startswith("From: a@example.com\n\n"))
+
+    def test_default_cap_is_256kb(self):
+        self.assertEqual(raw_source_tools.DEFAULT_MAX_BYTES, 256 * 1024)
+
+
+class ErrorPassthroughTests(unittest.TestCase):
+    def test_applescript_error_returns_are_not_capped(self):
+        # AppleScript-layer error returns should pass straight through
+        # without being subjected to the cap logic.
+        with patch.object(
+            raw_source_tools,
+            "run_applescript",
+            return_value="Error: account not found: Work",
+        ):
+            result = raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                max_bytes=10,
+            )
+
+        self.assertEqual(result, "Error: account not found: Work")
+
+
 if __name__ == "__main__":
     unittest.main()

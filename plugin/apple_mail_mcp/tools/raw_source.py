@@ -22,12 +22,42 @@ from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import escape_applescript, run_applescript
 
 
+# Default byte cap for returned source. A plain message is ~200 KB; messages
+# with attachments are typically far larger and would flood the model context
+# if returned in full. Callers needing the whole payload can raise the cap or
+# read the on-disk ``.partial.emlx`` directly.
+DEFAULT_MAX_BYTES = 256 * 1024
+
+
+def _apply_size_cap(source: str, max_bytes: int) -> str:
+    """Truncate ``source`` to ``max_bytes`` (UTF-8 encoded) with a marker.
+
+    The cap is applied on the encoded byte length, not character count, so
+    multi-byte payloads (UTF-8 headers, base64 with non-ASCII filenames) cap
+    at the intended size. Truncation is performed at a UTF-8 character
+    boundary so the returned prefix remains decodable.
+    """
+    encoded = source.encode("utf-8", errors="replace")
+    original_size = len(encoded)
+    if original_size <= max_bytes:
+        return source
+
+    # ``errors="ignore"`` drops any partial multi-byte sequence at the cut.
+    prefix = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    marker = (
+        f"\n\n[... truncated: original size {original_size} bytes, "
+        f"cap {max_bytes} bytes ...]"
+    )
+    return prefix + marker
+
+
 @mcp.tool()
 def get_email_source(
     account: str,
     subject_keyword: Optional[str] = None,
     message_id: Optional[str] = None,
     mailbox: str = "INBOX",
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> str:
     """Return the raw RFC 822 source of a single message.
 
@@ -50,11 +80,16 @@ def get_email_source(
     internal numeric id). ``subject_keyword`` matches the first message in
     ``mailbox`` whose subject contains the substring.
 
+    Output sizing: messages can be large (a plain note is ~200 KB; with
+    attachments far larger). ``max_bytes`` caps the returned payload and
+    appends a truncation marker when exceeded.
+
     Args:
         account: Account name (e.g., ``"Gmail"``, ``"Work"``).
         subject_keyword: Substring to match against subject (first hit).
         message_id: RFC 822 Message-Id for exact match (preferred when known).
         mailbox: Mailbox name (default: ``"INBOX"``).
+        max_bytes: Byte cap on the returned payload (default 256 KB).
 
     Returns:
         The raw RFC 822 source as a string, or a string starting with
@@ -95,4 +130,10 @@ def get_email_source(
     end tell
     '''
 
-    return run_applescript(script)
+    result = run_applescript(script)
+
+    # Don't post-process error returns from the AppleScript layer.
+    if isinstance(result, str) and result.startswith("Error:"):
+        return result
+
+    return _apply_size_cap(result, max_bytes)
