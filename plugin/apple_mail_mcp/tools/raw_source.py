@@ -19,7 +19,11 @@ faithful archival.
 from typing import Optional
 
 from apple_mail_mcp.server import mcp
-from apple_mail_mcp.core import escape_applescript, run_applescript
+from apple_mail_mcp.core import (
+    build_mailbox_ref,
+    escape_applescript,
+    run_applescript,
+)
 
 
 # Default byte cap for returned source. A plain message is ~200 KB; messages
@@ -117,7 +121,9 @@ def get_email_source(
         account: Account name (e.g., ``"Gmail"``, ``"Work"``).
         subject_keyword: Substring to match against subject (first hit).
         message_id: RFC 822 Message-Id for exact match (preferred when known).
-        mailbox: Mailbox name (default: ``"INBOX"``).
+        mailbox: Mailbox name (default: ``"INBOX"``). Resolved via the
+            shared ``build_mailbox_ref`` helper so non-English / Exchange
+            inboxes (Posteingang, Bandeja de entrada, etc.) are found.
         headers_only: When ``True``, return only the header block.
         max_bytes: Byte cap on the returned payload (default 256 KB).
 
@@ -137,6 +143,8 @@ def get_email_source(
             f'whose subject contains "{escape_applescript(subject_keyword)}"'
         )
 
+    mailbox_resolution = build_mailbox_ref(mailbox, var_name="targetMailbox")
+
     script = f'''
     tell application "Mail"
         try
@@ -146,9 +154,9 @@ def get_email_source(
         end try
 
         try
-            set targetMailbox to mailbox "{escape_applescript(mailbox)}" of targetAccount
-        on error
-            return "Error: mailbox not found: {escape_applescript(mailbox)}"
+            {mailbox_resolution}
+        on error errMsg
+            return "Error: mailbox not found: " & errMsg
         end try
 
         set matches to (messages of targetMailbox {match_clause})

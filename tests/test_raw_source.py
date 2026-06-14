@@ -161,6 +161,41 @@ class HeadersOnlyTests(unittest.TestCase):
         self.assertEqual(result, sample)
 
 
+class LocalizedInboxTests(unittest.TestCase):
+    def test_inbox_resolution_iterates_localized_names(self):
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value="raw"
+        ) as mock_run:
+            raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                mailbox="INBOX",
+            )
+
+        script = mock_run.call_args[0][0]
+        # The localized fallback path emits the repeat-loop pattern used by
+        # ``build_mailbox_ref`` for INBOX, which iterates INBOX_NAMES.
+        self.assertIn("__mailboxLookupName", script)
+        self.assertIn("Posteingang", script)
+        # The naive hardcoded form must not appear.
+        self.assertNotIn('mailbox "INBOX" of targetAccount', script)
+
+    def test_non_inbox_mailbox_uses_direct_lookup(self):
+        with patch.object(
+            raw_source_tools, "run_applescript", return_value="raw"
+        ) as mock_run:
+            raw_source_tools.get_email_source(
+                account="Work",
+                subject_keyword="x",
+                mailbox="Archive",
+            )
+
+        script = mock_run.call_args[0][0]
+        self.assertIn('mailbox "Archive"', script)
+        # The localized-INBOX loop only fires for INBOX.
+        self.assertNotIn("__mailboxLookupName", script)
+
+
 class ErrorPassthroughTests(unittest.TestCase):
     def test_applescript_error_returns_are_not_post_processed(self):
         # AppleScript-layer error returns should pass straight through
