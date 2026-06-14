@@ -45,7 +45,11 @@ class GetEmailSourceTests(unittest.TestCase):
             )
 
         script = mock_run.call_args[0][0]
-        self.assertIn("internet message id is", script)
+        # The property is ``message id`` (RFC 822 Message-Id), not
+        # ``internet message id`` — the latter is not a valid AppleScript
+        # property on ``message`` and would fail at runtime with error -2741.
+        self.assertIn('message id is "<abc@example.com>"', script)
+        self.assertNotIn("internet message id", script)
         self.assertNotIn("subject contains", script)
 
     def test_missing_identifier_returns_error_without_calling_applescript(self):

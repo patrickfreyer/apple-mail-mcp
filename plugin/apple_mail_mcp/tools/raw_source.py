@@ -46,8 +46,9 @@ def get_email_source(
 
     Identifier resolution: ``message_id`` is preferred when both are provided
     (exact match on the RFC 822 ``Message-Id`` header via AppleScript's
-    ``internet message id`` property). ``subject_keyword`` matches the first
-    message in ``mailbox`` whose subject contains the substring.
+    ``message id`` property — distinct from ``id``, which is Mail.app's
+    internal numeric id). ``subject_keyword`` matches the first message in
+    ``mailbox`` whose subject contains the substring.
 
     Args:
         account: Account name (e.g., ``"Gmail"``, ``"Work"``).
@@ -64,7 +65,7 @@ def get_email_source(
 
     if message_id:
         match_clause = (
-            f'whose internet message id is "{escape_applescript(message_id)}"'
+            f'whose message id is "{escape_applescript(message_id)}"'
         )
     else:
         match_clause = (
