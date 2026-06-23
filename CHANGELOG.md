@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HTML replies/compositions no longer paste the body twice** (a rendered
+  copy plus a second copy of the raw `<p>`/`<b>` source). `reply_to_email`,
+  `compose_email`, and `forward_email` placed the raw HTML *source* on the
+  clipboard under `NSPasteboardTypeHTML`; for any HTML that wasn't a complete
+  document, Mail rendered it AND surfaced the literal markup, so the message
+  appeared twice. The body is now converted to an `NSAttributedString` and
+  written back as RTF (a single unambiguous rich-text flavor) plus a
+  *rendered* plain-text fallback. `create_rich_email_draft` was unaffected
+  (it already builds a proper multipart/alternative `.eml`).
+
 ### Added
 - **Release workflow now builds and attaches the `.mcpb` bundle** to the GitHub
   Release automatically on each tag (verifies the bundle contains the

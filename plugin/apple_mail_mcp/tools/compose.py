@@ -160,6 +160,46 @@ def _build_html_from_text(text_body):
     )
 
 
+def _html_to_pasteboard_script(html_temp_path, pb_var="pb", old_clip_var="oldClip"):
+    """Return an AppleScriptObjC snippet that loads HTML and places it on the
+    general pasteboard as RICH TEXT (RTF) plus a plain-text fallback.
+
+    Why RTF and not raw HTML: writing the HTML *source* under
+    ``NSPasteboardTypeHTML`` (the previous approach) leaves Mail's compose
+    editor with only an ambiguous ``public.html`` flavor and no plain-text
+    representation. For anything other than a complete, well-formed HTML
+    document Mail renders a best-effort version AND surfaces the literal
+    markup, so the recipient sees the message twice — once rendered, once as
+    raw ``<p>``/``<b>`` source. Converting the HTML to an
+    ``NSAttributedString`` and writing it back as RTF gives Mail a single,
+    unambiguous rich-text flavor it pastes deterministically as one rendered
+    body; the accompanying plain-text flavor is the *rendered* text (tags
+    stripped), so even a plain-text fallback never shows markup.
+
+    The snippet stores the prior clipboard string in ``old_clip_var`` so the
+    caller can restore it, and reads the HTML from ``html_temp_path`` (written
+    by the Python caller to avoid AppleScript string-escaping issues).
+    """
+    return f"""set htmlString to do shell script "cat '{html_temp_path}'"
+set {pb_var} to current application's NSPasteboard's generalPasteboard()
+set {old_clip_var} to {pb_var}'s stringForType:(current application's NSPasteboardTypeString)
+set htmlNSStr to current application's NSString's stringWithString:htmlString
+set htmlBytes to htmlNSStr's dataUsingEncoding:(current application's NSUTF8StringEncoding)
+set htmlOpts to current application's NSDictionary's dictionaryWithObject:(current application's NSHTMLTextDocumentType) forKey:(current application's NSDocumentTypeDocumentAttribute)
+set attrStr to current application's NSAttributedString's alloc()'s initWithData:htmlBytes options:htmlOpts documentAttributes:(missing value) |error|:(missing value)
+{pb_var}'s clearContents()
+if attrStr is not missing value then
+    set attrRange to current application's NSMakeRange(0, attrStr's |length|())
+    set rtfData to attrStr's RTFFromRange:attrRange documentAttributes:(current application's NSDictionary's dictionary())
+    {pb_var}'s setData:rtfData forType:(current application's NSPasteboardTypeRTF)
+    {pb_var}'s setString:(attrStr's |string|()) forType:(current application's NSPasteboardTypeString)
+else
+    -- Conversion failed (malformed HTML): fall back to pasting the raw string
+    -- as plain text so the body is never silently empty.
+    {pb_var}'s setString:htmlString forType:(current application's NSPasteboardTypeString)
+end if"""
+
+
 def _prepare_rich_bodies(subject, text_body, html_body):
     """Return plain-text and HTML bodies, filling sensible placeholders."""
     plain_body = text_body or ""
@@ -430,16 +470,11 @@ use framework "Foundation"
 use framework "AppKit"
 use scripting additions
 
--- Step 1: Read HTML from temp file and place on clipboard
-set htmlString to do shell script "cat '{html_temp_path}'"
-set pb to current application's NSPasteboard's generalPasteboard()
-
--- Save current clipboard for restoration
-set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
-
-pb's clearContents()
-set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
-pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+-- Step 1: Read HTML from temp file and place it on the clipboard as RTF
+-- (rendered rich text) plus a plain-text fallback. Writing the raw HTML
+-- *source* under NSPasteboardTypeHTML made Mail paste the markup twice —
+-- once rendered, once as literal tags; the RTF conversion fixes that.
+{_html_to_pasteboard_script(html_temp_path)}
 
 -- Step 2: Create compose window (empty body so signature doesn't interfere).
 -- Attachments are deliberately NOT added here — see Step 4b for why.
@@ -782,13 +817,10 @@ use framework "Foundation"
 use framework "AppKit"
 use scripting additions
 
--- Step 1: Place reply body HTML on clipboard via NSPasteboard
-set htmlString to do shell script "cat '{html_temp_path}'"
-set pb to current application's NSPasteboard's generalPasteboard()
-set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
-pb's clearContents()
-set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
-pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+-- Step 1: Place the reply body on the clipboard as RTF (rendered rich text)
+-- plus a plain-text fallback. The previous raw-HTML-source approach made
+-- Mail paste the body twice (rendered + literal tags); RTF pastes once.
+{_html_to_pasteboard_script(html_temp_path)}
 
 -- Step 2: Find the email and create reply
 tell application "Mail"
@@ -1246,12 +1278,10 @@ def forward_email(
                 activate
                 delay 1.5
 
-                set htmlString to do shell script "cat '{fwd_html_temp_path}'"
-                set pb to current application's NSPasteboard's generalPasteboard()
-                set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
-                pb's clearContents()
-                set htmlData to (current application's NSString's stringWithString:htmlString)'s dataUsingEncoding:(current application's NSUTF8StringEncoding)
-                pb's setData:htmlData forType:(current application's NSPasteboardTypeHTML)
+                -- Place the prepended note on the clipboard as RTF (rendered)
+                -- plus a plain-text fallback, instead of raw HTML source which
+                -- Mail would paste twice (rendered + literal tags).
+                {_html_to_pasteboard_script(fwd_html_temp_path)}
 
                 tell application "System Events"
                     tell process "Mail"
