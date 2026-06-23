@@ -738,5 +738,123 @@ class PasteFocusHardeningTests(unittest.TestCase):
         )
 
 
+class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
+    """Regression guard for the dual-body bug (#reported 2026-06-23).
+
+    When both a plain body and ``body_html`` were supplied, the clipboard
+    paste path wrote the raw HTML *source* under ``NSPasteboardTypeHTML``.
+    For anything but a complete HTML document, Mail rendered a best-effort
+    version AND surfaced the literal ``<p>``/``<b>`` markup, so the message
+    appeared twice — once rendered, once as source. The fix converts the
+    HTML to an NSAttributedString and writes it back as RTF (a single
+    unambiguous rich-text flavor) plus a *rendered* plain-text fallback.
+
+    These tests assert, at the script-generation level, that:
+      * the raw-HTML flavor (``NSPasteboardTypeHTML``) is no longer written;
+      * RTF is written via NSAttributedString -> RTFFromRange;
+      * the plain body is never injected as a second visible paste.
+    """
+
+    BODY_PLAIN = "Plain fallback text"
+    BODY_HTML = "<p>Rendered <b>HTML</b></p>"
+
+    def _render_reply(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body=self.BODY_PLAIN,
+                body_html=self.BODY_HTML,
+                mode="open",
+            )
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def _render_compose(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            compose_tools.compose_email(
+                account="Work",
+                to="x@example.com",
+                subject="s",
+                body=self.BODY_PLAIN,
+                body_html=self.BODY_HTML,
+                mode="open",
+            )
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def _render_forward(self):
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["input"] = kwargs.get("input")
+            return _make_subprocess_result()
+
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                side_effect=fake_run,
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="x@example.com",
+                message="A note before the forward",
+            )
+        return captured["input"].decode("utf-8")
+
+    def _assert_rtf_not_raw_html(self, script):
+        self.assertNotIn(
+            "setData:htmlData forType:(current application's NSPasteboardTypeHTML)",
+            script,
+            "raw HTML source must not be placed on the pasteboard",
+        )
+        self.assertIn("NSPasteboardTypeRTF", script)
+        self.assertIn("RTFFromRange", script)
+        self.assertIn("NSAttributedString", script)
+
+    def test_reply_uses_rtf_not_raw_html(self):
+        self._assert_rtf_not_raw_html(self._render_reply())
+
+    def test_compose_uses_rtf_not_raw_html(self):
+        self._assert_rtf_not_raw_html(self._render_compose())
+
+    def test_forward_uses_rtf_not_raw_html(self):
+        self._assert_rtf_not_raw_html(self._render_forward())
+
+    def test_reply_pastes_body_only_once(self):
+        # Exactly one Cmd+V paste of the body — never the plain text as a
+        # second visible paste alongside the HTML.
+        script = self._render_reply()
+        self.assertEqual(script.count('keystroke "v" using command down'), 1)
+
+    def test_reply_plain_body_not_injected_as_content(self):
+        # The plain reply_body must not be set as the message `content`
+        # (which would render as a second body under the pasted HTML).
+        script = self._render_reply()
+        self.assertNotIn(f'content:"{self.BODY_PLAIN}"', script)
+
+
 if __name__ == "__main__":
     unittest.main()
