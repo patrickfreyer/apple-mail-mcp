@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.8] - 2026-06-23
+
 ### Fixed
 - **HTML replies/compositions no longer paste the body twice** (a rendered
   copy plus a second copy of the raw `<p>`/`<b>` source). `reply_to_email`,
