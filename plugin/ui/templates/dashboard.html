@@ -633,13 +633,13 @@
                 card.setAttribute('data-account', name);
                 card.innerHTML = `
                     <div class="account-avatar" style="background: ${color}">
-                        ${initials}
+                        ${escapeHtml(initials)}
                     </div>
                     <div class="account-info">
                         <div class="account-name">${escapeHtml(name)}</div>
                         <div class="account-status">${unreadCount > 0 ? 'Active' : 'All caught up'}</div>
                     </div>
-                    <div class="unread-badge ${unreadCount === 0 ? 'zero' : ''}">${unreadCount}</div>
+                    <div class="unread-badge ${unreadCount === 0 ? 'zero' : ''}">${escapeHtml(String(unreadCount))}</div>
                 `;
 
                 card.addEventListener('click', () => filterByAccount(name));
