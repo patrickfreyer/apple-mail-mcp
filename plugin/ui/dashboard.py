@@ -12,6 +12,26 @@ from typing import Dict, List, Any
 from mcp_ui_server import create_ui_resource
 
 
+def _json_for_script(obj: Any) -> str:
+    """Serialize ``obj`` to JSON safe to embed inside an HTML ``<script>`` block.
+
+    json.dumps does not escape '<', '>', '&' or the JS line separators
+    U+2028/U+2029. Inside a <script> element, a value containing "</script>"
+    (e.g. an attacker-controlled email subject or sender) would close the
+    script element early and inject arbitrary HTML -- a stored XSS. Escaping
+    these as \\uXXXX keeps the output valid JSON that parses to the identical
+    value, but it can no longer break out of the script context.
+    """
+    return (
+        json.dumps(obj, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def create_inbox_dashboard_ui(
     accounts_data: Dict[str, int],
     recent_emails: List[Dict[str, Any]]
@@ -41,8 +61,11 @@ def create_inbox_dashboard_ui(
         template_content = f.read()
 
     # Serialize the data for injection into the template
-    accounts_json = json.dumps(accounts_data, ensure_ascii=False)
-    emails_json = json.dumps(recent_emails, ensure_ascii=False)
+    # Escaped for the HTML <script> context (see _json_for_script): email
+    # subjects/senders are attacker-controlled and could otherwise break out
+    # via "</script>" and inject HTML (stored XSS).
+    accounts_json = _json_for_script(accounts_data)
+    emails_json = _json_for_script(recent_emails)
 
     # Inject data into the template
     html_content = template_content.replace(
