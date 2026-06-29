@@ -18,6 +18,22 @@ def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
 
 
 class ComposeToolTests(unittest.TestCase):
+    def test_html_with_ascii_entities_preserves_unicode_as_entities(self):
+        html = "<p>Bestätigungen, Passwörter, Grüße</p>"
+
+        result = compose_tools._html_with_ascii_entities(html)
+
+        self.assertEqual(
+            result,
+            "<p>Best&#228;tigungen, Passw&#246;rter, Gr&#252;&#223;e</p>",
+        )
+
+    def test_pasteboard_html_import_declares_utf8_encoding(self):
+        script = compose_tools._html_to_pasteboard_script("/tmp/body.html")
+
+        self.assertIn("NSCharacterEncodingDocumentAttribute", script)
+        self.assertIn("NSUTF8StringEncoding", script)
+
     def test_create_rich_email_draft_writes_multipart_eml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "weekly-update.eml"

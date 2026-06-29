@@ -152,12 +152,18 @@ def _build_html_from_text(text_body):
     """Return a simple HTML wrapper for plain text content."""
     safe_body = html_escape(text_body or "")
     return (
-        '<html><body style="font-family: -apple-system, BlinkMacSystemFont, '
+        '<html><head><meta charset="utf-8"></head>'
+        '<body style="font-family: -apple-system, BlinkMacSystemFont, '
         "'Segoe UI', Arial, sans-serif; line-height: 1.45; color: #111111;\">"
         '<pre style="white-space: pre-wrap; font: inherit; margin: 0;">'
         + safe_body
         + "</pre></body></html>"
     )
+
+
+def _html_with_ascii_entities(html_content):
+    """Return HTML with non-ASCII characters encoded as character references."""
+    return (html_content or "").encode("ascii", "xmlcharrefreplace").decode("ascii")
 
 
 def _html_to_pasteboard_script(html_temp_path, pb_var="pb", old_clip_var="oldClip"):
@@ -185,7 +191,9 @@ set {pb_var} to current application's NSPasteboard's generalPasteboard()
 set {old_clip_var} to {pb_var}'s stringForType:(current application's NSPasteboardTypeString)
 set htmlNSStr to current application's NSString's stringWithString:htmlString
 set htmlBytes to htmlNSStr's dataUsingEncoding:(current application's NSUTF8StringEncoding)
-set htmlOpts to current application's NSDictionary's dictionaryWithObject:(current application's NSHTMLTextDocumentType) forKey:(current application's NSDocumentTypeDocumentAttribute)
+set htmlOpts to current application's NSMutableDictionary's dictionary()
+htmlOpts's setObject:(current application's NSHTMLTextDocumentType) forKey:(current application's NSDocumentTypeDocumentAttribute)
+htmlOpts's setObject:(current application's NSNumber's numberWithUnsignedInteger:(current application's NSUTF8StringEncoding)) forKey:(current application's NSCharacterEncodingDocumentAttribute)
 set attrStr to current application's NSAttributedString's alloc()'s initWithData:htmlBytes options:htmlOpts documentAttributes:(missing value) |error|:(missing value)
 {pb_var}'s clearContents()
 if attrStr is not missing value then
@@ -447,7 +455,7 @@ def _send_html_email(
         delete=False,
         encoding="utf-8",
     )
-    tmp.write(body_html)
+    tmp.write(_html_with_ascii_entities(body_html))
     tmp.close()
     html_temp_path = tmp.name
 
@@ -715,7 +723,7 @@ def reply_to_email(
         delete=False,
         encoding="utf-8",
     )
-    html_tmp.write(html_content)
+    html_tmp.write(_html_with_ascii_entities(html_content))
     html_tmp.close()
     html_temp_path = html_tmp.name
 
@@ -1269,7 +1277,7 @@ def forward_email(
             delete=False,
             encoding="utf-8",
         )
-        fwd_html_tmp.write(fwd_html_content)
+        fwd_html_tmp.write(_html_with_ascii_entities(fwd_html_content))
         fwd_html_tmp.close()
         fwd_html_temp_path = fwd_html_tmp.name
         fwd_html_cleanup_script = f'do shell script "rm -f \'{fwd_html_temp_path}\'"'
