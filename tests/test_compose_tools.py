@@ -34,6 +34,13 @@ class ComposeToolTests(unittest.TestCase):
         self.assertIn("NSCharacterEncodingDocumentAttribute", script)
         self.assertIn("NSUTF8StringEncoding", script)
 
+    def test_plain_text_pasteboard_uses_string_not_rtf(self):
+        script = compose_tools._plain_text_to_pasteboard_script("/tmp/body.txt")
+
+        self.assertIn("NSPasteboardTypeString", script)
+        self.assertIn("NSUTF8StringEncoding", script)
+        self.assertNotIn("NSPasteboardTypeRTF", script)
+
     def test_create_rich_email_draft_writes_multipart_eml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "weekly-update.eml"

@@ -208,6 +208,23 @@ else
 end if"""
 
 
+def _plain_text_to_pasteboard_script(
+    text_temp_path, pb_var="pb", old_clip_var="oldClip"
+):
+    """Return an AppleScriptObjC snippet that places UTF-8 text on the pasteboard."""
+    return f"""set textNSStr to current application's NSString's stringWithContentsOfFile:"{text_temp_path}" encoding:(current application's NSUTF8StringEncoding) |error|:(missing value)
+set {pb_var} to current application's NSPasteboard's generalPasteboard()
+set {old_clip_var} to {pb_var}'s stringForType:(current application's NSPasteboardTypeString)
+{pb_var}'s clearContents()
+if textNSStr is not missing value then
+    set gapNSStr to current application's NSString's stringWithString:(return & return)
+    set pasteText to textNSStr's stringByAppendingString:gapNSStr
+    {pb_var}'s setString:pasteText forType:(current application's NSPasteboardTypeString)
+else
+    {pb_var}'s setString:"" forType:(current application's NSPasteboardTypeString)
+end if"""
+
+
 def _prepare_rich_bodies(subject, text_body, html_body):
     """Return plain-text and HTML bodies, filling sensible placeholders."""
     plain_body = text_body or ""
@@ -702,30 +719,25 @@ def reply_to_email(
     body_tmp.close()
     body_temp_path = body_tmp.name
 
-    # If body_html provided, write it to a temp file for the AppleScript to read.
-    # If plain text only, wrap it in basic HTML so the clipboard paste renders
-    # properly in Mail's HTML compose view (preserving line breaks and gap).
+    # If body_html is provided, write it to a temp file for the AppleScript to
+    # read as rich text. Plain text replies use the text pasteboard directly so
+    # Mail keeps its normal reply formatting above the quoted original.
     html_temp_path = None
     # Append an empty paragraph to create a visible gap before the quoted original.
     # Mail strips trailing <br> tags, so we use a <p> with &nbsp; instead.
     gap_html = "<div><br></div><div><br></div>"
     if body_html:
         html_content = body_html + gap_html
-    else:
-        # Wrap plain text in HTML, converting newlines to <br>
-        escaped_plain = html_escape(reply_body)
-        escaped_plain = escaped_plain.replace("\n", "<br>")
-        html_content = f"<div>{escaped_plain}</div>{gap_html}"
-    html_tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".html",
-        prefix="mail_reply_html_",
-        delete=False,
-        encoding="utf-8",
-    )
-    html_tmp.write(_html_with_ascii_entities(html_content))
-    html_tmp.close()
-    html_temp_path = html_tmp.name
+        html_tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".html",
+            prefix="mail_reply_html_",
+            delete=False,
+            encoding="utf-8",
+        )
+        html_tmp.write(_html_with_ascii_entities(html_content))
+        html_tmp.close()
+        html_temp_path = html_tmp.name
 
     # Build the reply command based on reply_to_all flag
     if reply_to_all:
@@ -787,7 +799,8 @@ def reply_to_email(
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
 
     # Determine behavior per mode
-    # All modes use HTML clipboard paste (via NSPasteboard) to insert the reply body.
+    # All modes use clipboard paste to insert the reply body. HTML replies use
+    # RTF via NSPasteboard; plain text replies use NSPasteboardTypeString.
     # This preserves Mail.app's native quoted original in the HTML layer.
     # (setting `content` via AppleScript overwrites the HTML layer entirely,
     # destroying the email thread history.)
@@ -814,7 +827,15 @@ def reply_to_email(
         success_text = "Reply saved as draft!"
 
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
-    html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
+    html_cleanup_script = (
+        f'do shell script "rm -f \'{html_temp_path}\'"' if html_temp_path else ""
+    )
+
+    pasteboard_script = (
+        _html_to_pasteboard_script(html_temp_path)
+        if body_html
+        else _plain_text_to_pasteboard_script(body_temp_path)
+    )
 
     sender_script = _compose_sender_script(
         "replyMessage", "targetAccount", sender_override
@@ -825,10 +846,8 @@ use framework "Foundation"
 use framework "AppKit"
 use scripting additions
 
--- Step 1: Place the reply body on the clipboard as RTF (rendered rich text)
--- plus a plain-text fallback. The previous raw-HTML-source approach made
--- Mail paste the body twice (rendered + literal tags); RTF pastes once.
-{_html_to_pasteboard_script(html_temp_path)}
+-- Step 1: Place the reply body on the clipboard.
+{pasteboard_script}
 
 -- Step 2: Find the email and create reply
 tell application "Mail"
@@ -877,7 +896,7 @@ tell application "Mail"
                 {attachment_script}
             end tell
 
-            -- Paste reply body (HTML already on clipboard from Step 1).
+            -- Paste reply body (already on clipboard from Step 1).
             -- The body is inserted via a blind Cmd+V into the compose window, so the
             -- window MUST have keyboard focus when the keystroke fires. If Mail is not
             -- frontmost at that moment (common on the first compose of a session, when
