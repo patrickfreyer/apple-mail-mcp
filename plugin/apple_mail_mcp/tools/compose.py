@@ -185,7 +185,13 @@ set {pb_var} to current application's NSPasteboard's generalPasteboard()
 set {old_clip_var} to {pb_var}'s stringForType:(current application's NSPasteboardTypeString)
 set htmlNSStr to current application's NSString's stringWithString:htmlString
 set htmlBytes to htmlNSStr's dataUsingEncoding:(current application's NSUTF8StringEncoding)
-set htmlOpts to current application's NSDictionary's dictionaryWithObject:(current application's NSHTMLTextDocumentType) forKey:(current application's NSDocumentTypeDocumentAttribute)
+-- Pin the HTML importer to UTF-8. Without NSCharacterEncodingDocumentAttribute the
+-- Cocoa HTML reader auto-detects the charset and defaults to Latin-1/Windows-1252,
+-- so the UTF-8 bytes for ä/ö/ü/ß/emoji get double-decoded into mojibake
+-- (e.g. "Grüße" -> "GrÃ¼ÃŸe"). Passing NSUTF8StringEncoding fixes all multibyte text.
+set htmlOptKeys to {{current application's NSDocumentTypeDocumentAttribute, current application's NSCharacterEncodingDocumentAttribute}}
+set htmlOptVals to {{current application's NSHTMLTextDocumentType, current application's NSUTF8StringEncoding}}
+set htmlOpts to current application's NSDictionary's dictionaryWithObjects:htmlOptVals forKeys:htmlOptKeys
 set attrStr to current application's NSAttributedString's alloc()'s initWithData:htmlBytes options:htmlOpts documentAttributes:(missing value) |error|:(missing value)
 {pb_var}'s clearContents()
 if attrStr is not missing value then
