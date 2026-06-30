@@ -2,6 +2,7 @@
 
 import json
 from typing import Optional, List, Dict, Any
+from urllib.parse import quote
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
@@ -23,15 +24,24 @@ def _parse_pipe_delimited_emails(raw: str) -> List[Dict[str, Any]]:
             continue
         parts = line.split("|||")
         if len(parts) >= 5:
-            emails.append(
-                {
-                    "subject": parts[0].strip(),
-                    "sender": parts[1].strip(),
-                    "date": parts[2].strip(),
-                    "is_read": parts[3].strip().lower() == "true",
-                    "account": parts[4].strip(),
-                }
-            )
+            email: Dict[str, Any] = {
+                "subject": parts[0].strip(),
+                "sender": parts[1].strip(),
+                "date": parts[2].strip(),
+                "is_read": parts[3].strip().lower() == "true",
+                "account": parts[4].strip(),
+            }
+            # Trailing identity fields mirror search_emails: the internal Mail id
+            # (precise targeting) and the RFC Message-ID (citation / deep link).
+            if len(parts) >= 6 and parts[5].strip():
+                email["message_id"] = parts[5].strip()
+            if len(parts) >= 7:
+                internet_message_id = parts[6].strip()
+                if internet_message_id:
+                    email["internet_message_id"] = internet_message_id
+                    msg_id = internet_message_id.strip("<>")
+                    email["mail_link"] = f"message://%3C{quote(msg_id, safe='@')}%3E"
+            emails.append(email)
     return emails
 
 
@@ -93,6 +103,10 @@ def list_inbox_emails(
                             set messageSender to sender of aMessage
                             set messageDate to date received of aMessage
                             set messageRead to read status of aMessage
+                            set messageInternetId to ""
+                            try
+                                set messageInternetId to message id of aMessage
+                            end try
 
                             set shouldInclude to true
                             if not {str(include_read).lower()} and messageRead then
@@ -109,6 +123,12 @@ def list_inbox_emails(
                                 set outputText to outputText & readIndicator & " " & messageSubject & return
                                 set outputText to outputText & "   From: " & messageSender & return
                                 set outputText to outputText & "   Date: " & (messageDate as string) & return
+                                if messageInternetId is not "" then
+                                    set cleanMid to messageInternetId
+                                    if cleanMid starts with "<" then set cleanMid to text 2 thru -1 of cleanMid
+                                    if cleanMid ends with ">" then set cleanMid to text 1 thru -2 of cleanMid
+                                    set outputText to outputText & "   Link: message://%3C" & cleanMid & "%3E" & return
+                                end if
 
                                 {content_preview_script(200) if include_content else ""}
 
@@ -167,12 +187,17 @@ def _list_inbox_emails_json(
                         set messageSender to sender of aMessage
                         set messageDate to date received of aMessage
                         set messageRead to read status of aMessage
+                        set messageInternalId to (id of aMessage) as string
+                        set messageInternetId to ""
+                        try
+                            set messageInternetId to message id of aMessage
+                        end try
                         set shouldInclude to true
                         if not {str(include_read).lower()} and messageRead then
                             set shouldInclude to false
                         end if
                         if shouldInclude then
-                            set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName
+                            set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & messageInternalId & "|||" & messageInternetId
                         end if
                     end try
                 end repeat

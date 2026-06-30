@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (it already builds a proper multipart/alternative `.eml`).
 
 ### Added
+- **`list_inbox_emails` now surfaces `message_id`, `internet_message_id` and a
+  `mail_link`** in both its JSON and text output, matching `search_emails` (and the
+  text deep link added for search in #44) — inbox listings can be cited as Apple
+  Mail deep links (`message://…`) and targeted by id without a second lookup.
+  Backward-compatible with older 5-field records.
 - **Release workflow now builds and attaches the `.mcpb` bundle** to the GitHub
   Release automatically on each tag (verifies the bundle contains the
   `apple_mail_mcp` package and doesn't leak `venv/`/`__pycache__`).
