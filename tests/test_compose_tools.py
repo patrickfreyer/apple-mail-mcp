@@ -833,6 +833,11 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
         self.assertIn("NSPasteboardTypeRTF", script)
         self.assertIn("RTFFromRange", script)
         self.assertIn("NSAttributedString", script)
+        # The HTML importer must be pinned to UTF-8, otherwise Cocoa auto-detects
+        # the charset and defaults to Latin-1/Windows-1252, double-decoding the
+        # UTF-8 bytes for ä/ö/ü/ß/emoji into mojibake (e.g. "Grüße" -> "GrÃ¼ÃŸe").
+        self.assertIn("NSCharacterEncodingDocumentAttribute", script)
+        self.assertIn("NSUTF8StringEncoding", script)
 
     def test_reply_uses_rtf_not_raw_html(self):
         self._assert_rtf_not_raw_html(self._render_reply())
@@ -854,6 +859,24 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
         # (which would render as a second body under the pasted HTML).
         script = self._render_reply()
         self.assertNotIn(f'content:"{self.BODY_PLAIN}"', script)
+
+
+class PasteboardUtf8EncodingTests(unittest.TestCase):
+    """Guards the multibyte-UTF-8 fix in _html_to_pasteboard_script.
+
+    Regression: without NSCharacterEncodingDocumentAttribute -> NSUTF8StringEncoding,
+    the Cocoa HTML importer defaulted to Latin-1 and turned German umlauts/ß and
+    emoji into mojibake when relaying a body to Mail (reply/compose/forward).
+    """
+
+    def test_helper_pins_html_importer_to_utf8(self):
+        snippet = compose_tools._html_to_pasteboard_script("/tmp/example.html")
+        self.assertIn("NSCharacterEncodingDocumentAttribute", snippet)
+        self.assertIn("NSUTF8StringEncoding", snippet)
+        # Both the document-type and the encoding key must be in the options dict.
+        self.assertIn("NSDocumentTypeDocumentAttribute", snippet)
+        self.assertIn("NSHTMLTextDocumentType", snippet)
+        self.assertIn("dictionaryWithObjects:", snippet)
 
 
 if __name__ == "__main__":
