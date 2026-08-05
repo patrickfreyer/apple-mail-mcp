@@ -1,5 +1,7 @@
 # Apple Mail MCP Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fpatrickfreyer%2Fapple-mail-mcp.svg)](https://mcptoplist.com/server/glama%2Fpatrickfreyer%2Fapple-mail-mcp)
+
 <!-- mcp-name: io.github.patrickfreyer/apple-mail -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
