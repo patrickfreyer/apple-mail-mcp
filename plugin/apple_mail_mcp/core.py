@@ -1,13 +1,65 @@
 """Core helpers: AppleScript execution, escaping, parsing, and preference injection."""
 
 import atexit
+import fcntl
+import os
 import re
 import signal
 import subprocess
 import threading
+import time
+from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple
 
 from apple_mail_mcp.server import USER_PREFERENCES
+
+
+# ---------------------------------------------------------------------------
+# Cross-process AppleScript serialization
+# ---------------------------------------------------------------------------
+# Mail.app services AppleScript on its main thread and can only run one call
+# at a time. Every MCP host connection spawns its own independent copy of
+# this plugin, so multiple live processes can otherwise drive AppleEvents
+# into Mail concurrently. An advisory flock on a well-known path serializes
+# every osascript invocation across all of them, not just within one process.
+_LOCK_PATH = os.path.expanduser(
+    "~/Library/Application Support/apple-mail-mcp/mail_automation.lock"
+)
+
+
+@contextmanager
+def mail_automation_lock(timeout: float = 30):
+    """Serialize AppleScript calls to Mail.app across every plugin process.
+
+    Blocks (polling, not a raw blocking flock) until the lock is acquired or
+    *timeout* seconds elapse, then raises TimeoutError rather than hanging
+    indefinitely — a raw blocking flock() has no acquisition timeout of its
+    own, and the whole point of this lock is to protect against a slow or
+    stuck call on the other side of it.
+
+    flock is released by the kernel on process exit for any reason,
+    including SIGKILL, so a crashed holder cannot leave a stale lock behind.
+    """
+    os.makedirs(os.path.dirname(_LOCK_PATH), exist_ok=True)
+    fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_RDWR)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Mail automation is busy (lock held) after {timeout}s"
+                    )
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +232,10 @@ def run_applescript(script: str, timeout: int = 120) -> str:
     2. The live Popen object is tracked in ``_inflight_children``.  An atexit
        handler and chained SIGTERM/SIGHUP handlers call kill() on any survivors
        so graceful-exit paths also clean up.
+
+    Separately, the whole call is wrapped in ``mail_automation_lock`` so
+    concurrent calls from other plugin processes queue rather than racing
+    Mail's single-threaded AppleScript bridge.
     """
     # Ensure signal/atexit handlers are registered (idempotent, main-thread only).
     _register_cleanup_once()
@@ -188,29 +244,30 @@ def run_applescript(script: str, timeout: int = 120) -> str:
     # the Python process is killed before communicate() can enforce its timeout.
     wrapped = _apply_applescript_timeout(script, timeout)
 
-    proc = _popen_factory(
-        ["osascript", "-"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    with _inflight_lock:
-        _inflight_children.add(proc)
-
-    try:
-        stdout, stderr = proc.communicate(
-            input=wrapped.encode("utf-8"), timeout=timeout
+    with mail_automation_lock(timeout=timeout):
+        proc = _popen_factory(
+            ["osascript", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        raise Exception("AppleScript execution timed out")
-    except Exception as e:
-        raise Exception(f"AppleScript execution failed: {str(e)}")
-    finally:
+
         with _inflight_lock:
-            _inflight_children.discard(proc)
+            _inflight_children.add(proc)
+
+        try:
+            stdout, stderr = proc.communicate(
+                input=wrapped.encode("utf-8"), timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise Exception("AppleScript execution timed out")
+        except Exception as e:
+            raise Exception(f"AppleScript execution failed: {str(e)}")
+        finally:
+            with _inflight_lock:
+                _inflight_children.discard(proc)
 
     if proc.returncode != 0:
         stderr_text = stderr.decode("utf-8", errors="replace").strip()
