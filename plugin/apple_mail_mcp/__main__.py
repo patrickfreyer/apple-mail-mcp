@@ -41,8 +41,9 @@ def main():
     parser.add_argument(
         "--read-only",
         action="store_true",
-        help="Disable tools that send email (compose, reply, forward). "
-             "Drafts can still be created and listed.",
+        help="Block sending email. compose_email and reply_to_email stay "
+             "available for mode=\"draft\" and mode=\"open\"; forward_email is "
+             "removed because it has no non-sending mode.",
     )
     args = parser.parse_args()
 
@@ -50,9 +51,14 @@ def main():
 
     from apple_mail_mcp import mcp  # noqa: E402
 
-    SEND_TOOLS = ["compose_email", "reply_to_email", "forward_email"]
+    # Tools without a non-sending mode are removed entirely under --read-only.
+    # compose_email and reply_to_email stay registered because their "draft"
+    # and "open" modes never deliver anything; they refuse mode="send"
+    # themselves. Removing them would also take away attachment support, which
+    # exists nowhere else in the compose surface.
+    SEND_ONLY_TOOLS = ["forward_email"]
     if args.read_only:
-        for name in SEND_TOOLS:
+        for name in SEND_ONLY_TOOLS:
             try:
                 mcp.remove_tool(name)
             except (KeyError, ValueError):

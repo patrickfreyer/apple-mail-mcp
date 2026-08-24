@@ -146,7 +146,9 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 ### Read-Only Mode
 
-Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_email`, `forward_email`). Draft management remains available (list, create, delete) but sending a draft via `manage_drafts` is blocked.
+Pass `--read-only` to block delivery. Nothing leaves the machine: `compose_email` and `reply_to_email` refuse `mode="send"`, `manage_drafts` refuses `action="send"`, and `forward_email` is removed entirely because it has no non-sending mode.
+
+The composing tools stay registered so that `mode="draft"` and `mode="open"` keep working. Those never deliver anything, and they are the only place in the compose surface that supports `attachments` — `manage_drafts` and `create_rich_email_draft` cannot attach files.
 
 ```json
 {
