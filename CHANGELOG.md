@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `--read-only` now blocks delivery instead of removing the composing tools.
+  `compose_email` and `reply_to_email` stay registered and refuse `mode="send"`
+  themselves; only `forward_email`, which has no non-sending mode, is still
+  removed. Previously the flag took away the entire compose surface, and with
+  it the only tools that accept `attachments` — leaving no supported way to
+  attach a file to a draft in read-only mode.
+
 ### Fixed
 - The server failed to start on any fresh install since the `mcp` SDK 2.0
   release (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`, #97).
@@ -16,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FastMCP`. `--read-only` also called `FastMCP.remove_tool()`, which is
   deprecated in fastmcp 3.x and removed in 4.x; it now goes through
   `local_provider.remove_tool()`, which both support.
+- `--read-only` had no effect on `manage_drafts(action="send")`. `compose.py`
+  did `from apple_mail_mcp.server import READ_ONLY`, which binds the value
+  `False` at import time, while `__main__` sets `server.READ_ONLY` afterwards.
+  The guard therefore never fired. The module now reads the flag through the
+  `server` module at call time.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
