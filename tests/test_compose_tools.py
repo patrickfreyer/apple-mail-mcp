@@ -1,6 +1,7 @@
 """Tests for compose and rich draft helpers."""
 
 import tempfile
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +16,51 @@ def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
     result.stdout = stdout
     result.stderr = stderr
     return result
+
+
+def _reply_lookup_payload(script, subject="Original subject", sender="them@example.com"):
+    """Answer _find_reply_target's lookup script with a well-formed payload.
+
+    The separator is generated per call and embedded in the script, so the
+    fake reads it back out instead of hard-coding it.
+    """
+    match = re.search(r"<<<AMMCP-[0-9a-f]+>>>", script)
+    if not match:
+        return ""
+    sep = match.group(0)
+    return sep.join(
+        ["4711", subject, sender, "Tuesday, 25 August 2026 at 16:28:42", "1", "Original body"]
+    )
+
+
+def _fake_reply_run(alias_answer=None):
+    """Return a run_applescript double for the GUI-free reply path.
+
+    First it answers any sender-alias lookup, then the target lookup, then the
+    reply script itself.
+    """
+    scripts = []
+
+    def _run(script, timeout=120):
+        scripts.append(script)
+        if "email addresses of targetAccount" in script and "reply foundMessage" not in script:
+            return alias_answer or ""
+        if "<<<AMMCP-" in script:
+            return _reply_lookup_payload(script)
+        return "Reply saved as draft!"
+
+    return _run, scripts
+
+def _main_script(scripts):
+    """Return the compose script from a list of captured AppleScript calls.
+
+    Sender lookups run before the main script and the draft-location check
+    runs after it, so the main script is identified by content, not position.
+    """
+    for script in scripts:
+        if "make new outgoing message" in script:
+            return script
+    raise AssertionError("no compose script captured")
 
 
 class ComposeToolTests(unittest.TestCase):
@@ -253,8 +299,7 @@ class ComposeEmailSenderOverrideTests(unittest.TestCase):
                 mode="draft",
             )
 
-        self.assertEqual(len(captured), 1)
-        script = captured[0]
+        script = _main_script(captured)
         self.assertIn("email addresses of targetAccount", script)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
@@ -284,8 +329,7 @@ class ComposeEmailSenderOverrideTests(unittest.TestCase):
                 from_address="secondary@example.org",
             )
 
-        self.assertEqual(len(scripts), 2)
-        main_script = scripts[1]
+        main_script = _main_script(scripts)
         self.assertIn(
             'set sender of newMessage to "secondary@example.org"', main_script
         )
@@ -434,14 +478,17 @@ class CreateRichEmailDraftFromAddressTests(unittest.TestCase):
 
 class ReplyToEmailSenderOverrideTests(unittest.TestCase):
     def test_default_emits_single_alias_fallback_for_reply_message(self):
+        # A plain-text reply runs GUI-free through run_applescript; only an
+        # HTML body still goes through the clipboard/keystroke route.
+        fake_run, scripts = _fake_reply_run()
         with (
             patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
+                "apple_mail_mcp.tools.compose.subprocess.run"
+            ) as mock_subprocess,
             patch(
-                "apple_mail_mcp.tools.compose.run_applescript"
-            ) as mock_applescript,
+                "apple_mail_mcp.tools.compose.run_applescript",
+                side_effect=fake_run,
+            ),
         ):
             compose_tools.reply_to_email(
                 account="Work",
@@ -450,8 +497,8 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 send=False,
             )
 
-        mock_applescript.assert_not_called()
-        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        mock_subprocess.assert_not_called()
+        script = next(s for s in scripts if "reply foundMessage" in s)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
             "set sender of replyMessage to item 1 of emailAddrs", script
@@ -459,15 +506,12 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertNotIn('set sender of replyMessage to "', script)
 
     def test_injects_sender_when_from_address_is_valid(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="default@example.com\nsecondary@example.org",
-            ),
+        fake_run, scripts = _fake_reply_run(
+            alias_answer="default@example.com\nsecondary@example.org"
+        )
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
         ):
             compose_tools.reply_to_email(
                 account="Work",
@@ -477,7 +521,7 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
                 send=False,
             )
 
-        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        script = next(s for s in scripts if "reply foundMessage" in s)
         self.assertIn(
             'set sender of replyMessage to "secondary@example.org"', script
         )
@@ -601,8 +645,7 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
                 body="Body",
             )
 
-        self.assertEqual(len(captured), 1)
-        script = captured[0]
+        script = _main_script(captured)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
             "set sender of newDraft to item 1 of emailAddrs", script
@@ -631,8 +674,7 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
                 from_address="secondary@example.org",
             )
 
-        self.assertEqual(len(scripts), 2)
-        main_script = scripts[1]
+        main_script = _main_script(scripts)
         self.assertIn(
             'set sender of newDraft to "secondary@example.org"', main_script
         )
