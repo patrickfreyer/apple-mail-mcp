@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import re
+import email
 from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
@@ -389,6 +390,146 @@ def create_rich_email_draft(
         "Note: Prefer this `.eml` workflow for HTML email drafts; Mail renders it more reliably than raw HTML injected via AppleScript content."
     )
     return "\n".join(output_lines)
+
+
+# --- Mail.app body wrapper (macOS 15+) ------------------------------------
+#
+# Mail wraps EVERY body it receives through AppleScript in its "share"
+# template, whether the body arrives as a `content` property, a later
+# `set content`, a `set html content`, or a GUI paste into a scripted compose
+# window:
+#
+#   <div class="Apple-Mail-URLShareUserContentTopClass"><br></div>
+#   <div class="Apple-Mail-URLShareWrapperClass" style="position: relative !important;">
+#     <blockquote type="cite" style="border-left-style: none; color: inherit;
+#                                    padding: inherit; margin: inherit;">
+#       ... the body we set ...
+#     </blockquote>
+#   </div>
+#
+# Nothing in this package writes that markup, and no ordering of the
+# AppleScript calls avoids it — all four routes were measured against
+# Mail 16.0 (3864.600.51.1.1) on 2026-09-05 and produced it identically.
+# The inline styles neutralise the quote look in clients that honour them,
+# but clients that ignore `inherit` (Outlook's Word engine) indent it, and
+# clients that collapse `type="cite"` (Gmail) can hide the message behind a
+# "..." toggle.  There is no in-process fix; see README "Known Mail.app
+# limitations".
+#
+# What we can prevent is the wrapper STACKING.  Every edit that feeds a
+# stored body back through the composer adds another layer, so a draft that
+# is edited three times ends up three blockquotes deep.  The helpers below
+# peel the existing layers off before a body is reused.
+
+_SHARE_WRAPPER_OPEN = re.compile(
+    r'<div\b[^>]*class="[^"]*Apple-Mail-URLShareWrapperClass[^"]*"[^>]*>\s*'
+    r'<blockquote\b[^>]*type="cite"[^>]*>',
+    re.IGNORECASE,
+)
+_SHARE_TOP_OPEN = re.compile(
+    r'<div\b[^>]*class="[^"]*Apple-Mail-URLShareUserContentTopClass[^"]*"[^>]*>',
+    re.IGNORECASE,
+)
+_MAIL_SIGNATURE_OPEN = re.compile(
+    r'<div\b[^>]*id="AppleMailSignature"[^>]*>', re.IGNORECASE
+)
+_TRAILING_BREAKS = re.compile(r'(?:\s|<br\b[^>]*/?>)+$', re.IGNORECASE)
+_MARKUP_ONLY = re.compile(r'<[^>]*>|&nbsp;|\s', re.IGNORECASE)
+
+
+def _matching_close(html, search_from, tag):
+    """Return ``(close_start, close_end)`` of the ``</tag>`` that closes an
+    already-consumed ``<tag ...>`` opening.
+
+    ``search_from`` is the index just past that opening tag.  Nesting is
+    counted, so an inner ``<blockquote>`` does not end the outer one — which
+    is exactly the case a twice-wrapped body produces.  Returns ``None`` when
+    the markup is unbalanced; callers then leave the body untouched rather
+    than cutting it at the wrong place.
+    """
+    open_re = re.compile(r"<" + tag + r"\b", re.IGNORECASE)
+    close_re = re.compile(r"</" + tag + r"\s*>", re.IGNORECASE)
+    depth = 1
+    pos = search_from
+    while True:
+        next_close = close_re.search(html, pos)
+        if not next_close:
+            return None
+        next_open = open_re.search(html, pos)
+        if next_open and next_open.start() < next_close.start():
+            depth += 1
+            pos = next_open.end()
+            continue
+        depth -= 1
+        pos = next_close.end()
+        if depth == 0:
+            return next_close.start(), next_close.end()
+
+
+def _has_visible_content(html):
+    """True when the fragment holds more than tags and whitespace."""
+    return bool(_MARKUP_ONLY.sub("", html or "").strip())
+
+
+def _strip_mail_share_wrapper(html):
+    """Peel Mail's share-template wrapper off a stored body.
+
+    Removes every ``Apple-Mail-URLShareWrapperClass`` /
+    ``blockquote type="cite"`` layer and the empty
+    ``Apple-Mail-URLShareUserContentTopClass`` div in front of it.  A top div
+    that actually carries text is kept — that is where a human typing above
+    the wrapper ends up.
+    """
+    if not html:
+        return html
+
+    while True:
+        before = html
+
+        top = _SHARE_TOP_OPEN.search(html)
+        if top:
+            close = _matching_close(html, top.end(), "div")
+            if close:
+                inner = html[top.end():close[0]]
+                replacement = inner if _has_visible_content(inner) else ""
+                html = html[:top.start()] + replacement + html[close[1]:]
+
+        wrapper = _SHARE_WRAPPER_OPEN.search(html)
+        if wrapper:
+            close = _matching_close(html, wrapper.end(), "blockquote")
+            if close:
+                inner = html[wrapper.end():close[0]]
+                tail = html[close[1]:]
+                # The </blockquote> is followed by the </div> of the wrapper.
+                tail = re.sub(r"^\s*</div\s*>", "", tail, count=1, flags=re.IGNORECASE)
+                html = html[:wrapper.start()] + inner + tail
+
+        if html == before:
+            return html
+
+
+def _strip_mail_signature_block(html):
+    """Remove the ``<div id="AppleMailSignature">`` block Mail bakes into a
+    saved message, together with the ``<br>``s it puts in front of it.
+
+    Reusing a stored body means reusing that baked-in copy.  Stripping it and
+    leaving the message's ``message signature`` property alone lets Mail
+    attach the live signature again — the recipient gets the real, formatted
+    signature and Mail's compose window still shows which one is selected,
+    instead of "None".
+    """
+    if not html:
+        return html
+
+    match = _MAIL_SIGNATURE_OPEN.search(html)
+    if not match:
+        return html
+    close = _matching_close(html, match.end(), "div")
+    if not close:
+        return html
+
+    head = _TRAILING_BREAKS.sub("", html[:match.start()])
+    return head + html[close[1]:]
 
 
 def _send_html_email(
@@ -1089,6 +1230,59 @@ def _read_draft(draft_subject: str, account: Optional[str] = None):
     )
 
 
+def _draft_html_body(draft_id: str, account: str) -> Optional[str]:
+    """Return the ``text/html`` part of a stored draft, or ``None``.
+
+    ``_read_draft`` goes through ``content of theDraft``, which is Mail's
+    *rendered* plain text: formatting, links and the whole signature block
+    are already gone by the time the caller sees it.  Rebuilding a draft from
+    that string is what turned an edited message into flat text with a
+    plain-text signature.  ``source of theDraft`` returns the raw RFC 822
+    message instead, so the real HTML body can be recovered and handed back
+    to Mail verbatim.
+    """
+    # Mail's message id is numeric. Anything else is not a valid identifier
+    # and has no business being interpolated into the script unquoted.
+    numeric_id = str(draft_id).strip()
+    if not numeric_id.isdigit():
+        return None
+
+    script = f'''
+    tell application "Mail"
+        try
+            set theDraft to first message of mailbox "Drafts" of account "{escape_applescript(account)}" whose id is {numeric_id}
+            return source of theDraft
+        on error
+            return ""
+        end try
+    end tell
+    '''
+    try:
+        raw = run_applescript(script, timeout=180)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+
+    try:
+        parsed = email.message_from_string(raw)
+    except Exception:
+        return None
+
+    for part in parsed.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            return payload.decode(charset, errors="replace")
+        except LookupError:
+            return payload.decode("utf-8", errors="replace")
+    return None
+
+
 def _export_draft_attachments(draft_id: str, account: str, names: List[str]):
     """Save the named attachments of a draft to a private cache directory.
 
@@ -1322,6 +1516,13 @@ def _update_draft(
     Mail's scripting interface cannot modify a stored draft, so the draft is
     read, rebuilt as a new message and only then is the old one deleted. The
     old draft stays untouched until the replacement is confirmed to exist.
+
+    When the body is not being changed, the rebuild reuses the stored HTML
+    (via ``_draft_html_body``) rather than Mail's plain-text rendering, minus
+    the share wrapper and the baked-in signature copy. Formatting and the
+    signature survive the edit, and the wrapper does not gain a layer each
+    time. If the HTML cannot be recovered the old plain-text rebuild is used
+    and the return value says so.
     """
     existing, error = _read_draft(draft_subject, account)
     if error:
@@ -1373,11 +1574,32 @@ def _update_draft(
     )
 
     reuse_content = body is None
-    new_body = existing["content"] if reuse_content else body
+
+    # Reusing the body must not mean reusing Mail's plain-text rendering of
+    # it. Pull the real HTML out of the stored message, peel off the share
+    # wrapper Mail added the last time round (it would otherwise nest one
+    # layer deeper on every edit) and drop the baked-in signature copy so
+    # Mail can attach the live one again.
+    reused_html = None
+    if reuse_content:
+        raw_html = _draft_html_body(existing["id"], existing["account"])
+        if raw_html:
+            candidate = _strip_mail_signature_block(
+                _strip_mail_share_wrapper(raw_html)
+            )
+            if _has_visible_content(candidate):
+                reused_html = candidate
+
+    if reused_html is not None:
+        new_body = reused_html
+    elif reuse_content:
+        new_body = existing["content"]
+    else:
+        new_body = body
 
     body_tmp = tempfile.NamedTemporaryFile(
         mode="w",
-        suffix=".txt",
+        suffix=".html" if reused_html is not None else ".txt",
         prefix="mail_draft_edit_",
         delete=False,
         encoding="utf-8",
@@ -1411,13 +1633,34 @@ def _update_draft(
                 delay 1
         '''
 
-    # Reusing the old body means the old signature is already inside it.
-    # Letting Mail append its signature again would duplicate it.
-    signature_script = (
-        "set message signature of newDraft to missing value"
-        if reuse_content
-        else ""
-    )
+    if reused_html is not None:
+        # The signature was cut out of the reused HTML above, so Mail must
+        # attach the live one — leave `message signature` alone. Killing it
+        # (what this path used to do unconditionally) is what stripped the
+        # X-Apple-Mail-Signature header and made Mail's compose window report
+        # "Signature: None" on every edited draft.
+        signature_script = ""
+        create_properties = (
+            f'{{subject:"{escape_applescript(new_subject)}", visible:false}}'
+        )
+        # Body before attachments: `set html content` replaces the whole body
+        # and would drop a file attached beforehand.
+        body_script = "set html content of newDraft to draftBodyText"
+    else:
+        # Plain-text fallback: the reused string already carries a flattened
+        # copy of the signature, so letting Mail append its own would show it
+        # twice.
+        signature_script = (
+            "set message signature of newDraft to missing value"
+            if reuse_content
+            else ""
+        )
+        create_properties = (
+            f'{{subject:"{escape_applescript(new_subject)}", '
+            "content:draftBodyText, visible:false}"
+        )
+        body_script = ""
+
     sender_script = (
         f'set sender of newDraft to "{escape_applescript(existing["sender"])}"'
         if existing["sender"]
@@ -1427,14 +1670,16 @@ def _update_draft(
     script = f'''
     tell application "Mail"
         try
-            set draftBodyText to do shell script "cat " & quoted form of "{body_temp_path}"
-            set newDraft to make new outgoing message with properties {{subject:"{escape_applescript(new_subject)}", content:draftBodyText, visible:false}}
+            set draftBodyText to (read (POSIX file "{escape_applescript(body_temp_path)}") as «class utf8»)
+            set newDraft to make new outgoing message with properties {create_properties}
             {sender_script}
             {signature_script}
 
             tell newDraft
                 {recipient_script}
             end tell
+
+            {body_script}
 
             tell newDraft
                 {attachment_script}
@@ -1487,7 +1732,15 @@ def _update_draft(
         lines.append("CC: " + ", ".join(recipients_cc))
     if recipients_bcc:
         lines.append("BCC: " + ", ".join(recipients_bcc))
-    lines.append("Body: " + ("unchanged" if reuse_content else "replaced"))
+    if not reuse_content:
+        lines.append("Body: replaced")
+    elif reused_html is not None:
+        lines.append("Body: unchanged (HTML formatting and signature kept)")
+    else:
+        lines.append(
+            "Body: unchanged (plain text — the stored HTML could not be read, "
+            "so formatting and the signature link are lost)"
+        )
     if removed_names:
         lines.append("Removed attachments: " + ", ".join(removed_names))
     if new_paths:
@@ -1496,6 +1749,12 @@ def _update_draft(
         )
     if keep_names:
         lines.append("Kept attachments: " + ", ".join(keep_names))
+    if reused_html is not None and (kept_paths or new_paths):
+        lines.append(
+            "Note: Mail re-renders the body when an attachment is added, so "
+            "the HTML formatting of this draft is flattened. The signature "
+            "link survives; the styling does not."
+        )
     if not deleted:
         lines.append(
             "⚠ The old version could not be deleted and is still in Drafts. "
@@ -2418,7 +2677,7 @@ def manage_drafts(
         bcc: Optional BCC recipients; for update it replaces the current BCC list.
         draft_subject: Subject keyword to find the draft (required for update/send/open/delete)
         from_address: Optional sender address for new drafts (action="create"). Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
-        attachments: File paths to attach, comma-separated. For action="update" these are ADDED to the attachments the draft already carries.
+        attachments: File paths to attach, comma-separated. For action="update" these are ADDED to the attachments the draft already carries. Note that Mail re-renders the body when a file is attached, which flattens HTML formatting.
         remove_attachments: action="update" only. Comma-separated name fragments of attachments to drop, or "all" to drop every attachment. Combine with `attachments` to swap a file.
 
     Returns:
@@ -2427,7 +2686,9 @@ def manage_drafts(
     Note on update: Mail cannot edit a stored draft in place, so the draft is
     rebuilt and the old version deleted afterwards. Existing attachments are
     extracted to disk and re-attached; if any of them cannot be extracted the
-    draft is left untouched rather than rebuilt without them.
+    draft is left untouched rather than rebuilt without them. When `body` is
+    omitted the stored HTML is reused, so formatting and the Mail signature
+    survive the edit; the return value says which of the two paths was taken.
     """
 
     body = _strip_cdata_wrappers(body)

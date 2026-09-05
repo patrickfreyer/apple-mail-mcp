@@ -1027,3 +1027,303 @@ class ReadOnlyModeTests(unittest.TestCase):
             )
 
         self.assertNotIn("Error: Sending is disabled", result)
+
+
+class MailShareWrapperTests(unittest.TestCase):
+    """Peeling Mail's share template off a stored body.
+
+    macOS 15+ Mail wraps every AppleScript-supplied body in
+    ``Apple-Mail-URLShareWrapperClass`` / ``blockquote type="cite"``. That
+    cannot be prevented, but it must not stack: before the fix, every edit of
+    a draft fed the already-wrapped body back through the composer and gained
+    another layer. Measured on a real draft (861590DD, 05.09.2026) at two
+    layers deep.
+    """
+
+    WRAPPED = (
+        '<html><body>'
+        '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+        '<div class="Apple-Mail-URLShareWrapperClass" style="position: relative !important;">'
+        '<blockquote type="cite" style="border-left-style: none; color: inherit;'
+        ' padding: inherit; margin: inherit;">'
+        '<p>Gr&uuml;&szlig;e</p>'
+        '</blockquote></div>'
+        '</body></html>'
+    )
+
+    def test_single_layer_is_removed(self):
+        stripped = compose_tools._strip_mail_share_wrapper(self.WRAPPED)
+        self.assertNotIn("URLShareWrapperClass", stripped)
+        self.assertNotIn("blockquote", stripped)
+        self.assertIn("<p>Gr&uuml;&szlig;e</p>", stripped)
+
+    def test_nested_layers_are_all_removed(self):
+        nested = (
+            '<body><div dir="auto">'
+            '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "Kern"
+            "</blockquote></div>"
+            "</blockquote></div></div></body>"
+        )
+        stripped = compose_tools._strip_mail_share_wrapper(nested)
+        self.assertNotIn("blockquote", stripped)
+        self.assertNotIn("URLShare", stripped)
+        self.assertIn("Kern", stripped)
+
+    def test_top_div_with_real_content_is_kept(self):
+        # Text typed above the wrapper lives in the top div. Dropping the div
+        # wholesale would silently delete it.
+        html = (
+            '<div class="Apple-Mail-URLShareUserContentTopClass">Eigene Notiz</div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "Kern</blockquote></div>"
+        )
+        stripped = compose_tools._strip_mail_share_wrapper(html)
+        self.assertIn("Eigene Notiz", stripped)
+        self.assertIn("Kern", stripped)
+
+    def test_unbalanced_markup_is_left_alone(self):
+        # Cutting at a guessed offset would truncate the body. Better to hand
+        # back the original and let the caller fall back.
+        broken = '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">abgeschnitten'
+        self.assertEqual(compose_tools._strip_mail_share_wrapper(broken), broken)
+
+    def test_body_without_wrapper_is_untouched(self):
+        plain = "<p>nur Text</p>"
+        self.assertEqual(compose_tools._strip_mail_share_wrapper(plain), plain)
+
+    def test_signature_block_and_its_leading_breaks_are_removed(self):
+        html = (
+            "<p>Text</p><br><br>"
+            '<div id="AppleMailSignature">'
+            '<div class="ApplePlainTextBody"><table><tbody><tr><td>Robin</td>'
+            "</tr></tbody></table><div><br></div></div>"
+            "</div>"
+        )
+        stripped = compose_tools._strip_mail_signature_block(html)
+        self.assertEqual(stripped, "<p>Text</p>")
+
+    def test_signature_strip_is_a_no_op_without_a_signature(self):
+        html = "<p>Text</p>"
+        self.assertEqual(compose_tools._strip_mail_signature_block(html), html)
+
+    def test_matching_close_counts_nesting(self):
+        html = "<div>a<div>b</div>c</div>tail"
+        close = compose_tools._matching_close(html, len("<div>"), "div")
+        self.assertIsNotNone(close)
+        self.assertEqual(html[close[1]:], "tail")
+
+
+class DraftUpdateKeepsSignatureTests(unittest.TestCase):
+    """Editing a draft must not cost it its signature.
+
+    Before the fix, _update_draft rebuilt the message from
+    ``content of theDraft`` — Mail's plain-text rendering — and then set
+    ``message signature`` to ``missing value`` so the flattened copy inside
+    that string would not be doubled. Result: no X-Apple-Mail-Signature
+    header, Mail's compose window showing "Signature: None", and a signature
+    that had lost its table, image and colours. Measured on draft 861590DD
+    (05.09.2026). Now the stored HTML is reused, the baked-in signature is
+    cut out of it, and Mail attaches the live one again.
+    """
+
+    STORED_HTML = (
+        "<html><body>"
+        '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+        '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+        "<p>Hallo <b>Tomy</b></p>"
+        "</blockquote></div><br><br>"
+        '<div id="AppleMailSignature"><table><tbody><tr><td>Robin</td></tr></tbody></table></div>'
+        "</body></html>"
+    )
+
+    def _fields(self, **overrides):
+        fields = {
+            "id": "42",
+            "account": "Work",
+            "subject": "Alt",
+            "to": ["a@example.com"],
+            "cc": [],
+            "bcc": [],
+            "attachments": [],
+            "sender": "me@example.com",
+            "content": "Hallo Tomy\n\nRobin\nFull Stack Developer",
+        }
+        fields.update(overrides)
+        return fields
+
+    def _run_update(self, html_body, **kwargs):
+        scripts = []
+        written = {}
+
+        real_named_tempfile = compose_tools.tempfile.NamedTemporaryFile
+
+        def spy_tempfile(*args, **tf_kwargs):
+            handle = real_named_tempfile(*args, **tf_kwargs)
+            original_write = handle.write
+
+            def capture(text):
+                written["body"] = text
+                return original_write(text)
+
+            handle.write = capture
+            return handle
+
+        def _run(script, timeout=120):
+            scripts.append(script)
+            return "ok"
+
+        with patch.object(
+            compose_tools, "_read_draft", return_value=(self._fields(), None)
+        ), patch.object(
+            compose_tools, "_draft_html_body", return_value=html_body
+        ), patch.object(
+            compose_tools, "_export_draft_attachments", return_value=([], None)
+        ), patch.object(
+            compose_tools, "run_applescript", side_effect=_run
+        ), patch.object(
+            compose_tools, "_draft_id_for_subject", return_value="43"
+        ), patch.object(
+            compose_tools, "_delete_draft_by_id", return_value=True
+        ), patch.object(
+            compose_tools, "_discard_draft_export"
+        ), patch.object(
+            compose_tools, "_draft_location_note", return_value=""
+        ), patch.object(
+            compose_tools.tempfile, "NamedTemporaryFile", side_effect=spy_tempfile
+        ):
+            result = compose_tools._update_draft(
+                account="Work", draft_subject="Alt", **kwargs
+            )
+        build = next(s for s in scripts if "make new outgoing message" in s)
+        return result, build, written.get("body", "")
+
+    def test_reused_html_keeps_the_live_signature(self):
+        result, build, body = self._run_update(self.STORED_HTML)
+        self.assertNotIn("set message signature", build)
+        self.assertIn("set html content of newDraft to draftBodyText", build)
+        self.assertNotIn("AppleMailSignature", body)
+        self.assertIn("HTML formatting and signature kept", result)
+
+    def test_reused_html_does_not_gain_a_wrapper_layer(self):
+        _, _, body = self._run_update(self.STORED_HTML)
+        self.assertNotIn("URLShareWrapperClass", body)
+        self.assertNotIn("blockquote", body)
+        self.assertIn("<p>Hallo <b>Tomy</b></p>", body)
+
+    def test_body_is_set_before_the_attachments_are_re_added(self):
+        # Kept attachments are re-attached from disk after the rebuild.
+        # `set html content` replaces the whole body, so it has to run first
+        # or the freshly attached files are dropped again.
+        scripts = []
+
+        def _run(script, timeout=120):
+            scripts.append(script)
+            return "ok"
+
+        with patch.object(
+            compose_tools,
+            "_read_draft",
+            return_value=(self._fields(attachments=["rechnung.pdf"]), None),
+        ), patch.object(
+            compose_tools, "_draft_html_body", return_value=self.STORED_HTML
+        ), patch.object(
+            compose_tools,
+            "_export_draft_attachments",
+            return_value=(["/tmp/rechnung.pdf"], None),
+        ), patch.object(
+            compose_tools, "run_applescript", side_effect=_run
+        ), patch.object(
+            compose_tools, "_draft_id_for_subject", return_value="43"
+        ), patch.object(
+            compose_tools, "_delete_draft_by_id", return_value=True
+        ), patch.object(
+            compose_tools, "_discard_draft_export"
+        ), patch.object(
+            compose_tools, "_draft_location_note", return_value=""
+        ):
+            result = compose_tools._update_draft(account="Work", draft_subject="Alt")
+        build = next(s for s in scripts if "make new outgoing message" in s)
+        self.assertLess(
+            build.index("set html content of newDraft to draftBodyText"),
+            build.index("make new attachment"),
+            "the body must be set before any attachment is re-added",
+        )
+        self.assertIn("is flattened", result)
+
+    def test_falls_back_to_plain_text_when_html_is_unreadable(self):
+        # No HTML part in the stored source (or Mail refused to hand it over):
+        # rebuild from the plain rendering exactly as before, and say so.
+        result, build, body = self._run_update(None)
+        self.assertIn("set message signature of newDraft to missing value", build)
+        self.assertIn("content:draftBodyText", build)
+        self.assertIn("plain text", result)
+        self.assertIn("Hallo Tomy", body)
+
+    def test_empty_html_falls_back_too(self):
+        # A wrapper holding nothing but the signature strips down to nothing.
+        empty = (
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "</blockquote></div>"
+            '<div id="AppleMailSignature">Robin</div>'
+        )
+        _, build, _ = self._run_update(empty)
+        self.assertIn("set message signature of newDraft to missing value", build)
+
+    def test_new_body_still_lets_mail_add_the_signature(self):
+        _, build, body = self._run_update(
+            self.STORED_HTML, body="Komplett neuer Text"
+        )
+        self.assertNotIn("set message signature", build)
+        self.assertIn("content:draftBodyText", build)
+        self.assertEqual(body, "Komplett neuer Text")
+
+
+class DraftHtmlBodyTests(unittest.TestCase):
+    """_draft_html_body pulls the real HTML out of the raw message."""
+
+    SOURCE = (
+        "Subject: Test\n"
+        "Mime-Version: 1.0\n"
+        'Content-Type: multipart/alternative; boundary="B"\n'
+        "\n"
+        "--B\n"
+        "Content-Type: text/plain; charset=us-ascii\n"
+        "\n"
+        "Fallback\n"
+        "--B\n"
+        "Content-Transfer-Encoding: quoted-printable\n"
+        "Content-Type: text/html; charset=utf-8\n"
+        "\n"
+        "<p>Gr=C3=BC=C3=9Fe</p>\n"
+        "--B--\n"
+    )
+
+    def test_html_part_is_decoded(self):
+        with patch.object(compose_tools, "run_applescript", return_value=self.SOURCE):
+            body = compose_tools._draft_html_body("42", "Work")
+        self.assertIsNotNone(body)
+        self.assertIn("Grüße", body)
+
+    def test_missing_html_part_returns_none(self):
+        plain = "Subject: Test\nContent-Type: text/plain\n\nNur Text\n"
+        with patch.object(compose_tools, "run_applescript", return_value=plain):
+            self.assertIsNone(compose_tools._draft_html_body("42", "Work"))
+
+    def test_applescript_failure_returns_none(self):
+        with patch.object(
+            compose_tools, "run_applescript", side_effect=Exception("boom")
+        ):
+            self.assertIsNone(compose_tools._draft_html_body("42", "Work"))
+
+    def test_non_numeric_id_is_refused_without_running_a_script(self):
+        # Mail's message id is numeric and goes into the script unquoted.
+        # Anything else must not reach osascript.
+        with patch.object(compose_tools, "run_applescript") as mock_run:
+            self.assertIsNone(
+                compose_tools._draft_html_body('1 or true; do shell script "x"', "Work")
+            )
+        mock_run.assert_not_called()

@@ -215,6 +215,17 @@ Use `create_rich_email_draft` when you need a visually formatted email, newslett
 
 This is more reliable than injecting raw HTML into AppleScript `content`, which Mail often stores as literal markup.
 
+## Known Mail.app limitations
+
+These are Mail's behaviour, not this server's. They are listed here because they are visible in
+the messages it produces and there is no way around them from AppleScript.
+
+| Behaviour | Effect | Why it is not fixed here |
+|---|---|---|
+| macOS 15+ wraps every AppleScript-supplied body in `<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">` | Recipients whose client ignores the wrapper's inline `inherit` styles (Outlook's Word engine) see the message indented; clients that collapse `type="cite"` (Gmail) may hide it behind a "…" toggle | The wrapper is added by Mail after the body is set. All four routes produce it identically: a `content` property, a later `set content`, `set html content`, and a GUI paste into a scripted compose window. Nothing in this package writes it, and no ordering avoids it. The server does make sure the wrapper never *stacks* when a draft is edited repeatedly. |
+| Adding an attachment re-renders the body through Mail's editor | HTML formatting on a message with attachments is flattened to plain font runs | Setting the body after the attachment drops the attachment instead. The tools say so in their output rather than letting you find out from the sent mail. |
+| `close <message> saving no` does not always discard the message | An abandoned compose object can stay in Drafts | Mail's own scripting behaviour |
+
 ## Email Management Skill
 
 A companion [Claude Code Skill](plugin/skills/email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). When installed as a plugin, the skill is loaded automatically. For standalone MCP installs, copy it manually:
@@ -240,6 +251,8 @@ cp -r plugin/skills/email-management ~/.claude/skills/email-management
 | Mailbox not found | Use exact folder names; nested folders use `/` separator (e.g., `Projects/Alpha`) |
 | Permission errors | Grant access in **System Settings > Privacy & Security > Automation** |
 | Rich draft shows raw HTML | Use `create_rich_email_draft` instead of pasting HTML into `manage_drafts` or AppleScript `content` |
+| Message looks quoted or indented at the recipient | Mail's share wrapper, see [Known Mail.app limitations](#known-mailapp-limitations) |
+| Formatting lost on a message with attachments | Mail re-renders the body when a file is attached, see [Known Mail.app limitations](#known-mailapp-limitations) |
 
 ## Project Structure
 

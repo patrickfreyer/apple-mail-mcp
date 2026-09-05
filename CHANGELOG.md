@@ -16,6 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attach a file to a draft in read-only mode.
 
 ### Fixed
+- Editing a draft no longer costs it its signature. `manage_drafts(action="update")`
+  rebuilt the message from `content of theDraft` — Mail's *plain-text* rendering,
+  in which the signature is already reduced to unformatted text — and then set
+  `message signature` to `missing value` so that flattened copy would not be
+  doubled. The result had no `X-Apple-Mail-Signature` header, Mail's compose
+  window reported "Signature: None", and the signature had lost its table, image
+  and colours. The rebuild now reuses the stored HTML instead (via the raw
+  message source), cuts the baked-in signature block out of it, and leaves
+  `message signature` alone so Mail attaches the live one again. When the HTML
+  cannot be recovered the old plain-text rebuild is used and the return value
+  says so instead of pretending nothing was lost.
+- Repeated draft edits no longer nest Mail's share wrapper. macOS 15+ Mail wraps
+  every AppleScript-supplied body in
+  `<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">`; feeding
+  a stored body back through the composer therefore added a layer on every edit
+  (measured two layers deep on a draft edited twice). The reuse path now peels
+  the existing layers off first. The wrapper itself is Mail's and cannot be
+  suppressed — see "Known Mail.app limitations" in the README.
 - `--read-only` had no effect on `manage_drafts(action="send")`. `compose.py`
   did `from apple_mail_mcp.server import READ_ONLY`, which binds the value
   `False` at import time, while `__main__` sets `server.READ_ONLY` afterwards.
