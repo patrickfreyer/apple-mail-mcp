@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- HTML bodies now go to Mail through `set html content` instead of the clipboard.
+  `compose_email(body_html=...)` used to convert the markup to an
+  `NSAttributedString`, write it back to the pasteboard as RTF, open a *visible*
+  compose window and drive Cmd+A / Cmd+V through System Events. That route stole
+  keyboard focus from whatever the user was doing, aborted whenever Mail did not
+  come to the front, and the RTF round-trip discarded all CSS, so every message
+  arrived as 12px black Helvetica. `set html content` hands Mail the markup
+  verbatim: headings, lists, links, inline colours and non-ASCII text survive
+  byte-for-byte, the message signature stays attached, and nothing is typed.
+  `reply_to_email` and `forward_email` keep the paste route on purpose — they
+  have to preserve the quoted original that Mail puts in the body, and
+  `set html content` would replace it.
 - `--read-only` now blocks delivery instead of removing the composing tools.
   `compose_email` and `reply_to_email` stay registered and refuse `mode="send"`
   themselves; only `forward_email`, which has no non-sending mode, is still

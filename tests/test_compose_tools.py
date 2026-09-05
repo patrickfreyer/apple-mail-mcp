@@ -1,5 +1,6 @@
 """Tests for compose and rich draft helpers."""
 
+import os
 import tempfile
 import re
 import unittest
@@ -748,27 +749,6 @@ class PasteFocusHardeningTests(unittest.TestCase):
             compose_tools.reply_to_email(**kwargs)
         return mock_run.call_args.kwargs["input"].decode("utf-8")
 
-    def _render_compose_html(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.compose_email(
-                account="Work",
-                to="x@example.com",
-                subject="s",
-                body="Body text",
-                body_html="<p>Body text</p>",
-                mode="send",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
-
     def test_reply_polls_for_focus_before_pasting(self):
         script = self._render_reply()
         self.assertIn(self.FOCUS_POLL, script)
@@ -791,14 +771,6 @@ class PasteFocusHardeningTests(unittest.TestCase):
         script = self._render_reply()
         self.assertNotIn("content of replyMessage", script)
 
-    def test_compose_html_polls_for_focus_before_pasting(self):
-        script = self._render_compose_html()
-        self.assertIn(self.FOCUS_POLL, script)
-        self.assertLess(
-            script.index(self.FOCUS_POLL),
-            script.index(self.PASTE),
-            "focus poll must run before the paste keystroke",
-        )
 
 
 class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
@@ -836,27 +808,6 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
                 account="Work",
                 subject_keyword="test",
                 reply_body=self.BODY_PLAIN,
-                body_html=self.BODY_HTML,
-                mode="open",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
-
-    def _render_compose(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.compose_email(
-                account="Work",
-                to="x@example.com",
-                subject="s",
-                body=self.BODY_PLAIN,
                 body_html=self.BODY_HTML,
                 mode="open",
             )
@@ -904,9 +855,6 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
 
     def test_reply_uses_rtf_not_raw_html(self):
         self._assert_rtf_not_raw_html(self._render_reply())
-
-    def test_compose_uses_rtf_not_raw_html(self):
-        self._assert_rtf_not_raw_html(self._render_compose())
 
     def test_forward_uses_rtf_not_raw_html(self):
         self._assert_rtf_not_raw_html(self._render_forward())
@@ -1115,6 +1063,132 @@ class MailShareWrapperTests(unittest.TestCase):
         close = compose_tools._matching_close(html, len("<div>"), "div")
         self.assertIsNotNone(close)
         self.assertEqual(html[close[1]:], "tail")
+
+
+class HtmlComposeUsesHtmlContentTests(unittest.TestCase):
+    """compose_email(body_html=...) sets the body, it does not type it.
+
+    The old route put an RTF conversion of the HTML on the clipboard, opened
+    a visible compose window and drove Cmd+A/Cmd+V through System Events. It
+    stole keyboard focus, aborted whenever Mail did not come to the front,
+    and the RTF round-trip flattened every message to 12px black Helvetica.
+    ``set html content`` hands Mail the markup verbatim (verified against
+    Mail 16.0/3864.600.51.1.1 on 05.09.2026: headings, lists, links, inline
+    colour and umlauts all survived).
+    """
+
+    def _script(self, **overrides):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if "make new outgoing message" in script:
+                return "Email saved as draft (HTML)"
+            return ""
+
+        kwargs = dict(
+            account="Work",
+            to="x@example.com",
+            subject="s",
+            body="Fallback",
+            body_html="<h2>Titel</h2><p>Gr&uuml;&szlig;e</p>",
+            mode="draft",
+        )
+        kwargs.update(overrides)
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run
+        ), patch("apple_mail_mcp.tools.compose.time.sleep"):
+            compose_tools.compose_email(**kwargs)
+        for script in scripts:
+            if "make new outgoing message" in script:
+                return script
+        raise AssertionError("no compose script was rendered")
+
+    def test_no_clipboard_and_no_keystrokes(self):
+        script = self._script()
+        for forbidden in (
+            "NSPasteboard",
+            "NSAttributedString",
+            "RTFFromRange",
+            "System Events",
+            "keystroke",
+            "key code",
+            "frontmost",
+        ):
+            self.assertNotIn(forbidden, script, f"{forbidden} must be gone")
+
+    def test_body_is_set_via_html_content(self):
+        self.assertIn("set html content of newMsg to htmlBody", self._script())
+
+    def test_html_is_read_from_a_file_as_utf8(self):
+        # An AppleScript string literal would need escaping and has no
+        # encoding guarantee; reading the temp file as «class utf8» keeps
+        # ä/ö/ü/ß and emoji intact.
+        script = self._script()
+        self.assertIn("as «class utf8»", script)
+        self.assertIn("set htmlBody to (read (POSIX file", script)
+
+    def test_draft_mode_closes_its_own_message(self):
+        script = self._script(mode="draft")
+        self.assertIn("close newMsg saving yes", script)
+        self.assertNotIn("close window 1", script)
+
+    def test_send_mode_uses_the_send_command(self):
+        script = self._script(mode="send")
+        self.assertIn("send newMsg", script)
+        self.assertIn("visible:false", script)
+
+    def test_open_mode_shows_the_window(self):
+        script = self._script(mode="open")
+        self.assertIn("visible:true", script)
+        self.assertIn("activate", script)
+
+    def test_body_is_set_before_attachments(self):
+        # `set html content` replaces the whole body, so a file attached
+        # beforehand is dropped (measured 05.09.2026).
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", dir=str(Path.home()), delete=False
+        ) as handle:
+            attachment = handle.name
+        try:
+            script = self._script(attachments=attachment)
+        finally:
+            os.unlink(attachment)
+        self.assertLess(
+            script.index("set html content of newMsg to htmlBody"),
+            script.index("make new attachment"),
+            "the body must be set before any attachment is added",
+        )
+
+    def test_attachment_flattening_is_reported(self):
+        # Mail re-renders the body when a file is attached, which undoes the
+        # formatting. Saying so beats letting the caller discover it.
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", dir=str(Path.home()), delete=False
+        ) as handle:
+            attachment = handle.name
+
+        def fake_run(script, timeout=120):
+            if "make new outgoing message" in script:
+                return "Email saved as draft (HTML)"
+            return ""
+
+        try:
+            with patch(
+                "apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run
+            ), patch("apple_mail_mcp.tools.compose.time.sleep"):
+                result = compose_tools.compose_email(
+                    account="Work",
+                    to="x@example.com",
+                    subject="s",
+                    body="Fallback",
+                    body_html="<p>Text</p>",
+                    mode="draft",
+                    attachments=attachment,
+                )
+        finally:
+            os.unlink(attachment)
+        self.assertIn("flattens HTML formatting", result)
 
 
 class DraftUpdateKeepsSignatureTests(unittest.TestCase):

@@ -312,19 +312,27 @@ class ForwardModeTests(unittest.TestCase):
 
 
 class BlindTypingGuardTests(unittest.TestCase):
-    """The GUI paths must abort instead of typing into a foreign app."""
+    """The GUI paths must abort instead of typing into a foreign app.
 
-    GUARD = "if not (frontmost of process \"Mail\") then"
+    ``compose_email`` no longer has a GUI path at all — it hands the markup
+    to Mail through ``set html content``. The guard that mattered there is
+    now the absence of any keystroke, which is what this asserts. Reply and
+    forward still paste (they must keep Mail's quoted original) and keep
+    their focus guards, covered in test_compose_tools.py.
+    """
 
-    def test_html_compose_aborts_without_focus(self):
+    def _compose_html_script(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if "make new outgoing message" in script:
+                return "Email saved as draft (HTML)"
+            return ""
+
         with patch(
-            "apple_mail_mcp.tools.compose.subprocess.run"
-        ) as mock_run, patch(
-            "apple_mail_mcp.tools.compose.run_applescript", return_value=""
+            "apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run
         ), patch("apple_mail_mcp.tools.compose.time.sleep"):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = b"ok"
-            mock_run.return_value.stderr = b""
             compose_tools.compose_email(
                 account="Work",
                 to="a@example.com",
@@ -333,13 +341,21 @@ class BlindTypingGuardTests(unittest.TestCase):
                 body_html="<p>b</p>",
                 mode="draft",
             )
-        script = mock_run.call_args.kwargs["input"].decode("utf-8")
-        self.assertIn(self.GUARD, script)
-        self.assertLess(
-            script.index(self.GUARD),
-            script.index('keystroke "v" using command down'),
-            "the guard must run before the paste",
-        )
+        for script in scripts:
+            if "make new outgoing message" in script:
+                return script
+        raise AssertionError("no compose script was rendered")
+
+    def test_html_compose_never_types(self):
+        script = self._compose_html_script()
+        self.assertNotIn("keystroke", script)
+        self.assertNotIn("key code", script)
+        self.assertNotIn("System Events", script)
+        self.assertNotIn("frontmost", script)
+
+    def test_html_compose_sets_html_content_directly(self):
+        script = self._compose_html_script()
+        self.assertIn("set html content of newMsg to htmlBody", script)
 
 
 class DraftUpdateTests(unittest.TestCase):

@@ -206,14 +206,15 @@ Create a rich HTML draft for a weekly update and open it in Mail
 
 ### Rich HTML Drafts
 
-Use `create_rich_email_draft` when you need a visually formatted email, newsletter, or leadership update.
+For a formatted message that has to land in Drafts and stay sendable, pass `body_html` to
+`compose_email` (`mode="draft"`, `"send"` or `"open"`). Mail receives the markup through its
+`html content` property, so headings, lists, links, inline colours and non-ASCII text arrive
+verbatim, and Mail attaches your real signature.
 
-- It generates an unsent `.eml` file with multipart plain-text + HTML bodies
-- It can open the draft directly in Mail for editing
-- It can optionally ask Mail to save the opened compose window into Drafts
-- It accepts partial details, so you can start with just an account and subject and fill in the rest later
-
-This is more reliable than injecting raw HTML into AppleScript `content`, which Mail often stores as literal markup.
+`create_rich_email_draft` is the alternative when you want the message as a file: it writes an
+unsent `.eml` with multipart plain-text + HTML bodies and opens it in Mail. Note that Mail opens
+a `.eml` as a read-only viewer, so it can never be saved into Drafts — use `compose_email` for
+that.
 
 ## Known Mail.app limitations
 
@@ -250,7 +251,7 @@ cp -r plugin/skills/email-management ~/.claude/skills/email-management
 | Slow searches | Set `include_content: false` and lower `max_results` |
 | Mailbox not found | Use exact folder names; nested folders use `/` separator (e.g., `Projects/Alpha`) |
 | Permission errors | Grant access in **System Settings > Privacy & Security > Automation** |
-| Rich draft shows raw HTML | Use `create_rich_email_draft` instead of pasting HTML into `manage_drafts` or AppleScript `content` |
+| Rich draft shows raw HTML | Pass the markup as `body_html` to `compose_email`, not as plain `body` / `manage_drafts` content |
 | Message looks quoted or indented at the recipient | Mail's share wrapper, see [Known Mail.app limitations](#known-mailapp-limitations) |
 | Formatting lost on a message with attachments | Mail re-renders the body when a file is attached, see [Known Mail.app limitations](#known-mailapp-limitations) |
 

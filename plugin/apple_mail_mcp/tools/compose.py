@@ -262,8 +262,10 @@ def create_rich_email_draft(
     """
     Create a rich-text email draft by generating an unsent `.eml` message and optionally opening it in Mail.
 
-    This is the preferred path for HTML or richly formatted emails because Mail reliably renders `.eml`
-    content, while setting raw HTML through AppleScript often stores the literal markup instead.
+    Use this when you want the message as a file on disk. For a formatted message that has to end up
+    in Drafts and stay sendable, use `compose_email(body_html=..., mode="draft")` instead: it hands the
+    markup to Mail's `html content` property, which renders it faithfully and keeps the signature.
+    Mail opens a `.eml` as a read-only viewer, so this path can never produce a real draft.
 
     Args:
         account: Account name to use for the sender identity (e.g., "Work", "Oracle")
@@ -387,7 +389,9 @@ def create_rich_email_draft(
         + (", ".join(missing_details) if missing_details else "none")
     )
     output_lines.append(
-        "Note: Prefer this `.eml` workflow for HTML email drafts; Mail renders it more reliably than raw HTML injected via AppleScript content."
+        "Note: this `.eml` opens as a read-only viewer, not a compose window. "
+        'Use compose_email(body_html=..., mode="draft") for a formatted draft '
+        "you can edit and send from Mail."
     )
     return "\n".join(output_lines)
 
@@ -545,11 +549,35 @@ def _send_html_email(
     mode: str = "send",
     sender_override: Optional[str] = None,
 ) -> str:
-    """Send an HTML-formatted email via NSPasteboard clipboard injection.
+    """Send, draft or open an HTML message using Mail's ``html content``.
 
-    Uses AppleScriptObjC to place HTML on the clipboard with the proper
-    pasteboard type, creates a compose window, tabs into the body, and
-    pastes.  Then sends, saves as draft, or leaves open for review.
+    ``set html content`` hands Mail the markup verbatim: headings, lists,
+    links, inline colours and umlauts all survive byte-for-byte (measured
+    2026-09-05 against Mail 16.0/3864.600.51.1.1).  It also leaves the
+    message's ``message signature`` property alone, so Mail attaches the
+    real, formatted signature and the compose window still names it.
+
+    This replaces the previous clipboard route, which converted the HTML to
+    an ``NSAttributedString``, wrote it back as RTF and pasted it into a
+    visible compose window with synthetic Cmd+A/Cmd+V keystrokes.  That route
+    stole keyboard focus, failed silently whenever Mail did not come to the
+    front, and flattened every message to 12px black Helvetica because the
+    RTF round-trip discards CSS.
+
+    Two limits remain, both Mail's and both reported to the caller:
+
+    * The body is wrapped in Mail's share template — see the module comment
+      above ``_strip_mail_share_wrapper``.  Unavoidable on macOS 15+.
+    * Adding an attachment makes Mail re-render the body through its editor,
+      which flattens the markup exactly the way the old paste route did.  A
+      message without attachments keeps its formatting; one with attachments
+      keeps the attachment and loses the CSS.  Setting the body *after* the
+      attachment is not an option: that drops the attachment.
+
+    ``body_plain`` is accepted for signature compatibility but unused: a saved
+    draft's ``text/plain`` alternative comes out empty whether or not
+    ``content`` is set first (measured both ways), and Mail regenerates the
+    alternative when the message is actually sent.
     """
     safe_account = escape_applescript(account)
     escaped_subject = escape_applescript(subject)
@@ -573,28 +601,28 @@ def _send_html_email(
         "newMsg", f'account "{safe_account}"', sender_override
     )
 
-    # Mode-specific behaviour after paste
     if mode == "send":
-        post_paste_script = """
-            -- Send via keyboard shortcut
-            keystroke "d" using {command down, shift down}
-        """
+        visible = "false"
+        final_command = "send newMsg"
         success_text = "Email sent successfully (HTML)"
     elif mode == "draft":
-        post_paste_script = """
-            -- Save as draft: Cmd+S then close
-            keystroke "s" using command down
-            delay 0.5
-        """
+        # Close the message object, never `window 1`: the object owns no
+        # window here, so `close window 1` would close (and silently save)
+        # whatever the user had open instead.
+        visible = "false"
+        final_command = "close newMsg saving yes"
         success_text = "Email saved as draft (HTML)"
     else:  # open
-        post_paste_script = "-- Leaving open for review"
+        visible = "true"
+        final_command = "activate"
         success_text = (
             "Email opened in Mail for review (HTML). Edit and send when ready."
         )
 
-    # Write HTML to temp file so the AppleScript can read it without
-    # worrying about escaping quotes/special chars in the HTML string.
+    # The HTML goes through a temp file rather than an AppleScript string
+    # literal: no escaping of quotes or backslashes, no length ceiling, and
+    # `read ... as «class utf8»` decodes multibyte text (ä/ö/ü/ß, emoji)
+    # correctly where a naive read would fall back to MacRoman.
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".html",
@@ -606,133 +634,62 @@ def _send_html_email(
     tmp.close()
     html_temp_path = tmp.name
 
-    # Build the attachments block. Must run AFTER the HTML paste so that
-    # Cmd+A in the body doesn't select-and-replace the attachment placeholder.
-    # Empty block when no attachments — keeps AppleScript valid either way.
+    # Body first, attachments after: `set html content` replaces the whole
+    # body and would drop an attachment added beforehand.
     if attachments_script.strip():
         attachments_block = (
-            'tell application "Mail"\n'
-            '    tell newMsg\n'
-            f'        {attachments_script}\n'
-            '    end tell\n'
-            'end tell'
+            "    tell newMsg\n"
+            f"        {attachments_script}\n"
+            "    end tell"
         )
     else:
-        attachments_block = "-- (no attachments)"
+        attachments_block = "    -- (no attachments)"
 
     script = f'''
-use framework "Foundation"
-use framework "AppKit"
-use scripting additions
-
--- Step 1: Read HTML from temp file and place it on the clipboard as RTF
--- (rendered rich text) plus a plain-text fallback. Writing the raw HTML
--- *source* under NSPasteboardTypeHTML made Mail paste the markup twice —
--- once rendered, once as literal tags; the RTF conversion fixes that.
-{_html_to_pasteboard_script(html_temp_path)}
-
--- Step 2: Create compose window (empty body so signature doesn't interfere).
--- Attachments are deliberately NOT added here — see Step 4b for why.
 tell application "Mail"
-    set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
+    set htmlBody to (read (POSIX file "{escape_applescript(html_temp_path)}") as «class utf8»)
+    set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", visible:{visible}}}
     {sender_script}
     tell newMsg
         {to_lines}
         {cc_lines}
         {bcc_lines}
     end tell
-    activate
-end tell
-
--- Step 3: Wait for compose window to render
-delay 2.5
-
--- Step 4a: Tab from header fields into body, then paste HTML.
--- The Cmd+A here selects the entire body (which is why we can't have the
--- attachment placed yet — it would be selected and replaced by the paste).
-tell application "System Events"
-    -- Poll until Mail is genuinely frontmost before driving the keyboard.
-    -- A single `set frontmost` + fixed delay can fire the tab/paste keystrokes
-    -- before the compose window has focus, producing a silent empty send.
-    set focusWaited to 0
-    repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
-        try
-            set frontmost of process "Mail" to true
-        end try
-        delay 0.1
-        set focusWaited to focusWaited + 1
-    end repeat
-    -- Never type blind. If Mail never came to the front (locked screen, another
-    -- Space, another app holding focus), the Cmd+A/Cmd+V would land in THAT app
-    -- and the message would be saved or sent with an empty body, without error.
-    if not (frontmost of process "Mail") then
-        error "Mail could not be brought to the front, so the body could not be inserted. Nothing was sent or saved. Use a plain-text body (no body_html) for a run that does not need the GUI."
-    end if
-    delay 0.5
-    tell process "Mail"
-        -- Tab through: To -> Cc -> Bcc -> Subject -> Body
-        -- 7 tabs covers all combinations of visible/hidden CC/BCC fields
-        repeat 7 times
-            key code 48
-            delay 0.1
-        end repeat
-        delay 0.3
-
-        -- Select all in body and paste HTML
-        keystroke "a" using command down
-        delay 0.2
-        keystroke "v" using command down
-        delay 0.5
-    end tell
-end tell
-
--- Step 4b: Attach files AFTER the HTML paste so they aren't clobbered by Cmd+A.
+    set html content of newMsg to htmlBody
 {attachments_block}
-
--- Step 4c: Final action (send / save draft / leave open)
-tell application "System Events"
-    tell process "Mail"
-        {post_paste_script}
-    end tell
+    {final_command}
+    return "{success_text}"
 end tell
-
--- Step 5: Clean up temp file
-do shell script "rm -f '{html_temp_path}'"
-
--- Step 6: Restore clipboard
-if oldClip is not missing value then
-    pb's clearContents()
-    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-end if
-
-return "{success_text}"
 '''
 
+    # Each attachment carries its own `delay 1`, so the budget grows with them.
+    timeout = 120 + 5 * max(0, attachments_script.count("make new attachment"))
+
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error sending HTML email: {stderr}"
-        output = result.stdout.decode("utf-8", errors="replace").strip()
-        # Build confirmation message
-        confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
-        if cc:
-            confirm += f"\nCC: {cc}"
-        if bcc:
-            confirm += f"\nBCC: {bcc}"
-        if attachment_info:
-            confirm += f"\nAttachments:\n{attachment_info.rstrip()}"
-        return confirm
-    except subprocess.TimeoutExpired:
-        return "Error: HTML email script timed out"
+        output = run_applescript(script, timeout=timeout)
+    except Exception as exc:  # osascript failure or timeout
+        verb = {"send": "sending", "draft": "saving"}.get(mode, "opening")
+        return f"Error {verb} HTML email: {exc}"
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
+
+    if output.startswith("Error"):
+        return output
+
+    confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
+    if cc:
+        confirm += f"\nCC: {cc}"
+    if bcc:
+        confirm += f"\nBCC: {bcc}"
+    if attachment_info:
+        confirm += f"\nAttachments:\n{attachment_info.rstrip()}"
+        confirm += (
+            "\nNote: Mail re-renders the body when an attachment is added, "
+            "which flattens HTML formatting. Send without attachments to keep "
+            "the styling, or attach the file by hand in Mail."
+        )
+    return confirm
 
 
 def _locate_saved_draft(subject: str) -> Optional[Tuple[str, int]]:
@@ -2162,7 +2119,7 @@ def compose_email(
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
-        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). Handed to Mail verbatim via its `html content` property, so markup and non-ASCII text survive unchanged and your Mail signature stays attached. The plain 'body' field is still required as fallback text. Two Mail limits apply: the body is wrapped in Mail's share template on macOS 15+ (see README, Known Mail.app limitations), and adding an attachment makes Mail re-render the body, which flattens the formatting.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
