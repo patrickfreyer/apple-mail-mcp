@@ -926,19 +926,18 @@ def _reply_plain(
     attachments: Optional[str],
     sender_override: Optional[str],
 ) -> str:
-    """Reply without driving Mail's GUI.
+    """Reply without driving Mail's GUI — the fallback for `_reply_native`.
 
-    The clipboard path (see reply_to_email) inserts the body with a blind
-    Cmd+V into the compose window. When Mail cannot come to the front — the
-    screen is locked, another Space is active, another app holds focus — the
-    keystroke lands somewhere else and the reply is saved or sent with an
-    EMPTY body, without any error. Measured on 25.08.2026: the resulting
-    draft carried correct In-Reply-To/References headers and no body at all.
+    `_reply_native` pastes the body into Mail's own compose window, which
+    needs Mail in the foreground. When that is impossible (screen locked,
+    another Space active) a draft is still better than nothing, so draft
+    mode falls back to this path.
 
-    This path sets `content` directly instead, which costs Mail's rich quote
-    of the original (setting `content` replaces that layer) and therefore
-    rebuilds the quote as plain text. Trade: a plain quote instead of a rich
-    one, in exchange for a body that is always there.
+    It sets `content` directly, which costs Mail's rich quote of the original
+    (setting `content` replaces that layer) and therefore rebuilds the quote
+    as plain text. The result reads as a plain-text mail wrapped in Mail's
+    share template — correct, but visibly not what a hand-written reply looks
+    like.
     """
     fields, error = _find_reply_target(account, mailbox, subject_keyword)
     if error:
@@ -1058,6 +1057,298 @@ def _reply_plain(
             os.unlink(body_temp_path)
 
     if result.startswith("Error:"):
+        return result
+
+    status, _, reply_subject = result.partition(separator)
+    reply_subject = reply_subject.strip() or ("Re: " + fields["subject"])
+
+    lines = [
+        "REPLY",
+        "",
+        status.strip(),
+        "To: " + fields["sender"],
+        "Subject: " + reply_subject,
+        "Original from: " + fields["date"] + " (mailbox: " + mailbox + ")",
+    ]
+    if fields.get("match_count", 1) > 1:
+        lines.append(
+            f"Note: {fields['match_count']} messages matched "
+            f"{subject_keyword!r}; replied to the newest one."
+        )
+    if cc:
+        lines.append("CC: " + cc)
+    if bcc:
+        lines.append("BCC: " + bcc)
+    if attachment_info:
+        lines.append("Attachments:\n" + attachment_info.rstrip())
+
+    output = "\n".join(lines)
+    if effective_mode == "draft":
+        output += _draft_location_note(reply_subject, len(validated_paths))
+    return output
+
+
+# Returned by the native reply script when Mail's compose window never got
+# keyboard focus. Nothing was pasted, sent or saved at that point.
+_NO_FOCUS_MARKER = "AMMCP_NO_FOCUS"
+
+
+def _reply_native(
+    account: str,
+    mailbox: str,
+    subject_keyword: str,
+    reply_body: str,
+    body_html: Optional[str],
+    reply_to_all: bool,
+    cc: Optional[str],
+    bcc: Optional[str],
+    effective_mode: str,
+    attachments: Optional[str],
+    sender_override: Optional[str],
+) -> str:
+    """Reply the way Mail.app does when a person hits Reply.
+
+    `reply ... with opening window` makes Mail build its own quote: the
+    original's HTML inside ``<blockquote type="cite">`` (the blue bar), the
+    attribution line, and the account's signature. None of that is reachable
+    from AppleScript — ``html content`` of a reply is write-only ("access not
+    allowed") and ``content`` reads empty — so the new text is pasted at the
+    caret, which Mail puts at the top of the body.
+
+    Measured 28.09.2026 (Mail 16.0): every ``set html content`` / ``set
+    content`` on a reply wraps the WHOLE body, quote included, in Mail's share
+    template (see ``_strip_mail_share_wrapper``). A paste into the reply
+    window does not; the saved draft is structurally identical to a reply
+    typed by hand.
+
+    The body goes on the pasteboard as HTML plus a plain-text flavor. HTML,
+    not the RTF round-trip ``_html_to_pasteboard_script`` uses, because RTF
+    drops CSS and pins every line to an explicit font; the HTML flavor pasted
+    once, with markup and umlauts intact.
+
+    Pasting needs keyboard focus in exactly this window. The script waits
+    until Mail is frontmost AND its front window is the reply, and otherwise
+    closes the reply unsaved and returns ``_NO_FOCUS_MARKER`` — never a blind
+    keystroke into whatever else is in front.
+    """
+    fields, error = _find_reply_target(account, mailbox, subject_keyword)
+    if error:
+        return error
+
+    attachment_script = ""
+    attachment_info = ""
+    validated_paths: List[str] = []
+    if attachments:
+        validated_paths, attachment_error = _validate_attachment_paths(attachments)
+        if attachment_error:
+            return attachment_error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f"  {path}\n"
+
+    if body_html:
+        paste_html = body_html
+    else:
+        paste_html = "<div>" + html_escape(reply_body).replace("\n", "<br>") + "</div>"
+    # One empty line between the new text and Mail's attribution line, the
+    # same gap a hand-typed reply has.
+    paste_html += "<div><br></div>"
+
+    temp_paths = []
+    for suffix, text in ((".html", paste_html), (".txt", reply_body)):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=suffix, prefix="mail_reply_", delete=False, encoding="utf-8"
+        )
+        handle.write(text)
+        handle.close()
+        temp_paths.append(handle.name)
+    html_path, plain_path = temp_paths
+
+    safe_account = escape_applescript(account)
+    separator = "<<<AMMCP-" + os.urandom(8).hex() + ">>>"
+    reply_command = "set replyMessage to reply foundMessage with opening window"
+    if reply_to_all:
+        reply_command += " and reply to all"
+
+    recipient_script = ""
+    for addr in _split_addresses(cc):
+        recipient_script += (
+            "make new cc recipient at end of cc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n        '
+        )
+    for addr in _split_addresses(bcc):
+        recipient_script += (
+            "make new bcc recipient at end of bcc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n        '
+        )
+
+    sender_script = _compose_sender_script(
+        "replyMessage", "targetAccount", sender_override
+    )
+
+    if effective_mode == "send":
+        final_action = "send replyMessage"
+        success_text = "Reply sent successfully!"
+    elif effective_mode == "open":
+        final_action = "-- left open for review"
+        success_text = "Reply opened in Mail for review. Edit and send when ready."
+    else:
+        # `save` commits the reply to Drafts; closing the window by its id
+        # afterwards touches only this reply, never a window the user has open.
+        final_action = (
+            "save replyMessage\n"
+            "        delay 1\n"
+            "        close (window id replyWindowId) saving no"
+        )
+        success_text = "Reply saved as draft!"
+
+    script = f'''use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+set pb to current application's NSPasteboard's generalPasteboard()
+set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+set htmlStr to current application's NSString's stringWithContentsOfFile:"{escape_applescript(html_path)}" encoding:(current application's NSUTF8StringEncoding) |error|:(missing value)
+set plainStr to current application's NSString's stringWithContentsOfFile:"{escape_applescript(plain_path)}" encoding:(current application's NSUTF8StringEncoding) |error|:(missing value)
+set resultText to ""
+set replyWindowId to missing value
+
+try
+    tell application "Mail"
+        set targetAccount to account "{safe_account}"
+        {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="searchMailbox")}
+        set candidates to (messages of searchMailbox whose id is {int(fields["id"])})
+        if (count of candidates) is 0 then error "the original message disappeared between lookup and reply."
+        set foundMessage to item 1 of candidates
+
+        {reply_command}
+        delay 1
+        set replyWindowId to id of window 1
+        set replySubject to ""
+        try
+            set replySubject to subject of replyMessage
+        end try
+
+        {sender_script}
+
+        {recipient_script}
+
+        tell replyMessage
+            {attachment_script}
+        end tell
+        activate
+    end tell
+
+    pb's clearContents()
+    pb's setString:htmlStr forType:(current application's NSPasteboardTypeHTML)
+    pb's setString:plainStr forType:(current application's NSPasteboardTypeString)
+
+    -- Paste only into THIS reply: Mail must be frontmost and its front window
+    -- must be the one `reply` just opened. A keystroke without that check
+    -- lands in whatever is in front and the reply goes out empty
+    -- (measured 25.08.2026).
+    set focusWaited to 0
+    set hasFocus to false
+    repeat until hasFocus or (focusWaited is greater than or equal to 40)
+        tell application "System Events"
+            try
+                set frontmost of process "Mail" to true
+            end try
+            set mailInFront to (frontmost of process "Mail")
+        end tell
+        tell application "Mail"
+            try
+                if (id of window 1) is not replyWindowId then set index of (window id replyWindowId) to 1
+            end try
+            set hasFocus to mailInFront and ((id of window 1) is replyWindowId)
+        end tell
+        if not hasFocus then
+            delay 0.1
+            set focusWaited to focusWaited + 1
+        end if
+    end repeat
+    if not hasFocus then error "{_NO_FOCUS_MARKER}"
+
+    delay 0.5
+    tell application "System Events" to tell process "Mail" to keystroke "v" using command down
+    delay 1
+
+    tell application "Mail"
+        {final_action}
+    end tell
+    set resultText to "{success_text}" & "{separator}" & replySubject
+on error errMsg
+    if errMsg contains "{_NO_FOCUS_MARKER}" then
+        set resultText to "{_NO_FOCUS_MARKER}"
+    else
+        set resultText to "Error: " & errMsg
+    end if
+    -- Nothing half-built may survive: close the reply unsaved.
+    if replyWindowId is not missing value then
+        try
+            tell application "Mail" to close (window id replyWindowId) saving no
+        end try
+    end if
+end try
+
+pb's clearContents()
+if oldClip is not missing value then pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+return resultText
+'''
+
+    try:
+        # osascript directly: `use framework` must stay at the top level,
+        # which run_applescript's `with timeout` wrapper would break.
+        completed = subprocess.run(
+            ["osascript", "-"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return "Error: Reply script timed out. Check Mail for an open reply window."
+    finally:
+        for path in temp_paths:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        return f"Error in reply: {stderr}"
+    result = completed.stdout.decode("utf-8", errors="replace").strip()
+
+    if result == _NO_FOCUS_MARKER:
+        if effective_mode == "draft":
+            fallback = _reply_plain(
+                account=account,
+                mailbox=mailbox,
+                subject_keyword=subject_keyword,
+                reply_body=reply_body,
+                reply_to_all=reply_to_all,
+                cc=cc,
+                bcc=bcc,
+                effective_mode=effective_mode,
+                attachments=attachments,
+                sender_override=sender_override,
+            )
+            return (
+                fallback
+                + "\n\nNote: Mail could not be brought to the front, so this "
+                "draft uses the plain-text quote instead of Mail's own reply "
+                "layout. Re-run with Mail visible for the native layout."
+            )
+        return (
+            "Error: Mail could not be brought to the front, so the reply "
+            "text could not be inserted. Nothing was sent or saved. Unlock "
+            'the screen or use mode="draft".'
+        )
+
+    if result.startswith("Error"):
         return result
 
     status, _, reply_subject = result.partition(separator)
@@ -1741,6 +2032,12 @@ def reply_to_email(
     """
     Reply to an email matching a subject keyword.
 
+    The reply is built by Mail itself, exactly like hitting Reply: Mail's quote
+    of the original with its formatting, the attribution line and the account
+    signature. The new text is pasted above it, so Mail briefly comes to the
+    front. When it cannot (screen locked), draft mode falls back to a
+    plain-text quote and says so; send and open modes stop without sending.
+
     Args:
         account: Account name (e.g., "Gmail", "Work")
         subject_keyword: Keyword to search for in email subjects
@@ -1752,7 +2049,7 @@ def reply_to_email(
         send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
         mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
-        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). Pasted above Mail's own quote of the original. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
@@ -1766,7 +2063,7 @@ def reply_to_email(
     if sender_error:
         return sender_error
 
-    # Resolve delivery mode up front: both paths need it.
+    # Resolve delivery mode up front.
     if mode is not None:
         if mode not in ("send", "draft", "open"):
             return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
@@ -1780,317 +2077,19 @@ def reply_to_email(
             'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
         )
 
-    # Plain-text replies take the GUI-free path: the body is written into the
-    # message instead of typed into a window that may not have focus.
-    # Only an HTML body still needs the clipboard/keystroke route below,
-    # because Mail's scripting interface has no HTML body property.
-    if not body_html:
-        return _reply_plain(
-            account=account,
-            mailbox=mailbox,
-            subject_keyword=subject_keyword,
-            reply_body=reply_body,
-            reply_to_all=reply_to_all,
-            cc=cc,
-            bcc=bcc,
-            effective_mode=effective_mode,
-            attachments=attachments,
-            sender_override=sender_override,
-        )
-
-    # Escape all user inputs for AppleScript
-    safe_account = escape_applescript(account)
-    safe_subject_keyword = escape_applescript(subject_keyword)
-
-    # Write reply body to a temp file to avoid AppleScript string escaping
-    # issues with special characters (em dashes, curly quotes, colons, etc.)
-    body_tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        prefix="mail_reply_",
-        delete=False,
-        encoding="utf-8",
+    return _reply_native(
+        account=account,
+        mailbox=mailbox,
+        subject_keyword=subject_keyword,
+        reply_body=reply_body,
+        body_html=body_html,
+        reply_to_all=reply_to_all,
+        cc=cc,
+        bcc=bcc,
+        effective_mode=effective_mode,
+        attachments=attachments,
+        sender_override=sender_override,
     )
-    body_tmp.write(reply_body)
-    body_tmp.close()
-    body_temp_path = body_tmp.name
-
-    # If body_html provided, write it to a temp file for the AppleScript to read.
-    # If plain text only, wrap it in basic HTML so the clipboard paste renders
-    # properly in Mail's HTML compose view (preserving line breaks and gap).
-    html_temp_path = None
-    # Append an empty paragraph to create a visible gap before the quoted original.
-    # Mail strips trailing <br> tags, so we use a <p> with &nbsp; instead.
-    gap_html = "<div><br></div><div><br></div>"
-    if body_html:
-        html_content = body_html + gap_html
-    else:
-        # Wrap plain text in HTML, converting newlines to <br>
-        escaped_plain = html_escape(reply_body)
-        escaped_plain = escaped_plain.replace("\n", "<br>")
-        html_content = f"<div>{escaped_plain}</div>{gap_html}"
-    html_tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".html",
-        prefix="mail_reply_html_",
-        delete=False,
-        encoding="utf-8",
-    )
-    html_tmp.write(html_content)
-    html_tmp.close()
-    html_temp_path = html_tmp.name
-
-    # Build the reply command based on reply_to_all flag
-    if reply_to_all:
-        reply_command = "set replyMessage to reply foundMessage with opening window and reply to all"
-    else:
-        reply_command = "set replyMessage to reply foundMessage with opening window"
-
-    # Build CC recipients if provided
-    cc_script = ""
-    if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(",")]
-        for addr in cc_addresses:
-            safe_addr = escape_applescript(addr)
-            cc_script += f'''
-            make new cc recipient at end of cc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build BCC recipients if provided
-    bcc_script = ""
-    if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
-        for addr in bcc_addresses:
-            safe_addr = escape_applescript(addr)
-            bcc_script += f'''
-            make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build attachment script if provided
-    attachment_script = ""
-    attachment_info = ""
-    if attachments:
-        validated_paths, error = _validate_attachment_paths(attachments)
-        if error:
-            return error
-        for path in validated_paths:
-            safe_path = escape_applescript(path)
-            attachment_script += f'''
-                set theFile to POSIX file "{safe_path}"
-                make new attachment with properties {{file name:theFile}} at after the last paragraph
-                delay 1
-            '''
-            attachment_info += f"  {path}\n"
-
-    safe_cc = escape_applescript(cc) if cc else ""
-    safe_bcc = escape_applescript(bcc) if bcc else ""
-    safe_attachment_info = (
-        escape_applescript(attachment_info) if attachment_info else ""
-    )
-
-    # Read body from temp file in AppleScript (avoids all string escaping issues)
-    read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
-
-    # Determine behavior per mode
-    # All modes use HTML clipboard paste (via NSPasteboard) to insert the reply body.
-    # This preserves Mail.app's native quoted original in the HTML layer.
-    # (setting `content` via AppleScript overwrites the HTML layer entirely,
-    # destroying the email thread history.)
-
-    if effective_mode == "send":
-        header_text = "SENDING REPLY"
-        post_paste_action = """
-                delay 0.5
-                tell application "Mail"
-                    send replyMessage
-                end tell"""
-        success_text = "Reply sent successfully!"
-    elif effective_mode == "open":
-        header_text = "OPENING REPLY FOR REVIEW"
-        post_paste_action = ""
-        success_text = "Reply opened in Mail for review. Edit and send when ready."
-    else:  # draft
-        header_text = "SAVING REPLY AS DRAFT"
-        post_paste_action = """
-                delay 0.5
-                tell application "Mail"
-                    close replyMessage saving yes
-                end tell"""
-        success_text = "Reply saved as draft!"
-
-    cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
-    html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
-
-    sender_script = _compose_sender_script(
-        "replyMessage", "targetAccount", sender_override
-    )
-
-    script = f'''
-use framework "Foundation"
-use framework "AppKit"
-use scripting additions
-
--- Step 1: Place the reply body on the clipboard as RTF (rendered rich text)
--- plus a plain-text fallback. The previous raw-HTML-source approach made
--- Mail paste the body twice (rendered + literal tags); RTF pastes once.
-{_html_to_pasteboard_script(html_temp_path)}
-
--- Step 2: Find the email and create reply
-tell application "Mail"
-    set outputText to "{header_text}" & return & return
-
-    try
-        -- Read reply body from temp file (for output text only)
-        {read_body_script}
-
-        set targetAccount to account "{safe_account}"
-        {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="inboxMailbox")}
-        set inboxMessages to every message of inboxMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in inboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
-
-        if foundMessage is not missing value then
-            set messageSubject to subject of foundMessage
-            set messageSender to sender of foundMessage
-            set messageDate to date received of foundMessage
-
-            -- Create reply
-            {reply_command}
-            delay 0.5
-
-            {sender_script}
-
-            -- Add CC/BCC recipients
-            {cc_script}
-            {bcc_script}
-
-            -- Add attachments (must be scoped to replyMessage so `last paragraph` resolves;
-            -- bare `make new attachment ... at after the last paragraph` inside `tell application "Mail"`
-            -- raises "Can't get last paragraph" because the reference has no implicit owner)
-            tell replyMessage
-                {attachment_script}
-            end tell
-
-            -- Paste reply body (HTML already on clipboard from Step 1).
-            -- The body is inserted via a blind Cmd+V into the compose window, so the
-            -- window MUST have keyboard focus when the keystroke fires. If Mail is not
-            -- frontmost at that moment (common on the first compose of a session, when
-            -- another app holds focus, or when the machine is busy), the paste lands
-            -- nowhere and an EMPTY reply is sent with no error returned.
-            --
-            -- We deliberately do NOT verify the paste by reading `content of
-            -- replyMessage` afterwards: Mail's GUI editor buffer is decoupled from the
-            -- scriptable `content` property, so reading it always returns the pre-paste
-            -- value (verified empirically — it reports 0 chars even after a successful
-            -- paste). A content-read-back guard would therefore false-fail every send.
-            -- Instead we make the paste deterministic by polling until Mail is genuinely
-            -- frontmost (re-asserting focus each iteration) before issuing the keystroke.
-            set visible of replyMessage to true
-            activate
-
-            tell application "System Events"
-                set focusWaited to 0
-                repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
-                    try
-                        set frontmost of process "Mail" to true
-                    end try
-                    delay 0.1
-                    set focusWaited to focusWaited + 1
-                end repeat
-                -- Never type blind: without focus the keystroke lands in another
-                -- app and the reply goes out empty (measured 25.08.2026).
-                if not (frontmost of process "Mail") then
-                    error "Mail could not be brought to the front, so the reply body could not be inserted. Nothing was sent or saved. Drop body_html to use the GUI-free reply path."
-                end if
-                -- settle delay so the compose window's body holds keyboard focus
-                delay 0.8
-                tell process "Mail"
-                    keystroke "v" using command down
-                end tell
-            end tell
-            delay 0.5
-
-            {post_paste_action}
-
-            set outputText to outputText & "{success_text}" & return
-            set outputText to outputText & "To: " & messageSender & return
-            set outputText to outputText & "Subject: " & messageSubject & return
-    '''
-
-    if cc:
-        script += f"""
-                set outputText to outputText & "CC: {safe_cc}" & return
-    """
-
-    if bcc:
-        script += f"""
-                set outputText to outputText & "BCC: {safe_bcc}" & return
-    """
-
-    if attachments:
-        script += f'''
-                set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
-    '''
-
-    script += f"""
-            else
-                set outputText to outputText & "No email found matching: {safe_subject_keyword} (searched mailbox: {escape_applescript(mailbox)})" & return
-            end if
-
-            -- Clean up temp files
-            {cleanup_script}
-            {html_cleanup_script}
-
-        on error errMsg
-            -- Clean up temp files even on error
-            try
-                {cleanup_script}
-                {html_cleanup_script}
-            end try
-            return "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
-        end try
-
-        return outputText
-    end tell
-
-    -- Restore clipboard
-    if oldClip is not missing value then
-        pb's clearContents()
-        pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-    end if
-    """
-
-    try:
-        # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error in reply: {stderr}"
-        return result.stdout.decode("utf-8", errors="replace").strip()
-    except subprocess.TimeoutExpired:
-        return "Error: Reply script timed out"
-    finally:
-        # Belt-and-suspenders cleanup in case AppleScript didn't run
-        if os.path.exists(body_temp_path):
-            os.unlink(body_temp_path)
-        if html_temp_path and os.path.exists(html_temp_path):
-            os.unlink(html_temp_path)
 
 
 @mcp.tool()

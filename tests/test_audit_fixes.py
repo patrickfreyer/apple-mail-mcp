@@ -190,14 +190,15 @@ class QuotedReplyTests(unittest.TestCase):
 
 
 class ReplyPathTests(unittest.TestCase):
-    """Plain replies must not depend on keyboard focus.
+    """The plain-text fallback must not depend on keyboard focus.
 
-    Measured before the fix: the reply draft carried correct
+    Measured before the 25.08.2026 fix: the reply draft carried correct
     In-Reply-To/References headers and an empty body, because the blind Cmd+V
-    landed in another app.
+    landed in another app. `_reply_plain` is what draft mode falls back to
+    when Mail cannot come to the front.
     """
 
-    def _run_reply(self, **kwargs):
+    def _run_plain(self, **kwargs):
         scripts = []
 
         def _run(script, timeout=120):
@@ -213,32 +214,39 @@ class ReplyPathTests(unittest.TestCase):
                 return "Reply saved as draft!" + sep + "Re: Thread"
             return ""
 
+        call = dict(
+            account="Work",
+            mailbox="INBOX",
+            subject_keyword="Thread",
+            reply_body="Antwort",
+            reply_to_all=False,
+            cc=None,
+            bcc=None,
+            effective_mode="draft",
+            attachments=None,
+            sender_override=None,
+        )
+        call.update(kwargs)
         with patch(
             "apple_mail_mcp.tools.compose.run_applescript", side_effect=_run
         ), patch("apple_mail_mcp.tools.compose.time.sleep"):
-            result = compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="Thread",
-                reply_body="Antwort",
-                mode="draft",
-                **kwargs,
-            )
+            result = compose_tools._reply_plain(**call)
         return result, scripts
 
     def test_plain_reply_uses_no_keystrokes(self):
-        _, scripts = self._run_reply()
+        _, scripts = self._run_plain()
         joined = "\n".join(scripts)
         self.assertNotIn("keystroke", joined)
         self.assertNotIn("System Events", joined)
 
     def test_plain_reply_saves_the_message_not_a_window(self):
-        _, scripts = self._run_reply()
+        _, scripts = self._run_plain()
         script = next(s for s in scripts if "reply foundMessage" in s)
         self.assertIn("save replyMessage", script)
         self.assertNotIn("close window 1", script)
 
     def test_reply_searches_the_requested_mailbox(self):
-        _, scripts = self._run_reply(mailbox="Archive")
+        _, scripts = self._run_plain(mailbox="Archive")
         lookup = next(s for s in scripts if "matchingMessages" in s)
         self.assertIn('mailbox "Archive"', lookup)
 
@@ -250,7 +258,7 @@ class ReplyPathTests(unittest.TestCase):
             handle.write(b"x")
             attachment_path = handle.name
         try:
-            _, scripts = self._run_reply(attachments=attachment_path)
+            _, scripts = self._run_plain(attachments=attachment_path)
         finally:
             os.unlink(attachment_path)
         script = next(s for s in scripts if "reply foundMessage" in s)
@@ -259,6 +267,78 @@ class ReplyPathTests(unittest.TestCase):
             script.index("make new attachment"),
             "content must be set first, it replaces the whole body",
         )
+
+
+class NativeReplyTests(unittest.TestCase):
+    """reply_to_email builds the reply the way Mail does by hand (28.09.2026).
+
+    Measured before the fix: `set content` / `set html content` on a reply
+    replaced Mail's rich quote and wrapped the whole body in Mail's share
+    template, so drafts looked like plain text with a `>` quote. Only Mail's
+    own reply window plus a paste keeps the blue quote bar, the original's
+    formatting and the signature.
+    """
+
+    LOOKUP = ["99", "Thread", "them@example.com", "heute", "1", "Original"]
+
+    def _run(self, native_stdout, **kwargs):
+        scripts = []
+        native = {}
+
+        def _applescript(script, timeout=120):
+            scripts.append(script)
+            match = re.search(r"<<<AMMCP-[0-9a-f]+>>>", script)
+            if match and "reply foundMessage" not in script:
+                return match.group(0).join(self.LOOKUP)
+            if "reply foundMessage" in script:
+                sep = re.search(r"<<<AMMCP-[0-9a-f]+>>>", script).group(0)
+                return "Reply saved as draft!" + sep + "Re: Thread"
+            return ""
+
+        def _subprocess(*args, **run_kwargs):
+            native["script"] = run_kwargs["input"].decode("utf-8")
+            result = type("R", (), {})()
+            result.returncode = 0
+            stdout = native_stdout
+            if "{sep}" in stdout:
+                sep = re.search(r"<<<AMMCP-[0-9a-f]+>>>", native["script"]).group(0)
+                stdout = stdout.replace("{sep}", sep)
+            result.stdout = stdout.encode("utf-8")
+            result.stderr = b""
+            return result
+
+        call = dict(account="Work", subject_keyword="Thread", reply_body="Antwort")
+        call.update(kwargs)
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript", side_effect=_applescript
+        ), patch(
+            "apple_mail_mcp.tools.compose.subprocess.run", side_effect=_subprocess
+        ), patch("apple_mail_mcp.tools.compose.time.sleep"):
+            result = compose_tools.reply_to_email(**call)
+        return result, scripts, native.get("script", "")
+
+    def test_reply_lets_mail_build_the_quote(self):
+        _, _, script = self._run("Reply saved as draft!{sep}Re: Thread", mode="draft")
+        self.assertIn("reply foundMessage with opening window", script)
+        self.assertNotIn("set content of replyMessage", script)
+        self.assertNotIn("set html content of replyMessage", script)
+
+    def test_draft_closes_only_its_own_window(self):
+        _, _, script = self._run("Reply saved as draft!{sep}Re: Thread", mode="draft")
+        self.assertIn("save replyMessage", script)
+        self.assertIn("close (window id replyWindowId) saving no", script)
+        self.assertNotIn("close window 1", script)
+
+    def test_no_focus_in_draft_mode_falls_back_to_plain_quote(self):
+        result, scripts, _ = self._run(compose_tools._NO_FOCUS_MARKER, mode="draft")
+        plain = [s for s in scripts if "set content of replyMessage" in s]
+        self.assertEqual(len(plain), 1, "draft mode must fall back to _reply_plain")
+        self.assertIn("plain-text quote", result)
+
+    def test_no_focus_in_send_mode_sends_nothing(self):
+        result, scripts, _ = self._run(compose_tools._NO_FOCUS_MARKER, mode="send")
+        self.assertTrue(result.startswith("Error: Mail could not be brought"))
+        self.assertFalse([s for s in scripts if "reply foundMessage" in s])
 
 
 class ForwardModeTests(unittest.TestCase):

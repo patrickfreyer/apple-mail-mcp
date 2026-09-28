@@ -52,6 +52,38 @@ def _fake_reply_run(alias_answer=None):
 
     return _run, scripts
 
+
+def _run_native_reply(alias_answer=None, native_stdout="", **kwargs):
+    """Run reply_to_email through the native (reply window + paste) path.
+
+    run_applescript answers the alias and target lookups; the reply script
+    itself goes through subprocess.run because it needs AppleScriptObjC.
+    Returns (result, applescript_scripts, native_script).
+    """
+    fake_run, scripts = _fake_reply_run(alias_answer=alias_answer)
+    captured = {}
+
+    def _subprocess_run(*args, **run_kwargs):
+        captured["input"] = run_kwargs.get("input", b"").decode("utf-8")
+        return _make_subprocess_result(stdout=native_stdout.encode("utf-8"))
+
+    call = dict(account="Work", subject_keyword="test", reply_body="Reply body")
+    call.update(kwargs)
+    with (
+        patch(
+            "apple_mail_mcp.tools.compose.subprocess.run",
+            side_effect=_subprocess_run,
+        ),
+        patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ),
+        patch("apple_mail_mcp.tools.compose.time.sleep"),
+    ):
+        result = compose_tools.reply_to_email(**call)
+    return result, scripts, captured.get("input", "")
+
+
 def _main_script(scripts):
     """Return the compose script from a list of captured AppleScript calls.
 
@@ -479,27 +511,8 @@ class CreateRichEmailDraftFromAddressTests(unittest.TestCase):
 
 class ReplyToEmailSenderOverrideTests(unittest.TestCase):
     def test_default_emits_single_alias_fallback_for_reply_message(self):
-        # A plain-text reply runs GUI-free through run_applescript; only an
-        # HTML body still goes through the clipboard/keystroke route.
-        fake_run, scripts = _fake_reply_run()
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run"
-            ) as mock_subprocess,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                side_effect=fake_run,
-            ),
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body="Reply body",
-                send=False,
-            )
-
-        mock_subprocess.assert_not_called()
-        script = next(s for s in scripts if "reply foundMessage" in s)
+        _, _, script = _run_native_reply(send=False)
+        self.assertIn("reply foundMessage", script)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
             "set sender of replyMessage to item 1 of emailAddrs", script
@@ -507,22 +520,11 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertNotIn('set sender of replyMessage to "', script)
 
     def test_injects_sender_when_from_address_is_valid(self):
-        fake_run, scripts = _fake_reply_run(
-            alias_answer="default@example.com\nsecondary@example.org"
+        _, _, script = _run_native_reply(
+            alias_answer="default@example.com\nsecondary@example.org",
+            from_address="secondary@example.org",
+            send=False,
         )
-        with patch(
-            "apple_mail_mcp.tools.compose.run_applescript",
-            side_effect=fake_run,
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body="Reply body",
-                from_address="secondary@example.org",
-                send=False,
-            )
-
-        script = next(s for s in scripts if "reply foundMessage" in s)
         self.assertIn(
             'set sender of replyMessage to "secondary@example.org"', script
         )
@@ -708,12 +710,12 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
 class PasteFocusHardeningTests(unittest.TestCase):
     """Regression guard for the silent empty-send bug.
 
-    The HTML body is inserted via a blind Cmd+V into the compose window, which
-    only lands if Mail is frontmost when the keystroke fires. The original code
-    relied on a single `activate` + fixed `delay`, which intermittently sent an
-    empty message when the window had not yet gained focus. The fix polls until
-    Mail is genuinely frontmost before pasting. These tests assert the poll is
-    present in the generated AppleScript and runs BEFORE the paste keystroke.
+    The reply text is inserted via Cmd+V into Mail's own reply window, which
+    only lands if that window has focus when the keystroke fires. The original
+    code relied on a single `activate` + fixed `delay`, which intermittently
+    sent an empty message. The fix polls until Mail is frontmost AND its front
+    window is the reply before pasting. These tests assert the poll is present
+    in the generated AppleScript and runs BEFORE the paste keystroke.
 
     They also lock in the deliberate decision NOT to verify via
     `content of <message>`: Mail's GUI editor buffer is decoupled from the
@@ -722,32 +724,19 @@ class PasteFocusHardeningTests(unittest.TestCase):
     """
 
     FOCUS_POLL = (
-        'repeat until (frontmost of process "Mail") '
-        "or (focusWaited is greater than or equal to 40)"
+        "repeat until hasFocus or (focusWaited is greater than or equal to 40)"
     )
+    WINDOW_CHECK = "((id of window 1) is replyWindowId)"
     PASTE = 'keystroke "v" using command down'
 
     def _render_reply(self, **overrides):
         kwargs = dict(
-            account="Work",
-            subject_keyword="test",
             reply_body="Reply body text",
             body_html="<p>Reply body text</p>",
             send=True,
         )
         kwargs.update(overrides)
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.reply_to_email(**kwargs)
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
+        return _run_native_reply(**kwargs)[2]
 
     def test_reply_polls_for_focus_before_pasting(self):
         script = self._render_reply()
@@ -757,6 +746,13 @@ class PasteFocusHardeningTests(unittest.TestCase):
             script.index(self.PASTE),
             "focus poll must run before the paste keystroke",
         )
+
+    def test_reply_pastes_only_into_its_own_window(self):
+        # Frontmost alone is not enough: another Mail window (the user's own
+        # draft) may be in front. The poll also requires the reply's window.
+        script = self._render_reply()
+        self.assertIn(self.WINDOW_CHECK, script)
+        self.assertLess(script.index(self.WINDOW_CHECK), script.index(self.PASTE))
 
     def test_reply_drops_fragile_fixed_predelay(self):
         # The fragile original inserted a single `delay 1.5` between `activate`
@@ -784,8 +780,12 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
     HTML to an NSAttributedString and writes it back as RTF (a single
     unambiguous rich-text flavor) plus a *rendered* plain-text fallback.
 
+    The reply path has since moved to Mail's own reply window and pastes an
+    HTML flavor together with a plain-text flavor, which pastes once
+    (measured 28.09.2026); forward still uses the RTF route.
+
     These tests assert, at the script-generation level, that:
-      * the raw-HTML flavor (``NSPasteboardTypeHTML``) is no longer written;
+      * forward no longer writes the raw-HTML flavor (``NSPasteboardTypeHTML``);
       * RTF is written via NSAttributedString -> RTFFromRange;
       * the plain body is never injected as a second visible paste.
     """
@@ -794,24 +794,9 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
     BODY_HTML = "<p>Rendered <b>HTML</b></p>"
 
     def _render_reply(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body=self.BODY_PLAIN,
-                body_html=self.BODY_HTML,
-                mode="open",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
+        return _run_native_reply(
+            reply_body=self.BODY_PLAIN, body_html=self.BODY_HTML, mode="open"
+        )[2]
 
     def _render_forward(self):
         captured = {}
@@ -853,8 +838,14 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
         self.assertIn("NSCharacterEncodingDocumentAttribute", script)
         self.assertIn("NSUTF8StringEncoding", script)
 
-    def test_reply_uses_rtf_not_raw_html(self):
-        self._assert_rtf_not_raw_html(self._render_reply())
+    def test_reply_pastes_html_with_plain_fallback(self):
+        # The reply deliberately pastes the HTML flavor, not RTF: measured
+        # 28.09.2026, RTF drops CSS, while HTML plus a plain-text flavor
+        # pasted exactly once with markup and umlauts intact.
+        script = self._render_reply()
+        self.assertIn("forType:(current application's NSPasteboardTypeHTML)", script)
+        self.assertIn("forType:(current application's NSPasteboardTypeString)", script)
+        self.assertNotIn("RTFFromRange", script)
 
     def test_forward_uses_rtf_not_raw_html(self):
         self._assert_rtf_not_raw_html(self._render_forward())

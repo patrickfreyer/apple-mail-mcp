@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reply_to_email` and `forward_email` keep the paste route on purpose — they
   have to preserve the quoted original that Mail puts in the body, and
   `set html content` would replace it.
+- `reply_to_email` now replies the way Mail does by hand, for plain and HTML
+  bodies alike: `reply ... with opening window` lets Mail build its own quote
+  (blue quote bar, the original's formatting, attribution line, signature) and
+  the new text is pasted above it as HTML. Plain-text replies used to set
+  `content`, which discarded that quote, rebuilt it as `>` lines and wrapped
+  the whole body in Mail's share template. The paste waits until the reply's
+  own window has focus; if Mail cannot come to the front, draft mode falls
+  back to the plain-text quote and says so, send and open modes stop without
+  sending.
 - `--read-only` now blocks delivery instead of removing the composing tools.
   `compose_email` and `reply_to_email` stay registered and refuse `mode="send"`
   themselves; only `forward_email`, which has no non-sending mode, is still
