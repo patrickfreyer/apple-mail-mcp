@@ -1,6 +1,8 @@
 """Tests for compose and rich draft helpers."""
 
+import os
 import tempfile
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +17,83 @@ def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
     result.stdout = stdout
     result.stderr = stderr
     return result
+
+
+def _reply_lookup_payload(script, subject="Original subject", sender="them@example.com"):
+    """Answer _find_reply_target's lookup script with a well-formed payload.
+
+    The separator is generated per call and embedded in the script, so the
+    fake reads it back out instead of hard-coding it.
+    """
+    match = re.search(r"<<<AMMCP-[0-9a-f]+>>>", script)
+    if not match:
+        return ""
+    sep = match.group(0)
+    return sep.join(
+        ["4711", subject, sender, "Tuesday, 25 August 2026 at 16:28:42", "1", "Original body"]
+    )
+
+
+def _fake_reply_run(alias_answer=None):
+    """Return a run_applescript double for the GUI-free reply path.
+
+    First it answers any sender-alias lookup, then the target lookup, then the
+    reply script itself.
+    """
+    scripts = []
+
+    def _run(script, timeout=120):
+        scripts.append(script)
+        if "email addresses of targetAccount" in script and "reply foundMessage" not in script:
+            return alias_answer or ""
+        if "<<<AMMCP-" in script:
+            return _reply_lookup_payload(script)
+        return "Reply saved as draft!"
+
+    return _run, scripts
+
+
+def _run_native_reply(alias_answer=None, native_stdout="", **kwargs):
+    """Run reply_to_email through the native (reply window + paste) path.
+
+    run_applescript answers the alias and target lookups; the reply script
+    itself goes through subprocess.run because it needs AppleScriptObjC.
+    Returns (result, applescript_scripts, native_script).
+    """
+    fake_run, scripts = _fake_reply_run(alias_answer=alias_answer)
+    captured = {}
+
+    def _subprocess_run(*args, **run_kwargs):
+        captured["input"] = run_kwargs.get("input", b"").decode("utf-8")
+        return _make_subprocess_result(stdout=native_stdout.encode("utf-8"))
+
+    call = dict(account="Work", subject_keyword="test", reply_body="Reply body")
+    call.update(kwargs)
+    with (
+        patch(
+            "apple_mail_mcp.tools.compose.subprocess.run",
+            side_effect=_subprocess_run,
+        ),
+        patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            side_effect=fake_run,
+        ),
+        patch("apple_mail_mcp.tools.compose.time.sleep"),
+    ):
+        result = compose_tools.reply_to_email(**call)
+    return result, scripts, captured.get("input", "")
+
+
+def _main_script(scripts):
+    """Return the compose script from a list of captured AppleScript calls.
+
+    Sender lookups run before the main script and the draft-location check
+    runs after it, so the main script is identified by content, not position.
+    """
+    for script in scripts:
+        if "make new outgoing message" in script:
+            return script
+    raise AssertionError("no compose script captured")
 
 
 class ComposeToolTests(unittest.TestCase):
@@ -253,8 +332,7 @@ class ComposeEmailSenderOverrideTests(unittest.TestCase):
                 mode="draft",
             )
 
-        self.assertEqual(len(captured), 1)
-        script = captured[0]
+        script = _main_script(captured)
         self.assertIn("email addresses of targetAccount", script)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
@@ -284,8 +362,7 @@ class ComposeEmailSenderOverrideTests(unittest.TestCase):
                 from_address="secondary@example.org",
             )
 
-        self.assertEqual(len(scripts), 2)
-        main_script = scripts[1]
+        main_script = _main_script(scripts)
         self.assertIn(
             'set sender of newMessage to "secondary@example.org"', main_script
         )
@@ -434,24 +511,8 @@ class CreateRichEmailDraftFromAddressTests(unittest.TestCase):
 
 class ReplyToEmailSenderOverrideTests(unittest.TestCase):
     def test_default_emits_single_alias_fallback_for_reply_message(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript"
-            ) as mock_applescript,
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body="Reply body",
-                send=False,
-            )
-
-        mock_applescript.assert_not_called()
-        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        _, _, script = _run_native_reply(send=False)
+        self.assertIn("reply foundMessage", script)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
             "set sender of replyMessage to item 1 of emailAddrs", script
@@ -459,25 +520,11 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertNotIn('set sender of replyMessage to "', script)
 
     def test_injects_sender_when_from_address_is_valid(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="default@example.com\nsecondary@example.org",
-            ),
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body="Reply body",
-                from_address="secondary@example.org",
-                send=False,
-            )
-
-        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        _, _, script = _run_native_reply(
+            alias_answer="default@example.com\nsecondary@example.org",
+            from_address="secondary@example.org",
+            send=False,
+        )
         self.assertIn(
             'set sender of replyMessage to "secondary@example.org"', script
         )
@@ -601,8 +648,7 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
                 body="Body",
             )
 
-        self.assertEqual(len(captured), 1)
-        script = captured[0]
+        script = _main_script(captured)
         self.assertIn("if (count of emailAddrs) is 1 then", script)
         self.assertIn(
             "set sender of newDraft to item 1 of emailAddrs", script
@@ -631,8 +677,7 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
                 from_address="secondary@example.org",
             )
 
-        self.assertEqual(len(scripts), 2)
-        main_script = scripts[1]
+        main_script = _main_script(scripts)
         self.assertIn(
             'set sender of newDraft to "secondary@example.org"', main_script
         )
@@ -665,12 +710,12 @@ class ManageDraftsCreateSenderOverrideTests(unittest.TestCase):
 class PasteFocusHardeningTests(unittest.TestCase):
     """Regression guard for the silent empty-send bug.
 
-    The HTML body is inserted via a blind Cmd+V into the compose window, which
-    only lands if Mail is frontmost when the keystroke fires. The original code
-    relied on a single `activate` + fixed `delay`, which intermittently sent an
-    empty message when the window had not yet gained focus. The fix polls until
-    Mail is genuinely frontmost before pasting. These tests assert the poll is
-    present in the generated AppleScript and runs BEFORE the paste keystroke.
+    The reply text is inserted via Cmd+V into Mail's own reply window, which
+    only lands if that window has focus when the keystroke fires. The original
+    code relied on a single `activate` + fixed `delay`, which intermittently
+    sent an empty message. The fix polls until Mail is frontmost AND its front
+    window is the reply before pasting. These tests assert the poll is present
+    in the generated AppleScript and runs BEFORE the paste keystroke.
 
     They also lock in the deliberate decision NOT to verify via
     `content of <message>`: Mail's GUI editor buffer is decoupled from the
@@ -679,53 +724,19 @@ class PasteFocusHardeningTests(unittest.TestCase):
     """
 
     FOCUS_POLL = (
-        'repeat until (frontmost of process "Mail") '
-        "or (focusWaited is greater than or equal to 40)"
+        "repeat until hasFocus or (focusWaited is greater than or equal to 40)"
     )
+    WINDOW_CHECK = "((id of window 1) is replyWindowId)"
     PASTE = 'keystroke "v" using command down'
 
     def _render_reply(self, **overrides):
         kwargs = dict(
-            account="Work",
-            subject_keyword="test",
             reply_body="Reply body text",
             body_html="<p>Reply body text</p>",
             send=True,
         )
         kwargs.update(overrides)
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.reply_to_email(**kwargs)
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
-
-    def _render_compose_html(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.compose_email(
-                account="Work",
-                to="x@example.com",
-                subject="s",
-                body="Body text",
-                body_html="<p>Body text</p>",
-                mode="send",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
+        return _run_native_reply(**kwargs)[2]
 
     def test_reply_polls_for_focus_before_pasting(self):
         script = self._render_reply()
@@ -735,6 +746,13 @@ class PasteFocusHardeningTests(unittest.TestCase):
             script.index(self.PASTE),
             "focus poll must run before the paste keystroke",
         )
+
+    def test_reply_pastes_only_into_its_own_window(self):
+        # Frontmost alone is not enough: another Mail window (the user's own
+        # draft) may be in front. The poll also requires the reply's window.
+        script = self._render_reply()
+        self.assertIn(self.WINDOW_CHECK, script)
+        self.assertLess(script.index(self.WINDOW_CHECK), script.index(self.PASTE))
 
     def test_reply_drops_fragile_fixed_predelay(self):
         # The fragile original inserted a single `delay 1.5` between `activate`
@@ -749,14 +767,6 @@ class PasteFocusHardeningTests(unittest.TestCase):
         script = self._render_reply()
         self.assertNotIn("content of replyMessage", script)
 
-    def test_compose_html_polls_for_focus_before_pasting(self):
-        script = self._render_compose_html()
-        self.assertIn(self.FOCUS_POLL, script)
-        self.assertLess(
-            script.index(self.FOCUS_POLL),
-            script.index(self.PASTE),
-            "focus poll must run before the paste keystroke",
-        )
 
 
 class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
@@ -770,8 +780,12 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
     HTML to an NSAttributedString and writes it back as RTF (a single
     unambiguous rich-text flavor) plus a *rendered* plain-text fallback.
 
+    The reply path has since moved to Mail's own reply window and pastes an
+    HTML flavor together with a plain-text flavor, which pastes once
+    (measured 28.09.2026); forward still uses the RTF route.
+
     These tests assert, at the script-generation level, that:
-      * the raw-HTML flavor (``NSPasteboardTypeHTML``) is no longer written;
+      * forward no longer writes the raw-HTML flavor (``NSPasteboardTypeHTML``);
       * RTF is written via NSAttributedString -> RTFFromRange;
       * the plain body is never injected as a second visible paste.
     """
@@ -780,45 +794,9 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
     BODY_HTML = "<p>Rendered <b>HTML</b></p>"
 
     def _render_reply(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.reply_to_email(
-                account="Work",
-                subject_keyword="test",
-                reply_body=self.BODY_PLAIN,
-                body_html=self.BODY_HTML,
-                mode="open",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
-
-    def _render_compose(self):
-        with (
-            patch(
-                "apple_mail_mcp.tools.compose.subprocess.run",
-                return_value=_make_subprocess_result(),
-            ) as mock_run,
-            patch(
-                "apple_mail_mcp.tools.compose.run_applescript",
-                return_value="a@b.com",
-            ),
-        ):
-            compose_tools.compose_email(
-                account="Work",
-                to="x@example.com",
-                subject="s",
-                body=self.BODY_PLAIN,
-                body_html=self.BODY_HTML,
-                mode="open",
-            )
-        return mock_run.call_args.kwargs["input"].decode("utf-8")
+        return _run_native_reply(
+            reply_body=self.BODY_PLAIN, body_html=self.BODY_HTML, mode="open"
+        )[2]
 
     def _render_forward(self):
         captured = {}
@@ -860,11 +838,14 @@ class HtmlBodyNoDuplicatePasteTests(unittest.TestCase):
         self.assertIn("NSCharacterEncodingDocumentAttribute", script)
         self.assertIn("NSUTF8StringEncoding", script)
 
-    def test_reply_uses_rtf_not_raw_html(self):
-        self._assert_rtf_not_raw_html(self._render_reply())
-
-    def test_compose_uses_rtf_not_raw_html(self):
-        self._assert_rtf_not_raw_html(self._render_compose())
+    def test_reply_pastes_html_with_plain_fallback(self):
+        # The reply deliberately pastes the HTML flavor, not RTF: measured
+        # 28.09.2026, RTF drops CSS, while HTML plus a plain-text flavor
+        # pasted exactly once with markup and umlauts intact.
+        script = self._render_reply()
+        self.assertIn("forType:(current application's NSPasteboardTypeHTML)", script)
+        self.assertIn("forType:(current application's NSPasteboardTypeString)", script)
+        self.assertNotIn("RTFFromRange", script)
 
     def test_forward_uses_rtf_not_raw_html(self):
         self._assert_rtf_not_raw_html(self._render_forward())
@@ -902,3 +883,512 @@ class PasteboardUtf8EncodingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadOnlyModeTests(unittest.TestCase):
+    """--read-only blocks delivery, not the draft and review modes."""
+
+    def setUp(self):
+        self._previous = compose_tools.server.READ_ONLY
+        compose_tools.server.READ_ONLY = True
+
+    def tearDown(self):
+        compose_tools.server.READ_ONLY = self._previous
+
+    def test_compose_email_refuses_to_send(self):
+        with patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run:
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="send",
+            )
+
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_compose_email_still_drafts(self):
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            return_value="DRAFT SAVED",
+        ):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="draft",
+            )
+
+        self.assertNotIn("Error: Sending is disabled", result)
+
+    def test_reply_refuses_to_send_via_send_flag(self):
+        with patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run:
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                send=True,
+            )
+
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_reply_still_drafts(self):
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            return_value="DRAFT SAVED",
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                mode="draft",
+            )
+
+        self.assertNotIn("Error: Sending is disabled", result)
+
+    def test_read_only_flag_is_read_at_call_time(self):
+        """Regression: the module used to bind READ_ONLY's value at import."""
+        compose_tools.server.READ_ONLY = False
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            return_value="SENT",
+        ):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="send",
+            )
+
+        self.assertNotIn("Error: Sending is disabled", result)
+
+
+class MailShareWrapperTests(unittest.TestCase):
+    """Peeling Mail's share template off a stored body.
+
+    macOS 15+ Mail wraps every AppleScript-supplied body in
+    ``Apple-Mail-URLShareWrapperClass`` / ``blockquote type="cite"``. That
+    cannot be prevented, but it must not stack: before the fix, every edit of
+    a draft fed the already-wrapped body back through the composer and gained
+    another layer. Measured on a real draft (861590DD, 05.09.2026) at two
+    layers deep.
+    """
+
+    WRAPPED = (
+        '<html><body>'
+        '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+        '<div class="Apple-Mail-URLShareWrapperClass" style="position: relative !important;">'
+        '<blockquote type="cite" style="border-left-style: none; color: inherit;'
+        ' padding: inherit; margin: inherit;">'
+        '<p>Gr&uuml;&szlig;e</p>'
+        '</blockquote></div>'
+        '</body></html>'
+    )
+
+    def test_single_layer_is_removed(self):
+        stripped = compose_tools._strip_mail_share_wrapper(self.WRAPPED)
+        self.assertNotIn("URLShareWrapperClass", stripped)
+        self.assertNotIn("blockquote", stripped)
+        self.assertIn("<p>Gr&uuml;&szlig;e</p>", stripped)
+
+    def test_nested_layers_are_all_removed(self):
+        nested = (
+            '<body><div dir="auto">'
+            '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "Kern"
+            "</blockquote></div>"
+            "</blockquote></div></div></body>"
+        )
+        stripped = compose_tools._strip_mail_share_wrapper(nested)
+        self.assertNotIn("blockquote", stripped)
+        self.assertNotIn("URLShare", stripped)
+        self.assertIn("Kern", stripped)
+
+    def test_top_div_with_real_content_is_kept(self):
+        # Text typed above the wrapper lives in the top div. Dropping the div
+        # wholesale would silently delete it.
+        html = (
+            '<div class="Apple-Mail-URLShareUserContentTopClass">Eigene Notiz</div>'
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "Kern</blockquote></div>"
+        )
+        stripped = compose_tools._strip_mail_share_wrapper(html)
+        self.assertIn("Eigene Notiz", stripped)
+        self.assertIn("Kern", stripped)
+
+    def test_unbalanced_markup_is_left_alone(self):
+        # Cutting at a guessed offset would truncate the body. Better to hand
+        # back the original and let the caller fall back.
+        broken = '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">abgeschnitten'
+        self.assertEqual(compose_tools._strip_mail_share_wrapper(broken), broken)
+
+    def test_body_without_wrapper_is_untouched(self):
+        plain = "<p>nur Text</p>"
+        self.assertEqual(compose_tools._strip_mail_share_wrapper(plain), plain)
+
+    def test_signature_block_and_its_leading_breaks_are_removed(self):
+        html = (
+            "<p>Text</p><br><br>"
+            '<div id="AppleMailSignature">'
+            '<div class="ApplePlainTextBody"><table><tbody><tr><td>Robin</td>'
+            "</tr></tbody></table><div><br></div></div>"
+            "</div>"
+        )
+        stripped = compose_tools._strip_mail_signature_block(html)
+        self.assertEqual(stripped, "<p>Text</p>")
+
+    def test_signature_strip_is_a_no_op_without_a_signature(self):
+        html = "<p>Text</p>"
+        self.assertEqual(compose_tools._strip_mail_signature_block(html), html)
+
+    def test_matching_close_counts_nesting(self):
+        html = "<div>a<div>b</div>c</div>tail"
+        close = compose_tools._matching_close(html, len("<div>"), "div")
+        self.assertIsNotNone(close)
+        self.assertEqual(html[close[1]:], "tail")
+
+
+class HtmlComposeUsesHtmlContentTests(unittest.TestCase):
+    """compose_email(body_html=...) sets the body, it does not type it.
+
+    The old route put an RTF conversion of the HTML on the clipboard, opened
+    a visible compose window and drove Cmd+A/Cmd+V through System Events. It
+    stole keyboard focus, aborted whenever Mail did not come to the front,
+    and the RTF round-trip flattened every message to 12px black Helvetica.
+    ``set html content`` hands Mail the markup verbatim (verified against
+    Mail 16.0/3864.600.51.1.1 on 05.09.2026: headings, lists, links, inline
+    colour and umlauts all survived).
+    """
+
+    def _script(self, **overrides):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            if "make new outgoing message" in script:
+                return "Email saved as draft (HTML)"
+            return ""
+
+        kwargs = dict(
+            account="Work",
+            to="x@example.com",
+            subject="s",
+            body="Fallback",
+            body_html="<h2>Titel</h2><p>Gr&uuml;&szlig;e</p>",
+            mode="draft",
+        )
+        kwargs.update(overrides)
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run
+        ), patch("apple_mail_mcp.tools.compose.time.sleep"):
+            compose_tools.compose_email(**kwargs)
+        for script in scripts:
+            if "make new outgoing message" in script:
+                return script
+        raise AssertionError("no compose script was rendered")
+
+    def test_no_clipboard_and_no_keystrokes(self):
+        script = self._script()
+        for forbidden in (
+            "NSPasteboard",
+            "NSAttributedString",
+            "RTFFromRange",
+            "System Events",
+            "keystroke",
+            "key code",
+            "frontmost",
+        ):
+            self.assertNotIn(forbidden, script, f"{forbidden} must be gone")
+
+    def test_body_is_set_via_html_content(self):
+        self.assertIn("set html content of newMsg to htmlBody", self._script())
+
+    def test_html_is_read_from_a_file_as_utf8(self):
+        # An AppleScript string literal would need escaping and has no
+        # encoding guarantee; reading the temp file as «class utf8» keeps
+        # ä/ö/ü/ß and emoji intact.
+        script = self._script()
+        self.assertIn("as «class utf8»", script)
+        self.assertIn("set htmlBody to (read (POSIX file", script)
+
+    def test_draft_mode_closes_its_own_message(self):
+        script = self._script(mode="draft")
+        self.assertIn("close newMsg saving yes", script)
+        self.assertNotIn("close window 1", script)
+
+    def test_send_mode_uses_the_send_command(self):
+        script = self._script(mode="send")
+        self.assertIn("send newMsg", script)
+        self.assertIn("visible:false", script)
+
+    def test_open_mode_shows_the_window(self):
+        script = self._script(mode="open")
+        self.assertIn("visible:true", script)
+        self.assertIn("activate", script)
+
+    def test_body_is_set_before_attachments(self):
+        # `set html content` replaces the whole body, so a file attached
+        # beforehand is dropped (measured 05.09.2026).
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", dir=str(Path.home()), delete=False
+        ) as handle:
+            attachment = handle.name
+        try:
+            script = self._script(attachments=attachment)
+        finally:
+            os.unlink(attachment)
+        self.assertLess(
+            script.index("set html content of newMsg to htmlBody"),
+            script.index("make new attachment"),
+            "the body must be set before any attachment is added",
+        )
+
+    def test_attachment_flattening_is_reported(self):
+        # Mail re-renders the body when a file is attached, which undoes the
+        # formatting. Saying so beats letting the caller discover it.
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", dir=str(Path.home()), delete=False
+        ) as handle:
+            attachment = handle.name
+
+        def fake_run(script, timeout=120):
+            if "make new outgoing message" in script:
+                return "Email saved as draft (HTML)"
+            return ""
+
+        try:
+            with patch(
+                "apple_mail_mcp.tools.compose.run_applescript", side_effect=fake_run
+            ), patch("apple_mail_mcp.tools.compose.time.sleep"):
+                result = compose_tools.compose_email(
+                    account="Work",
+                    to="x@example.com",
+                    subject="s",
+                    body="Fallback",
+                    body_html="<p>Text</p>",
+                    mode="draft",
+                    attachments=attachment,
+                )
+        finally:
+            os.unlink(attachment)
+        self.assertIn("flattens HTML formatting", result)
+
+
+class DraftUpdateKeepsSignatureTests(unittest.TestCase):
+    """Editing a draft must not cost it its signature.
+
+    Before the fix, _update_draft rebuilt the message from
+    ``content of theDraft`` — Mail's plain-text rendering — and then set
+    ``message signature`` to ``missing value`` so the flattened copy inside
+    that string would not be doubled. Result: no X-Apple-Mail-Signature
+    header, Mail's compose window showing "Signature: None", and a signature
+    that had lost its table, image and colours. Measured on draft 861590DD
+    (05.09.2026). Now the stored HTML is reused, the baked-in signature is
+    cut out of it, and Mail attaches the live one again.
+    """
+
+    STORED_HTML = (
+        "<html><body>"
+        '<div class="Apple-Mail-URLShareUserContentTopClass"><br></div>'
+        '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+        "<p>Hallo <b>Tomy</b></p>"
+        "</blockquote></div><br><br>"
+        '<div id="AppleMailSignature"><table><tbody><tr><td>Robin</td></tr></tbody></table></div>'
+        "</body></html>"
+    )
+
+    def _fields(self, **overrides):
+        fields = {
+            "id": "42",
+            "account": "Work",
+            "subject": "Alt",
+            "to": ["a@example.com"],
+            "cc": [],
+            "bcc": [],
+            "attachments": [],
+            "sender": "me@example.com",
+            "content": "Hallo Tomy\n\nRobin\nFull Stack Developer",
+        }
+        fields.update(overrides)
+        return fields
+
+    def _run_update(self, html_body, **kwargs):
+        scripts = []
+        written = {}
+
+        real_named_tempfile = compose_tools.tempfile.NamedTemporaryFile
+
+        def spy_tempfile(*args, **tf_kwargs):
+            handle = real_named_tempfile(*args, **tf_kwargs)
+            original_write = handle.write
+
+            def capture(text):
+                written["body"] = text
+                return original_write(text)
+
+            handle.write = capture
+            return handle
+
+        def _run(script, timeout=120):
+            scripts.append(script)
+            return "ok"
+
+        with patch.object(
+            compose_tools, "_read_draft", return_value=(self._fields(), None)
+        ), patch.object(
+            compose_tools, "_draft_html_body", return_value=html_body
+        ), patch.object(
+            compose_tools, "_export_draft_attachments", return_value=([], None)
+        ), patch.object(
+            compose_tools, "run_applescript", side_effect=_run
+        ), patch.object(
+            compose_tools, "_draft_id_for_subject", return_value="43"
+        ), patch.object(
+            compose_tools, "_delete_draft_by_id", return_value=True
+        ), patch.object(
+            compose_tools, "_discard_draft_export"
+        ), patch.object(
+            compose_tools, "_draft_location_note", return_value=""
+        ), patch.object(
+            compose_tools.tempfile, "NamedTemporaryFile", side_effect=spy_tempfile
+        ):
+            result = compose_tools._update_draft(
+                account="Work", draft_subject="Alt", **kwargs
+            )
+        build = next(s for s in scripts if "make new outgoing message" in s)
+        return result, build, written.get("body", "")
+
+    def test_reused_html_keeps_the_live_signature(self):
+        result, build, body = self._run_update(self.STORED_HTML)
+        self.assertNotIn("set message signature", build)
+        self.assertIn("set html content of newDraft to draftBodyText", build)
+        self.assertNotIn("AppleMailSignature", body)
+        self.assertIn("HTML formatting and signature kept", result)
+
+    def test_reused_html_does_not_gain_a_wrapper_layer(self):
+        _, _, body = self._run_update(self.STORED_HTML)
+        self.assertNotIn("URLShareWrapperClass", body)
+        self.assertNotIn("blockquote", body)
+        self.assertIn("<p>Hallo <b>Tomy</b></p>", body)
+
+    def test_body_is_set_before_the_attachments_are_re_added(self):
+        # Kept attachments are re-attached from disk after the rebuild.
+        # `set html content` replaces the whole body, so it has to run first
+        # or the freshly attached files are dropped again.
+        scripts = []
+
+        def _run(script, timeout=120):
+            scripts.append(script)
+            return "ok"
+
+        with patch.object(
+            compose_tools,
+            "_read_draft",
+            return_value=(self._fields(attachments=["rechnung.pdf"]), None),
+        ), patch.object(
+            compose_tools, "_draft_html_body", return_value=self.STORED_HTML
+        ), patch.object(
+            compose_tools,
+            "_export_draft_attachments",
+            return_value=(["/tmp/rechnung.pdf"], None),
+        ), patch.object(
+            compose_tools, "run_applescript", side_effect=_run
+        ), patch.object(
+            compose_tools, "_draft_id_for_subject", return_value="43"
+        ), patch.object(
+            compose_tools, "_delete_draft_by_id", return_value=True
+        ), patch.object(
+            compose_tools, "_discard_draft_export"
+        ), patch.object(
+            compose_tools, "_draft_location_note", return_value=""
+        ):
+            result = compose_tools._update_draft(account="Work", draft_subject="Alt")
+        build = next(s for s in scripts if "make new outgoing message" in s)
+        self.assertLess(
+            build.index("set html content of newDraft to draftBodyText"),
+            build.index("make new attachment"),
+            "the body must be set before any attachment is re-added",
+        )
+        self.assertIn("is flattened", result)
+
+    def test_falls_back_to_plain_text_when_html_is_unreadable(self):
+        # No HTML part in the stored source (or Mail refused to hand it over):
+        # rebuild from the plain rendering exactly as before, and say so.
+        result, build, body = self._run_update(None)
+        self.assertIn("set message signature of newDraft to missing value", build)
+        self.assertIn("content:draftBodyText", build)
+        self.assertIn("plain text", result)
+        self.assertIn("Hallo Tomy", body)
+
+    def test_empty_html_falls_back_too(self):
+        # A wrapper holding nothing but the signature strips down to nothing.
+        empty = (
+            '<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">'
+            "</blockquote></div>"
+            '<div id="AppleMailSignature">Robin</div>'
+        )
+        _, build, _ = self._run_update(empty)
+        self.assertIn("set message signature of newDraft to missing value", build)
+
+    def test_new_body_still_lets_mail_add_the_signature(self):
+        _, build, body = self._run_update(
+            self.STORED_HTML, body="Komplett neuer Text"
+        )
+        self.assertNotIn("set message signature", build)
+        self.assertIn("content:draftBodyText", build)
+        self.assertEqual(body, "Komplett neuer Text")
+
+
+class DraftHtmlBodyTests(unittest.TestCase):
+    """_draft_html_body pulls the real HTML out of the raw message."""
+
+    SOURCE = (
+        "Subject: Test\n"
+        "Mime-Version: 1.0\n"
+        'Content-Type: multipart/alternative; boundary="B"\n'
+        "\n"
+        "--B\n"
+        "Content-Type: text/plain; charset=us-ascii\n"
+        "\n"
+        "Fallback\n"
+        "--B\n"
+        "Content-Transfer-Encoding: quoted-printable\n"
+        "Content-Type: text/html; charset=utf-8\n"
+        "\n"
+        "<p>Gr=C3=BC=C3=9Fe</p>\n"
+        "--B--\n"
+    )
+
+    def test_html_part_is_decoded(self):
+        with patch.object(compose_tools, "run_applescript", return_value=self.SOURCE):
+            body = compose_tools._draft_html_body("42", "Work")
+        self.assertIsNotNone(body)
+        self.assertIn("Grüße", body)
+
+    def test_missing_html_part_returns_none(self):
+        plain = "Subject: Test\nContent-Type: text/plain\n\nNur Text\n"
+        with patch.object(compose_tools, "run_applescript", return_value=plain):
+            self.assertIsNone(compose_tools._draft_html_body("42", "Work"))
+
+    def test_applescript_failure_returns_none(self):
+        with patch.object(
+            compose_tools, "run_applescript", side_effect=Exception("boom")
+        ):
+            self.assertIsNone(compose_tools._draft_html_body("42", "Work"))
+
+    def test_non_numeric_id_is_refused_without_running_a_script(self):
+        # Mail's message id is numeric and goes into the script unquoted.
+        # Anything else must not reach osascript.
+        with patch.object(compose_tools, "run_applescript") as mock_run:
+            self.assertIsNone(
+                compose_tools._draft_html_body('1 or true; do shell script "x"', "Work")
+            )
+        mock_run.assert_not_called()

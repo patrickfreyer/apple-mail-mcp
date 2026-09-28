@@ -1,20 +1,24 @@
 """Composition tools: sending, replying, forwarding, and drafts."""
 
+import mimetypes
 import os
 import subprocess
 import tempfile
+import time
 import re
+import email
 from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from apple_mail_mcp.server import mcp, READ_ONLY
+from apple_mail_mcp import server
+from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     inject_preferences,
     escape_applescript,
     run_applescript,
-    inbox_mailbox_script,
+    build_mailbox_ref,
 )
 
 
@@ -253,12 +257,15 @@ def create_rich_email_draft(
     open_in_mail: bool = True,
     save_as_draft: bool = False,
     from_address: Optional[str] = None,
+    attachments: Optional[str] = None,
 ) -> str:
     """
     Create a rich-text email draft by generating an unsent `.eml` message and optionally opening it in Mail.
 
-    This is the preferred path for HTML or richly formatted emails because Mail reliably renders `.eml`
-    content, while setting raw HTML through AppleScript often stores the literal markup instead.
+    Use this when you want the message as a file on disk. For a formatted message that has to end up
+    in Drafts and stay sendable, use `compose_email(body_html=..., mode="draft")` instead: it hands the
+    markup to Mail's `html content` property, which renders it faithfully and keeps the signature.
+    Mail opens a `.eml` as a read-only viewer, so this path can never produce a real draft.
 
     Args:
         account: Account name to use for the sender identity (e.g., "Work", "Oracle")
@@ -275,6 +282,7 @@ def create_rich_email_draft(
             Passing True is reported honestly in the output rather than silently ignored;
             use `compose_email(mode="draft")` or `manage_drafts` for a real, sendable draft.
         from_address: Optional sender address to stamp into the `.eml` `From:` header. Must be one of the account's configured email addresses. When omitted, Mail fills the account's default "Send new messages from" address on open.
+        attachments: Optional file paths to attach, comma-separated. The files are embedded in the `.eml` itself, so they are there when Mail opens it. Paths must be inside your home directory.
 
     Returns:
         Confirmation with the generated `.eml` path, missing details, and Mail-open/save status
@@ -305,6 +313,12 @@ def create_rich_email_draft(
         missing_details.append("to")
     missing_details.extend(body_missing)
 
+    attachment_paths: List[str] = []
+    if attachments:
+        attachment_paths, attachment_error = _validate_attachment_paths(attachments)
+        if attachment_error:
+            return attachment_error
+
     message = EmailMessage()
     if subject:
         message["Subject"] = subject
@@ -319,6 +333,20 @@ def create_rich_email_draft(
     message["X-Unsent"] = "1"
     message.set_content(plain_body)
     message.add_alternative(rich_body, subtype="html")
+
+    # Embedding the files in the `.eml` is the only way this path can carry an
+    # attachment: the opened message is not a scriptable compose object, so
+    # nothing can be attached to it afterwards.
+    for path in attachment_paths:
+        guessed_type, _ = mimetypes.guess_type(path)
+        main_type, _, sub_type = (guessed_type or "application/octet-stream").partition("/")
+        with open(path, "rb") as handle:
+            message.add_attachment(
+                handle.read(),
+                maintype=main_type,
+                subtype=sub_type or "octet-stream",
+                filename=os.path.basename(path),
+            )
 
     draft_path = (
         Path(output_path).expanduser()
@@ -351,14 +379,161 @@ def create_rich_email_draft(
         output_lines.append("CC: " + ", ".join(recipients_cc))
     if recipients_bcc:
         output_lines.append("BCC: " + ", ".join(recipients_bcc))
+    if attachment_paths:
+        output_lines.append(
+            "Attachments embedded: "
+            + ", ".join(os.path.basename(path) for path in attachment_paths)
+        )
     output_lines.append(
         "Missing details: "
         + (", ".join(missing_details) if missing_details else "none")
     )
     output_lines.append(
-        "Note: Prefer this `.eml` workflow for HTML email drafts; Mail renders it more reliably than raw HTML injected via AppleScript content."
+        "Note: this `.eml` opens as a read-only viewer, not a compose window. "
+        'Use compose_email(body_html=..., mode="draft") for a formatted draft '
+        "you can edit and send from Mail."
     )
     return "\n".join(output_lines)
+
+
+# --- Mail.app body wrapper (macOS 15+) ------------------------------------
+#
+# Mail wraps EVERY body it receives through AppleScript in its "share"
+# template, whether the body arrives as a `content` property, a later
+# `set content`, a `set html content`, or a GUI paste into a scripted compose
+# window:
+#
+#   <div class="Apple-Mail-URLShareUserContentTopClass"><br></div>
+#   <div class="Apple-Mail-URLShareWrapperClass" style="position: relative !important;">
+#     <blockquote type="cite" style="border-left-style: none; color: inherit;
+#                                    padding: inherit; margin: inherit;">
+#       ... the body we set ...
+#     </blockquote>
+#   </div>
+#
+# Nothing in this package writes that markup, and no ordering of the
+# AppleScript calls avoids it — all four routes were measured against
+# Mail 16.0 (3864.600.51.1.1) on 2026-09-05 and produced it identically.
+# The inline styles neutralise the quote look in clients that honour them,
+# but clients that ignore `inherit` (Outlook's Word engine) indent it, and
+# clients that collapse `type="cite"` (Gmail) can hide the message behind a
+# "..." toggle.  There is no in-process fix; see README "Known Mail.app
+# limitations".
+#
+# What we can prevent is the wrapper STACKING.  Every edit that feeds a
+# stored body back through the composer adds another layer, so a draft that
+# is edited three times ends up three blockquotes deep.  The helpers below
+# peel the existing layers off before a body is reused.
+
+_SHARE_WRAPPER_OPEN = re.compile(
+    r'<div\b[^>]*class="[^"]*Apple-Mail-URLShareWrapperClass[^"]*"[^>]*>\s*'
+    r'<blockquote\b[^>]*type="cite"[^>]*>',
+    re.IGNORECASE,
+)
+_SHARE_TOP_OPEN = re.compile(
+    r'<div\b[^>]*class="[^"]*Apple-Mail-URLShareUserContentTopClass[^"]*"[^>]*>',
+    re.IGNORECASE,
+)
+_MAIL_SIGNATURE_OPEN = re.compile(
+    r'<div\b[^>]*id="AppleMailSignature"[^>]*>', re.IGNORECASE
+)
+_TRAILING_BREAKS = re.compile(r'(?:\s|<br\b[^>]*/?>)+$', re.IGNORECASE)
+_MARKUP_ONLY = re.compile(r'<[^>]*>|&nbsp;|\s', re.IGNORECASE)
+
+
+def _matching_close(html, search_from, tag):
+    """Return ``(close_start, close_end)`` of the ``</tag>`` that closes an
+    already-consumed ``<tag ...>`` opening.
+
+    ``search_from`` is the index just past that opening tag.  Nesting is
+    counted, so an inner ``<blockquote>`` does not end the outer one — which
+    is exactly the case a twice-wrapped body produces.  Returns ``None`` when
+    the markup is unbalanced; callers then leave the body untouched rather
+    than cutting it at the wrong place.
+    """
+    open_re = re.compile(r"<" + tag + r"\b", re.IGNORECASE)
+    close_re = re.compile(r"</" + tag + r"\s*>", re.IGNORECASE)
+    depth = 1
+    pos = search_from
+    while True:
+        next_close = close_re.search(html, pos)
+        if not next_close:
+            return None
+        next_open = open_re.search(html, pos)
+        if next_open and next_open.start() < next_close.start():
+            depth += 1
+            pos = next_open.end()
+            continue
+        depth -= 1
+        pos = next_close.end()
+        if depth == 0:
+            return next_close.start(), next_close.end()
+
+
+def _has_visible_content(html):
+    """True when the fragment holds more than tags and whitespace."""
+    return bool(_MARKUP_ONLY.sub("", html or "").strip())
+
+
+def _strip_mail_share_wrapper(html):
+    """Peel Mail's share-template wrapper off a stored body.
+
+    Removes every ``Apple-Mail-URLShareWrapperClass`` /
+    ``blockquote type="cite"`` layer and the empty
+    ``Apple-Mail-URLShareUserContentTopClass`` div in front of it.  A top div
+    that actually carries text is kept — that is where a human typing above
+    the wrapper ends up.
+    """
+    if not html:
+        return html
+
+    while True:
+        before = html
+
+        top = _SHARE_TOP_OPEN.search(html)
+        if top:
+            close = _matching_close(html, top.end(), "div")
+            if close:
+                inner = html[top.end():close[0]]
+                replacement = inner if _has_visible_content(inner) else ""
+                html = html[:top.start()] + replacement + html[close[1]:]
+
+        wrapper = _SHARE_WRAPPER_OPEN.search(html)
+        if wrapper:
+            close = _matching_close(html, wrapper.end(), "blockquote")
+            if close:
+                inner = html[wrapper.end():close[0]]
+                tail = html[close[1]:]
+                # The </blockquote> is followed by the </div> of the wrapper.
+                tail = re.sub(r"^\s*</div\s*>", "", tail, count=1, flags=re.IGNORECASE)
+                html = html[:wrapper.start()] + inner + tail
+
+        if html == before:
+            return html
+
+
+def _strip_mail_signature_block(html):
+    """Remove the ``<div id="AppleMailSignature">`` block Mail bakes into a
+    saved message, together with the ``<br>``s it puts in front of it.
+
+    Reusing a stored body means reusing that baked-in copy.  Stripping it and
+    leaving the message's ``message signature`` property alone lets Mail
+    attach the live signature again — the recipient gets the real, formatted
+    signature and Mail's compose window still shows which one is selected,
+    instead of "None".
+    """
+    if not html:
+        return html
+
+    match = _MAIL_SIGNATURE_OPEN.search(html)
+    if not match:
+        return html
+    close = _matching_close(html, match.end(), "div")
+    if not close:
+        return html
+
+    head = _TRAILING_BREAKS.sub("", html[:match.start()])
+    return head + html[close[1]:]
 
 
 def _send_html_email(
@@ -374,11 +549,35 @@ def _send_html_email(
     mode: str = "send",
     sender_override: Optional[str] = None,
 ) -> str:
-    """Send an HTML-formatted email via NSPasteboard clipboard injection.
+    """Send, draft or open an HTML message using Mail's ``html content``.
 
-    Uses AppleScriptObjC to place HTML on the clipboard with the proper
-    pasteboard type, creates a compose window, tabs into the body, and
-    pastes.  Then sends, saves as draft, or leaves open for review.
+    ``set html content`` hands Mail the markup verbatim: headings, lists,
+    links, inline colours and umlauts all survive byte-for-byte (measured
+    2026-09-05 against Mail 16.0/3864.600.51.1.1).  It also leaves the
+    message's ``message signature`` property alone, so Mail attaches the
+    real, formatted signature and the compose window still names it.
+
+    This replaces the previous clipboard route, which converted the HTML to
+    an ``NSAttributedString``, wrote it back as RTF and pasted it into a
+    visible compose window with synthetic Cmd+A/Cmd+V keystrokes.  That route
+    stole keyboard focus, failed silently whenever Mail did not come to the
+    front, and flattened every message to 12px black Helvetica because the
+    RTF round-trip discards CSS.
+
+    Two limits remain, both Mail's and both reported to the caller:
+
+    * The body is wrapped in Mail's share template — see the module comment
+      above ``_strip_mail_share_wrapper``.  Unavoidable on macOS 15+.
+    * Adding an attachment makes Mail re-render the body through its editor,
+      which flattens the markup exactly the way the old paste route did.  A
+      message without attachments keeps its formatting; one with attachments
+      keeps the attachment and loses the CSS.  Setting the body *after* the
+      attachment is not an option: that drops the attachment.
+
+    ``body_plain`` is accepted for signature compatibility but unused: a saved
+    draft's ``text/plain`` alternative comes out empty whether or not
+    ``content`` is set first (measured both ways), and Mail regenerates the
+    alternative when the message is actually sent.
     """
     safe_account = escape_applescript(account)
     escaped_subject = escape_applescript(subject)
@@ -402,28 +601,28 @@ def _send_html_email(
         "newMsg", f'account "{safe_account}"', sender_override
     )
 
-    # Mode-specific behaviour after paste
     if mode == "send":
-        post_paste_script = """
-            -- Send via keyboard shortcut
-            keystroke "d" using {command down, shift down}
-        """
+        visible = "false"
+        final_command = "send newMsg"
         success_text = "Email sent successfully (HTML)"
     elif mode == "draft":
-        post_paste_script = """
-            -- Save as draft: Cmd+S then close
-            keystroke "s" using command down
-            delay 0.5
-        """
+        # Close the message object, never `window 1`: the object owns no
+        # window here, so `close window 1` would close (and silently save)
+        # whatever the user had open instead.
+        visible = "false"
+        final_command = "close newMsg saving yes"
         success_text = "Email saved as draft (HTML)"
     else:  # open
-        post_paste_script = "-- Leaving open for review"
+        visible = "true"
+        final_command = "activate"
         success_text = (
             "Email opened in Mail for review (HTML). Edit and send when ready."
         )
 
-    # Write HTML to temp file so the AppleScript can read it without
-    # worrying about escaping quotes/special chars in the HTML string.
+    # The HTML goes through a temp file rather than an AppleScript string
+    # literal: no escaping of quotes or backslashes, no length ceiling, and
+    # `read ... as «class utf8»` decodes multibyte text (ä/ö/ü/ß, emoji)
+    # correctly where a naive read would fall back to MacRoman.
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".html",
@@ -435,127 +634,994 @@ def _send_html_email(
     tmp.close()
     html_temp_path = tmp.name
 
-    # Build the attachments block. Must run AFTER the HTML paste so that
-    # Cmd+A in the body doesn't select-and-replace the attachment placeholder.
-    # Empty block when no attachments — keeps AppleScript valid either way.
+    # Body first, attachments after: `set html content` replaces the whole
+    # body and would drop an attachment added beforehand.
     if attachments_script.strip():
         attachments_block = (
-            'tell application "Mail"\n'
-            '    tell newMsg\n'
-            f'        {attachments_script}\n'
-            '    end tell\n'
-            'end tell'
+            "    tell newMsg\n"
+            f"        {attachments_script}\n"
+            "    end tell"
         )
     else:
-        attachments_block = "-- (no attachments)"
+        attachments_block = "    -- (no attachments)"
 
     script = f'''
-use framework "Foundation"
-use framework "AppKit"
-use scripting additions
-
--- Step 1: Read HTML from temp file and place it on the clipboard as RTF
--- (rendered rich text) plus a plain-text fallback. Writing the raw HTML
--- *source* under NSPasteboardTypeHTML made Mail paste the markup twice —
--- once rendered, once as literal tags; the RTF conversion fixes that.
-{_html_to_pasteboard_script(html_temp_path)}
-
--- Step 2: Create compose window (empty body so signature doesn't interfere).
--- Attachments are deliberately NOT added here — see Step 4b for why.
 tell application "Mail"
-    set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", content:"", visible:true}}
+    set htmlBody to (read (POSIX file "{escape_applescript(html_temp_path)}") as «class utf8»)
+    set newMsg to make new outgoing message with properties {{subject:"{escaped_subject}", visible:{visible}}}
     {sender_script}
     tell newMsg
         {to_lines}
         {cc_lines}
         {bcc_lines}
     end tell
-    activate
-end tell
-
--- Step 3: Wait for compose window to render
-delay 2.5
-
--- Step 4a: Tab from header fields into body, then paste HTML.
--- The Cmd+A here selects the entire body (which is why we can't have the
--- attachment placed yet — it would be selected and replaced by the paste).
-tell application "System Events"
-    -- Poll until Mail is genuinely frontmost before driving the keyboard.
-    -- A single `set frontmost` + fixed delay can fire the tab/paste keystrokes
-    -- before the compose window has focus, producing a silent empty send.
-    set focusWaited to 0
-    repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
-        try
-            set frontmost of process "Mail" to true
-        end try
-        delay 0.1
-        set focusWaited to focusWaited + 1
-    end repeat
-    delay 0.5
-    tell process "Mail"
-        -- Tab through: To -> Cc -> Bcc -> Subject -> Body
-        -- 7 tabs covers all combinations of visible/hidden CC/BCC fields
-        repeat 7 times
-            key code 48
-            delay 0.1
-        end repeat
-        delay 0.3
-
-        -- Select all in body and paste HTML
-        keystroke "a" using command down
-        delay 0.2
-        keystroke "v" using command down
-        delay 0.5
-    end tell
-end tell
-
--- Step 4b: Attach files AFTER the HTML paste so they aren't clobbered by Cmd+A.
+    set html content of newMsg to htmlBody
 {attachments_block}
-
--- Step 4c: Final action (send / save draft / leave open)
-tell application "System Events"
-    tell process "Mail"
-        {post_paste_script}
-    end tell
+    {final_command}
+    return "{success_text}"
 end tell
-
--- Step 5: Clean up temp file
-do shell script "rm -f '{html_temp_path}'"
-
--- Step 6: Restore clipboard
-if oldClip is not missing value then
-    pb's clearContents()
-    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-end if
-
-return "{success_text}"
 '''
 
+    # Each attachment carries its own `delay 1`, so the budget grows with them.
+    timeout = 120 + 5 * max(0, attachments_script.count("make new attachment"))
+
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error sending HTML email: {stderr}"
-        output = result.stdout.decode("utf-8", errors="replace").strip()
-        # Build confirmation message
-        confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
-        if cc:
-            confirm += f"\nCC: {cc}"
-        if bcc:
-            confirm += f"\nBCC: {bcc}"
-        if attachment_info:
-            confirm += f"\nAttachments:\n{attachment_info.rstrip()}"
-        return confirm
-    except subprocess.TimeoutExpired:
-        return "Error: HTML email script timed out"
+        output = run_applescript(script, timeout=timeout)
+    except Exception as exc:  # osascript failure or timeout
+        verb = {"send": "sending", "draft": "saving"}.get(mode, "opening")
+        return f"Error {verb} HTML email: {exc}"
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
+
+    if output.startswith("Error"):
+        return output
+
+    confirm = f"{output}\n\nFrom: {account}\nTo: {to}\nSubject: {subject}"
+    if cc:
+        confirm += f"\nCC: {cc}"
+    if bcc:
+        confirm += f"\nBCC: {bcc}"
+    if attachment_info:
+        confirm += f"\nAttachments:\n{attachment_info.rstrip()}"
+        confirm += (
+            "\nNote: Mail re-renders the body when an attachment is added, "
+            "which flattens HTML formatting. Send without attachments to keep "
+            "the styling, or attach the file by hand in Mail."
+        )
+    return confirm
+
+
+def _locate_saved_draft(subject: str) -> Optional[Tuple[str, int]]:
+    """Return (account_name, attachment_count) for the draft with this subject.
+
+    Mail decides itself which account a draft belongs to — it follows the
+    sender address, not the account the caller named, so a draft can land in a
+    different account's Drafts when two accounts share an address. Callers
+    report the real location instead of claiming success blindly.
+
+    Returns None when no draft with that exact subject exists anywhere.
+    """
+    if not subject:
+        return None
+    safe_subject = escape_applescript(subject)
+    script = f'''
+    tell application "Mail"
+        set foundLine to ""
+        repeat with anAccount in accounts
+            if foundLine is "" then
+                repeat with aMailbox in mailboxes of anAccount
+                    if foundLine is "" and (name of aMailbox) is "Drafts" then
+                        -- `whose` filters inside Mail; walking every draft over
+                        -- Apple Events costs seconds on a busy Drafts folder.
+                        set matches to (messages of aMailbox whose subject is "{safe_subject}")
+                        if (count of matches) > 0 then
+                            set attachmentCount to 0
+                            try
+                                set attachmentCount to count of mail attachments of (item 1 of matches)
+                            end try
+                            set foundLine to (name of anAccount) & "|||" & attachmentCount
+                        end if
+                    end if
+                end repeat
+            end if
+        end repeat
+        return foundLine
+    end tell
+    '''
+    raw = ""
+    for attempt in range(4):
+        try:
+            raw = (run_applescript(script) or "").strip()
+        except Exception:
+            return None
+        if raw:
+            break
+        # An empty answer means the draft is not in the mailbox yet: Mail
+        # writes it asynchronously and a freshly saved draft can take a moment
+        # to appear (measured: up to ~4 s). Any non-empty answer is final.
+        if attempt < 3:
+            time.sleep(1.5)
+    if "|||" not in raw:
+        return None
+    account_name, _, count_text = raw.rpartition("|||")
+    try:
+        return account_name, int(count_text)
+    except ValueError:
+        return account_name, 0
+
+
+def _draft_location_note(subject: str, expected_attachments: int = 0) -> str:
+    """Return report lines stating where a draft landed and what it carries."""
+    located = _locate_saved_draft(subject)
+    if located is None:
+        return (
+            "\n⚠ Draft not found in any Drafts mailbox after saving. "
+            "Check Mail before assuming it exists."
+        )
+    account_name, attachment_count = located
+    lines = [f"\nSaved in: {account_name}/Drafts"]
+    if expected_attachments:
+        lines.append(
+            f"Attachments in draft: {attachment_count} of {expected_attachments}"
+        )
+        if attachment_count < expected_attachments:
+            lines.append(
+                "⚠ Mail did not keep every attachment. Re-attach before sending."
+            )
+    return "\n".join(lines)
+
+
+# Header line that introduces the quoted original in a plain-text reply.
+# Mail.app writes this in the system language; Robin's Mail runs German, so
+# German is the default here. One line to change for another language.
+REPLY_QUOTE_HEADER = "Am {date} schrieb {sender}:"
+
+# Upper bound for the quoted original. Newsletters and digests can carry
+# hundreds of kilobytes; quoting all of it would bloat every reply.
+REPLY_QUOTE_LIMIT = 20000
+
+
+def _build_quoted_reply(
+    reply_body: str,
+    sender: str,
+    date_text: str,
+    original_content: str,
+    limit: int = REPLY_QUOTE_LIMIT,
+) -> str:
+    """Return the full plain-text reply body including the quoted original.
+
+    Mail builds its own rich quote only in the GUI layer. Setting `content`
+    on the reply message replaces that layer, so the quote has to be rebuilt
+    here — that is the price for a reply body that lands deterministically
+    instead of depending on a Cmd+V into a window that may not have focus.
+    """
+    body = (reply_body or "").rstrip("\n")
+    original = (original_content or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Marketing mails pad their preview text with hundreds of zero-width
+    # characters and object-replacement marks. Quoted verbatim they turn the
+    # reply into a wall of invisible junk.
+    for junk in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\ufffc"):
+        original = original.replace(junk, "")
+    original = "\n".join(line.rstrip() for line in original.split("\n"))
+    original = original.strip()
+
+    if not original:
+        return body + "\n\n"
+
+    truncated = False
+    if len(original) > limit:
+        original = original[:limit].rstrip()
+        truncated = True
+
+    quoted_lines = []
+    for line in original.split("\n"):
+        quoted_lines.append("> " + line if line else ">")
+    if truncated:
+        quoted_lines.append("> [...]")
+    quoted = "\n".join(quoted_lines)
+
+    header = REPLY_QUOTE_HEADER.format(date=date_text, sender=sender)
+    return f"{body}\n\n{header}\n\n{quoted}\n"
+
+
+def _find_reply_target(account: str, mailbox: str, subject_keyword: str):
+    """Return (fields, error) for the first message matching *subject_keyword*.
+
+    fields is a dict with id, subject, sender, date and content of the
+    original message; error is a ready-to-return message when nothing
+    matched or Mail refused the lookup.
+    """
+    separator = "<<<AMMCP-" + os.urandom(8).hex() + ">>>"
+    safe_account = escape_applescript(account)
+    safe_keyword = escape_applescript(subject_keyword)
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{safe_account}"
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="searchMailbox")}
+            -- `whose` filters inside Mail instead of pulling every message
+            -- over Apple Events: measured on a 1299-message archive, the
+            -- element-by-element loop took over 100 s and timed out, the
+            -- `whose` clause 3.4 s.
+            set matchingMessages to (messages of searchMailbox whose subject contains "{safe_keyword}")
+            set matchCount to count of matchingMessages
+            if matchCount is 0 then
+                return ""
+            end if
+
+            -- Reply to the NEWEST match, not to whatever the mailbox happens to
+            -- list first: with several messages in a thread the latest one is
+            -- what "reply to that mail" means. Scanning is capped so a keyword
+            -- that matches hundreds of messages cannot stall the call.
+            set scanLimit to matchCount
+            if scanLimit > 100 then set scanLimit to 100
+            set foundMessage to item 1 of matchingMessages
+            set foundDate to date received of foundMessage
+            repeat with scanIndex from 2 to scanLimit
+                try
+                    set candidate to item scanIndex of matchingMessages
+                    set candidateDate to date received of candidate
+                    if candidateDate > foundDate then
+                        set foundMessage to candidate
+                        set foundDate to candidateDate
+                    end if
+                end try
+            end repeat
+
+            set originalContent to ""
+            try
+                set originalContent to (content of foundMessage) as text
+            end try
+
+            return ((id of foundMessage) as text) & "{separator}" & ¬
+                (subject of foundMessage) & "{separator}" & ¬
+                (sender of foundMessage) & "{separator}" & ¬
+                ((date received of foundMessage) as string) & "{separator}" & ¬
+                (matchCount as text) & "{separator}" & ¬
+                originalContent
+        on error errMsg
+            return "ERROR{separator}" & errMsg
+        end try
+    end tell
+    '''
+    raw = run_applescript(script, timeout=180) or ""
+    if not raw.strip():
+        return None, (
+            f"No email found matching: {subject_keyword} "
+            f"(searched mailbox: {mailbox} of account {account})"
+        )
+    parts = raw.split(separator)
+    if parts[0] == "ERROR":
+        return None, "Error: " + (parts[1] if len(parts) > 1 else "unknown")
+    if len(parts) < 6:
+        return None, "Error: unexpected reply lookup output from Mail."
+    try:
+        match_count = int(parts[4].strip())
+    except ValueError:
+        match_count = 1
+    return (
+        {
+            "id": parts[0].strip(),
+            "subject": parts[1],
+            "sender": parts[2],
+            "date": parts[3],
+            "match_count": match_count,
+            "content": separator.join(parts[5:]),
+        },
+        None,
+    )
+
+
+
+def _reply_plain(
+    account: str,
+    mailbox: str,
+    subject_keyword: str,
+    reply_body: str,
+    reply_to_all: bool,
+    cc: Optional[str],
+    bcc: Optional[str],
+    effective_mode: str,
+    attachments: Optional[str],
+    sender_override: Optional[str],
+) -> str:
+    """Reply without driving Mail's GUI — the fallback for `_reply_native`.
+
+    `_reply_native` pastes the body into Mail's own compose window, which
+    needs Mail in the foreground. When that is impossible (screen locked,
+    another Space active) a draft is still better than nothing, so draft
+    mode falls back to this path.
+
+    It sets `content` directly, which costs Mail's rich quote of the original
+    (setting `content` replaces that layer) and therefore rebuilds the quote
+    as plain text. The result reads as a plain-text mail wrapped in Mail's
+    share template — correct, but visibly not what a hand-written reply looks
+    like.
+    """
+    fields, error = _find_reply_target(account, mailbox, subject_keyword)
+    if error:
+        return error
+
+    attachment_script = ""
+    attachment_info = ""
+    validated_paths: List[str] = []
+    if attachments:
+        validated_paths, attachment_error = _validate_attachment_paths(attachments)
+        if attachment_error:
+            return attachment_error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f"  {path}\n"
+
+    full_body = _build_quoted_reply(
+        reply_body, fields["sender"], fields["date"], fields["content"]
+    )
+
+    body_tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".txt",
+        prefix="mail_reply_plain_",
+        delete=False,
+        encoding="utf-8",
+    )
+    body_tmp.write(full_body)
+    body_tmp.close()
+    body_temp_path = body_tmp.name
+
+    safe_account = escape_applescript(account)
+    separator = "<<<AMMCP-" + os.urandom(8).hex() + ">>>"
+    reply_command = "set replyMessage to reply foundMessage without opening window"
+    if reply_to_all:
+        reply_command += " and reply to all"
+
+    recipient_script = ""
+    for addr in _split_addresses(cc):
+        recipient_script += (
+            "make new cc recipient at end of cc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n            '
+        )
+    for addr in _split_addresses(bcc):
+        recipient_script += (
+            "make new bcc recipient at end of bcc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n            '
+        )
+
+    sender_script = _compose_sender_script(
+        "replyMessage", "targetAccount", sender_override
+    )
+
+    if effective_mode == "send":
+        final_action = "send replyMessage"
+        success_text = "Reply sent successfully!"
+    elif effective_mode == "open":
+        final_action = "set visible of replyMessage to true\n            activate"
+        success_text = "Reply opened in Mail for review. Edit and send when ready."
+    else:
+        # `save` commits the reply to Drafts. Never `close window 1` — that
+        # closes whatever window Mail has in front, which used to save and
+        # close the user's own open message instead of this reply.
+        final_action = "save replyMessage"
+        success_text = "Reply saved as draft!"
+
+    script = f'''
+    tell application "Mail"
+        try
+            set targetAccount to account "{safe_account}"
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="searchMailbox")}
+            set candidates to (messages of searchMailbox whose id is {int(fields["id"])})
+            if (count of candidates) is 0 then
+                return "Error: the original message disappeared between lookup and reply."
+            end if
+            set foundMessage to item 1 of candidates
+
+            {reply_command}
+            delay 0.3
+
+            {sender_script}
+
+            {recipient_script}
+
+            -- Body first, attachments after: setting `content` replaces the
+            -- whole body and would drop an attachment added beforehand.
+            set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"
+            set content of replyMessage to replyBodyText
+
+            tell replyMessage
+                {attachment_script}
+            end tell
+
+            set replySubject to ""
+            try
+                set replySubject to subject of replyMessage
+            end try
+
+            {final_action}
+
+            return "{success_text}" & "{separator}" & replySubject
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+    end tell
+    '''
+
+    try:
+        result = run_applescript(script, timeout=180)
+    finally:
+        if os.path.exists(body_temp_path):
+            os.unlink(body_temp_path)
+
+    if result.startswith("Error:"):
+        return result
+
+    status, _, reply_subject = result.partition(separator)
+    reply_subject = reply_subject.strip() or ("Re: " + fields["subject"])
+
+    lines = [
+        "REPLY",
+        "",
+        status.strip(),
+        "To: " + fields["sender"],
+        "Subject: " + reply_subject,
+        "Original from: " + fields["date"] + " (mailbox: " + mailbox + ")",
+    ]
+    if fields.get("match_count", 1) > 1:
+        lines.append(
+            f"Note: {fields['match_count']} messages matched "
+            f"{subject_keyword!r}; replied to the newest one."
+        )
+    if cc:
+        lines.append("CC: " + cc)
+    if bcc:
+        lines.append("BCC: " + bcc)
+    if attachment_info:
+        lines.append("Attachments:\n" + attachment_info.rstrip())
+
+    output = "\n".join(lines)
+    if effective_mode == "draft":
+        output += _draft_location_note(reply_subject, len(validated_paths))
+    return output
+
+
+# Returned by the native reply script when Mail's compose window never got
+# keyboard focus. Nothing was pasted, sent or saved at that point.
+_NO_FOCUS_MARKER = "AMMCP_NO_FOCUS"
+
+
+def _reply_native(
+    account: str,
+    mailbox: str,
+    subject_keyword: str,
+    reply_body: str,
+    body_html: Optional[str],
+    reply_to_all: bool,
+    cc: Optional[str],
+    bcc: Optional[str],
+    effective_mode: str,
+    attachments: Optional[str],
+    sender_override: Optional[str],
+) -> str:
+    """Reply the way Mail.app does when a person hits Reply.
+
+    `reply ... with opening window` makes Mail build its own quote: the
+    original's HTML inside ``<blockquote type="cite">`` (the blue bar), the
+    attribution line, and the account's signature. None of that is reachable
+    from AppleScript — ``html content`` of a reply is write-only ("access not
+    allowed") and ``content`` reads empty — so the new text is pasted at the
+    caret, which Mail puts at the top of the body.
+
+    Measured 28.09.2026 (Mail 16.0): every ``set html content`` / ``set
+    content`` on a reply wraps the WHOLE body, quote included, in Mail's share
+    template (see ``_strip_mail_share_wrapper``). A paste into the reply
+    window does not; the saved draft is structurally identical to a reply
+    typed by hand.
+
+    The body goes on the pasteboard as HTML plus a plain-text flavor. HTML,
+    not the RTF round-trip ``_html_to_pasteboard_script`` uses, because RTF
+    drops CSS and pins every line to an explicit font; the HTML flavor pasted
+    once, with markup and umlauts intact.
+
+    Pasting needs keyboard focus in exactly this window. The script waits
+    until Mail is frontmost AND its front window is the reply, and otherwise
+    closes the reply unsaved and returns ``_NO_FOCUS_MARKER`` — never a blind
+    keystroke into whatever else is in front.
+    """
+    fields, error = _find_reply_target(account, mailbox, subject_keyword)
+    if error:
+        return error
+
+    attachment_script = ""
+    attachment_info = ""
+    validated_paths: List[str] = []
+    if attachments:
+        validated_paths, attachment_error = _validate_attachment_paths(attachments)
+        if attachment_error:
+            return attachment_error
+        for path in validated_paths:
+            safe_path = escape_applescript(path)
+            attachment_script += f'''
+                set theFile to POSIX file "{safe_path}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+            '''
+            attachment_info += f"  {path}\n"
+
+    if body_html:
+        paste_html = body_html
+    else:
+        paste_html = "<div>" + html_escape(reply_body).replace("\n", "<br>") + "</div>"
+    # One empty line between the new text and Mail's attribution line, the
+    # same gap a hand-typed reply has.
+    paste_html += "<div><br></div>"
+
+    temp_paths = []
+    for suffix, text in ((".html", paste_html), (".txt", reply_body)):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=suffix, prefix="mail_reply_", delete=False, encoding="utf-8"
+        )
+        handle.write(text)
+        handle.close()
+        temp_paths.append(handle.name)
+    html_path, plain_path = temp_paths
+
+    safe_account = escape_applescript(account)
+    separator = "<<<AMMCP-" + os.urandom(8).hex() + ">>>"
+    reply_command = "set replyMessage to reply foundMessage with opening window"
+    if reply_to_all:
+        reply_command += " and reply to all"
+
+    recipient_script = ""
+    for addr in _split_addresses(cc):
+        recipient_script += (
+            "make new cc recipient at end of cc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n        '
+        )
+    for addr in _split_addresses(bcc):
+        recipient_script += (
+            "make new bcc recipient at end of bcc recipients of replyMessage "
+            f'with properties {{address:"{escape_applescript(addr)}"}}\n        '
+        )
+
+    sender_script = _compose_sender_script(
+        "replyMessage", "targetAccount", sender_override
+    )
+
+    if effective_mode == "send":
+        final_action = "send replyMessage"
+        success_text = "Reply sent successfully!"
+    elif effective_mode == "open":
+        final_action = "-- left open for review"
+        success_text = "Reply opened in Mail for review. Edit and send when ready."
+    else:
+        # `save` commits the reply to Drafts; closing the window by its id
+        # afterwards touches only this reply, never a window the user has open.
+        final_action = (
+            "save replyMessage\n"
+            "        delay 1\n"
+            "        close (window id replyWindowId) saving no"
+        )
+        success_text = "Reply saved as draft!"
+
+    script = f'''use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+set pb to current application's NSPasteboard's generalPasteboard()
+set oldClip to pb's stringForType:(current application's NSPasteboardTypeString)
+set htmlStr to current application's NSString's stringWithContentsOfFile:"{escape_applescript(html_path)}" encoding:(current application's NSUTF8StringEncoding) |error|:(missing value)
+set plainStr to current application's NSString's stringWithContentsOfFile:"{escape_applescript(plain_path)}" encoding:(current application's NSUTF8StringEncoding) |error|:(missing value)
+set resultText to ""
+set replyWindowId to missing value
+
+try
+    tell application "Mail"
+        set targetAccount to account "{safe_account}"
+        {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="searchMailbox")}
+        set candidates to (messages of searchMailbox whose id is {int(fields["id"])})
+        if (count of candidates) is 0 then error "the original message disappeared between lookup and reply."
+        set foundMessage to item 1 of candidates
+
+        {reply_command}
+        delay 1
+        set replyWindowId to id of window 1
+        set replySubject to ""
+        try
+            set replySubject to subject of replyMessage
+        end try
+
+        {sender_script}
+
+        {recipient_script}
+
+        tell replyMessage
+            {attachment_script}
+        end tell
+        activate
+    end tell
+
+    pb's clearContents()
+    pb's setString:htmlStr forType:(current application's NSPasteboardTypeHTML)
+    pb's setString:plainStr forType:(current application's NSPasteboardTypeString)
+
+    -- Paste only into THIS reply: Mail must be frontmost and its front window
+    -- must be the one `reply` just opened. A keystroke without that check
+    -- lands in whatever is in front and the reply goes out empty
+    -- (measured 25.08.2026).
+    set focusWaited to 0
+    set hasFocus to false
+    repeat until hasFocus or (focusWaited is greater than or equal to 40)
+        tell application "System Events"
+            try
+                set frontmost of process "Mail" to true
+            end try
+            set mailInFront to (frontmost of process "Mail")
+        end tell
+        tell application "Mail"
+            try
+                if (id of window 1) is not replyWindowId then set index of (window id replyWindowId) to 1
+            end try
+            set hasFocus to mailInFront and ((id of window 1) is replyWindowId)
+        end tell
+        if not hasFocus then
+            delay 0.1
+            set focusWaited to focusWaited + 1
+        end if
+    end repeat
+    if not hasFocus then error "{_NO_FOCUS_MARKER}"
+
+    delay 0.5
+    tell application "System Events" to tell process "Mail" to keystroke "v" using command down
+    delay 1
+
+    tell application "Mail"
+        {final_action}
+    end tell
+    set resultText to "{success_text}" & "{separator}" & replySubject
+on error errMsg
+    if errMsg contains "{_NO_FOCUS_MARKER}" then
+        set resultText to "{_NO_FOCUS_MARKER}"
+    else
+        set resultText to "Error: " & errMsg
+    end if
+    -- Nothing half-built may survive: close the reply unsaved.
+    if replyWindowId is not missing value then
+        try
+            tell application "Mail" to close (window id replyWindowId) saving no
+        end try
+    end if
+end try
+
+pb's clearContents()
+if oldClip is not missing value then pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+return resultText
+'''
+
+    try:
+        # osascript directly: `use framework` must stay at the top level,
+        # which run_applescript's `with timeout` wrapper would break.
+        completed = subprocess.run(
+            ["osascript", "-"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return "Error: Reply script timed out. Check Mail for an open reply window."
+    finally:
+        for path in temp_paths:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        return f"Error in reply: {stderr}"
+    result = completed.stdout.decode("utf-8", errors="replace").strip()
+
+    if result == _NO_FOCUS_MARKER:
+        if effective_mode == "draft":
+            fallback = _reply_plain(
+                account=account,
+                mailbox=mailbox,
+                subject_keyword=subject_keyword,
+                reply_body=reply_body,
+                reply_to_all=reply_to_all,
+                cc=cc,
+                bcc=bcc,
+                effective_mode=effective_mode,
+                attachments=attachments,
+                sender_override=sender_override,
+            )
+            return (
+                fallback
+                + "\n\nNote: Mail could not be brought to the front, so this "
+                "draft uses the plain-text quote instead of Mail's own reply "
+                "layout. Re-run with Mail visible for the native layout."
+            )
+        return (
+            "Error: Mail could not be brought to the front, so the reply "
+            "text could not be inserted. Nothing was sent or saved. Unlock "
+            'the screen or use mode="draft".'
+        )
+
+    if result.startswith("Error"):
+        return result
+
+    status, _, reply_subject = result.partition(separator)
+    reply_subject = reply_subject.strip() or ("Re: " + fields["subject"])
+
+    lines = [
+        "REPLY",
+        "",
+        status.strip(),
+        "To: " + fields["sender"],
+        "Subject: " + reply_subject,
+        "Original from: " + fields["date"] + " (mailbox: " + mailbox + ")",
+    ]
+    if fields.get("match_count", 1) > 1:
+        lines.append(
+            f"Note: {fields['match_count']} messages matched "
+            f"{subject_keyword!r}; replied to the newest one."
+        )
+    if cc:
+        lines.append("CC: " + cc)
+    if bcc:
+        lines.append("BCC: " + bcc)
+    if attachment_info:
+        lines.append("Attachments:\n" + attachment_info.rstrip())
+
+    output = "\n".join(lines)
+    if effective_mode == "draft":
+        output += _draft_location_note(reply_subject, len(validated_paths))
+    return output
+
+
+def _read_draft(draft_subject: str, account: Optional[str] = None):
+    """Return (fields, error) for the first draft matching *draft_subject*.
+
+    Searches every account's Drafts mailbox, preferring *account* when given:
+    Mail files a draft by sender address, so it regularly ends up in a
+    different account than the one the caller named when creating it.
+    """
+    separator = "<<<AMMCP-" + os.urandom(8).hex() + ">>>"
+    safe_subject = escape_applescript(draft_subject)
+    preferred = escape_applescript(account) if account else ""
+    script = f'''
+    tell application "Mail"
+        set orderedAccounts to {{}}
+        repeat with anAccount in accounts
+            if "{preferred}" is not "" and (name of anAccount) is "{preferred}" then
+                set beginning of orderedAccounts to anAccount
+            else
+                set end of orderedAccounts to anAccount
+            end if
+        end repeat
+
+        repeat with anAccount in orderedAccounts
+            try
+                set draftsMailbox to mailbox "Drafts" of anAccount
+                set matches to (messages of draftsMailbox whose subject contains "{safe_subject}")
+                if (count of matches) > 0 then
+                    set theDraft to item 1 of matches
+
+                    set toList to ""
+                    try
+                        repeat with aRecipient in to recipients of theDraft
+                            set toList to toList & (address of aRecipient) & ","
+                        end repeat
+                    end try
+                    set ccList to ""
+                    try
+                        repeat with aRecipient in cc recipients of theDraft
+                            set ccList to ccList & (address of aRecipient) & ","
+                        end repeat
+                    end try
+                    set bccList to ""
+                    try
+                        repeat with aRecipient in bcc recipients of theDraft
+                            set bccList to bccList & (address of aRecipient) & ","
+                        end repeat
+                    end try
+                    set attachmentList to ""
+                    try
+                        repeat with anAttachment in mail attachments of theDraft
+                            set attachmentList to attachmentList & (name of anAttachment) & ","
+                        end repeat
+                    end try
+                    set senderAddress to ""
+                    try
+                        set senderAddress to sender of theDraft
+                    end try
+                    set draftContent to ""
+                    try
+                        set draftContent to (content of theDraft) as text
+                    end try
+
+                    return ((id of theDraft) as text) & "{separator}" & ¬
+                        (name of anAccount) & "{separator}" & ¬
+                        (subject of theDraft) & "{separator}" & ¬
+                        toList & "{separator}" & ccList & "{separator}" & bccList & "{separator}" & ¬
+                        attachmentList & "{separator}" & senderAddress & "{separator}" & draftContent
+                end if
+            end try
+        end repeat
+        return ""
+    end tell
+    '''
+    raw = run_applescript(script, timeout=180) or ""
+    if not raw.strip():
+        return None, f"Error: No draft found matching: {draft_subject}"
+    parts = raw.split(separator)
+    if len(parts) < 9:
+        return None, "Error: unexpected draft lookup output from Mail."
+
+    def _addresses(value):
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    return (
+        {
+            "id": parts[0].strip(),
+            "account": parts[1],
+            "subject": parts[2],
+            "to": _addresses(parts[3]),
+            "cc": _addresses(parts[4]),
+            "bcc": _addresses(parts[5]),
+            "attachments": _addresses(parts[6]),
+            "sender": parts[7].strip(),
+            "content": separator.join(parts[8:]),
+        },
+        None,
+    )
+
+
+def _draft_html_body(draft_id: str, account: str) -> Optional[str]:
+    """Return the ``text/html`` part of a stored draft, or ``None``.
+
+    ``_read_draft`` goes through ``content of theDraft``, which is Mail's
+    *rendered* plain text: formatting, links and the whole signature block
+    are already gone by the time the caller sees it.  Rebuilding a draft from
+    that string is what turned an edited message into flat text with a
+    plain-text signature.  ``source of theDraft`` returns the raw RFC 822
+    message instead, so the real HTML body can be recovered and handed back
+    to Mail verbatim.
+    """
+    # Mail's message id is numeric. Anything else is not a valid identifier
+    # and has no business being interpolated into the script unquoted.
+    numeric_id = str(draft_id).strip()
+    if not numeric_id.isdigit():
+        return None
+
+    script = f'''
+    tell application "Mail"
+        try
+            set theDraft to first message of mailbox "Drafts" of account "{escape_applescript(account)}" whose id is {numeric_id}
+            return source of theDraft
+        on error
+            return ""
+        end try
+    end tell
+    '''
+    try:
+        raw = run_applescript(script, timeout=180)
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+
+    try:
+        parsed = email.message_from_string(raw)
+    except Exception:
+        return None
+
+    for part in parsed.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            return payload.decode(charset, errors="replace")
+        except LookupError:
+            return payload.decode("utf-8", errors="replace")
+    return None
+
+
+def _export_draft_attachments(draft_id: str, account: str, names: List[str]):
+    """Save the named attachments of a draft to a private cache directory.
+
+    Re-attaching is the only way to keep an attachment through an edit: Mail
+    cannot modify a stored draft in place, so the draft is rebuilt and every
+    kept file has to come from disk again.
+    """
+    if not names:
+        return [], None
+    export_dir = (
+        Path.home() / "Library" / "Caches" / "apple-mail-mcp" / "draft-edit" / draft_id
+    )
+    if export_dir.exists():
+        for stale in export_dir.iterdir():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_account = escape_applescript(account)
+    safe_dir = escape_applescript(str(export_dir))
+    wanted_list = ", ".join(f'"{escape_applescript(n)}"' for n in names)
+    script = f'''
+    tell application "Mail"
+        try
+            set draftsMailbox to mailbox "Drafts" of account "{safe_account}"
+            set matches to (messages of draftsMailbox whose id is {int(draft_id)})
+            if (count of matches) is 0 then
+                return "ERROR: draft vanished before its attachments could be saved"
+            end if
+            set theDraft to item 1 of matches
+            set wantedNames to {{{wanted_list}}}
+            set savedNames to ""
+            repeat with anAttachment in mail attachments of theDraft
+                set attachmentName to name of anAttachment
+                if wantedNames contains attachmentName then
+                    try
+                        save anAttachment in POSIX file ("{safe_dir}/" & attachmentName)
+                        set savedNames to savedNames & attachmentName & linefeed
+                    end try
+                end if
+            end repeat
+            return savedNames
+        on error errMsg
+            return "ERROR: " & errMsg
+        end try
+    end tell
+    '''
+    result = run_applescript(script, timeout=180) or ""
+    if result.startswith("ERROR:"):
+        return [], "Error: " + result[len("ERROR:"):].strip()
+
+    saved = []
+    for name in result.splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        candidate = export_dir / name
+        if candidate.is_file():
+            saved.append(str(candidate))
+    missing = [n for n in names if not (export_dir / n).is_file()]
+    if missing:
+        return saved, (
+            "Error: could not extract these existing attachments, refusing to "
+            "rebuild the draft and lose them: " + ", ".join(missing)
+        )
+    return saved, None
+
+
+def _discard_draft_export(draft_id: str) -> None:
+    """Remove the temporary attachment copies made for a draft edit."""
+    export_dir = (
+        Path.home() / "Library" / "Caches" / "apple-mail-mcp" / "draft-edit" / draft_id
+    )
+    if not export_dir.exists():
+        return
+    for leftover in export_dir.iterdir():
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
+    try:
+        export_dir.rmdir()
+    except OSError:
+        pass
+
+
+def _matches_any(name: str, patterns: List[str]) -> bool:
+    lowered = name.lower()
+    return any(pattern.lower() in lowered for pattern in patterns)
 
 
 def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[str]]:
@@ -619,12 +1685,341 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     return resolved_paths, None
 
 
+def _draft_id_for_subject(subject: str, exclude_id: Optional[str] = None) -> Optional[str]:
+    """Return the id of a draft with this exact subject, ignoring *exclude_id*."""
+    safe_subject = escape_applescript(subject)
+    exclude = int(exclude_id) if exclude_id and exclude_id.isdigit() else -1
+    script = f'''
+    tell application "Mail"
+        repeat with anAccount in accounts
+            try
+                set draftsMailbox to mailbox "Drafts" of anAccount
+                repeat with aDraft in (messages of draftsMailbox whose subject is "{safe_subject}")
+                    if (id of aDraft) is not {exclude} then
+                        return (id of aDraft) as text
+                    end if
+                end repeat
+            end try
+        end repeat
+        return ""
+    end tell
+    '''
+    result = (run_applescript(script, timeout=120) or "").strip()
+    return result or None
+
+
+def _delete_draft_by_id(draft_id: str, account: str) -> bool:
+    """Delete one draft by id. Returns True when it is gone afterwards."""
+    safe_account = escape_applescript(account)
+    script = f'''
+    tell application "Mail"
+        try
+            set draftsMailbox to mailbox "Drafts" of account "{safe_account}"
+            set matches to (messages of draftsMailbox whose id is {int(draft_id)})
+            if (count of matches) is 0 then
+                return "gone"
+            end if
+            set theDraft to item 1 of matches
+            set doomedSubject to subject of theDraft
+            delete theDraft
+
+            -- Silence the compose object Mail would autosave back into Drafts
+            -- a few seconds later; see the same guard in manage_drafts delete.
+            set liveComposes to outgoing messages
+            repeat with composeIndex from (count of liveComposes) to 1 by -1
+                try
+                    set aCompose to item composeIndex of liveComposes
+                    if (visible of aCompose) is false and (subject of aCompose) is doomedSubject then
+                        close aCompose saving no
+                    end if
+                end try
+            end repeat
+            delay 0.5
+            set stillThere to (messages of draftsMailbox whose id is {int(draft_id)})
+            if (count of stillThere) is 0 then
+                return "gone"
+            end if
+            return "still there"
+        on error errMsg
+            return "error: " & errMsg
+        end try
+    end tell
+    '''
+    return (run_applescript(script, timeout=120) or "").strip() == "gone"
+
+
+def _update_draft(
+    account: str,
+    draft_subject: str,
+    subject: Optional[str] = None,
+    to: Optional[str] = None,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    body: Optional[str] = None,
+    attachments: Optional[str] = None,
+    remove_attachments: Optional[str] = None,
+) -> str:
+    """Rewrite an existing draft with changed fields and attachments.
+
+    Mail's scripting interface cannot modify a stored draft, so the draft is
+    read, rebuilt as a new message and only then is the old one deleted. The
+    old draft stays untouched until the replacement is confirmed to exist.
+
+    When the body is not being changed, the rebuild reuses the stored HTML
+    (via ``_draft_html_body``) rather than Mail's plain-text rendering, minus
+    the share wrapper and the baked-in signature copy. Formatting and the
+    signature survive the edit, and the wrapper does not gain a layer each
+    time. If the HTML cannot be recovered the old plain-text rebuild is used
+    and the return value says so.
+    """
+    existing, error = _read_draft(draft_subject, account)
+    if error:
+        return error
+
+    keep_names = list(existing["attachments"])
+    removed_names: List[str] = []
+    if remove_attachments:
+        patterns = [p.strip() for p in remove_attachments.split(",") if p.strip()]
+        if patterns == ["all"]:
+            removed_names = keep_names
+            keep_names = []
+        else:
+            removed_names = [n for n in keep_names if _matches_any(n, patterns)]
+            keep_names = [n for n in keep_names if n not in removed_names]
+            unmatched = [
+                p for p in patterns
+                if not any(p.lower() in n.lower() for n in existing["attachments"])
+            ]
+            if unmatched:
+                return (
+                    "Error: no attachment matches "
+                    + ", ".join(repr(u) for u in unmatched)
+                    + ". Draft left untouched. Present: "
+                    + (", ".join(existing["attachments"]) or "none")
+                )
+
+    new_paths: List[str] = []
+    if attachments:
+        new_paths, attachment_error = _validate_attachment_paths(attachments)
+        if attachment_error:
+            return attachment_error
+
+    kept_paths, export_error = _export_draft_attachments(
+        existing["id"], existing["account"], keep_names
+    )
+    if export_error:
+        return export_error
+
+    new_subject = subject if subject is not None else existing["subject"]
+    recipients_to = (
+        _split_addresses(to) if to is not None else existing["to"]
+    )
+    recipients_cc = (
+        _split_addresses(cc) if cc is not None else existing["cc"]
+    )
+    recipients_bcc = (
+        _split_addresses(bcc) if bcc is not None else existing["bcc"]
+    )
+
+    reuse_content = body is None
+
+    # Reusing the body must not mean reusing Mail's plain-text rendering of
+    # it. Pull the real HTML out of the stored message, peel off the share
+    # wrapper Mail added the last time round (it would otherwise nest one
+    # layer deeper on every edit) and drop the baked-in signature copy so
+    # Mail can attach the live one again.
+    reused_html = None
+    if reuse_content:
+        raw_html = _draft_html_body(existing["id"], existing["account"])
+        if raw_html:
+            candidate = _strip_mail_signature_block(
+                _strip_mail_share_wrapper(raw_html)
+            )
+            if _has_visible_content(candidate):
+                reused_html = candidate
+
+    if reused_html is not None:
+        new_body = reused_html
+    elif reuse_content:
+        new_body = existing["content"]
+    else:
+        new_body = body
+
+    body_tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".html" if reused_html is not None else ".txt",
+        prefix="mail_draft_edit_",
+        delete=False,
+        encoding="utf-8",
+    )
+    body_tmp.write(new_body or "")
+    body_tmp.close()
+    body_temp_path = body_tmp.name
+
+    recipient_script = ""
+    for address in recipients_to:
+        recipient_script += (
+            "make new to recipient at end of to recipients with properties "
+            f'{{address:"{escape_applescript(address)}"}}\n                '
+        )
+    for address in recipients_cc:
+        recipient_script += (
+            "make new cc recipient at end of cc recipients with properties "
+            f'{{address:"{escape_applescript(address)}"}}\n                '
+        )
+    for address in recipients_bcc:
+        recipient_script += (
+            "make new bcc recipient at end of bcc recipients with properties "
+            f'{{address:"{escape_applescript(address)}"}}\n                '
+        )
+
+    attachment_script = ""
+    for path in kept_paths + new_paths:
+        attachment_script += f'''
+                set theFile to POSIX file "{escape_applescript(path)}"
+                make new attachment with properties {{file name:theFile}} at after the last paragraph
+                delay 1
+        '''
+
+    if reused_html is not None:
+        # The signature was cut out of the reused HTML above, so Mail must
+        # attach the live one — leave `message signature` alone. Killing it
+        # (what this path used to do unconditionally) is what stripped the
+        # X-Apple-Mail-Signature header and made Mail's compose window report
+        # "Signature: None" on every edited draft.
+        signature_script = ""
+        create_properties = (
+            f'{{subject:"{escape_applescript(new_subject)}", visible:false}}'
+        )
+        # Body before attachments: `set html content` replaces the whole body
+        # and would drop a file attached beforehand.
+        body_script = "set html content of newDraft to draftBodyText"
+    else:
+        # Plain-text fallback: the reused string already carries a flattened
+        # copy of the signature, so letting Mail append its own would show it
+        # twice.
+        signature_script = (
+            "set message signature of newDraft to missing value"
+            if reuse_content
+            else ""
+        )
+        create_properties = (
+            f'{{subject:"{escape_applescript(new_subject)}", '
+            "content:draftBodyText, visible:false}"
+        )
+        body_script = ""
+
+    sender_script = (
+        f'set sender of newDraft to "{escape_applescript(existing["sender"])}"'
+        if existing["sender"]
+        else ""
+    )
+
+    script = f'''
+    tell application "Mail"
+        try
+            set draftBodyText to (read (POSIX file "{escape_applescript(body_temp_path)}") as «class utf8»)
+            set newDraft to make new outgoing message with properties {create_properties}
+            {sender_script}
+            {signature_script}
+
+            tell newDraft
+                {recipient_script}
+            end tell
+
+            {body_script}
+
+            tell newDraft
+                {attachment_script}
+            end tell
+
+            close newDraft saving yes
+            return "ok"
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+    end tell
+    '''
+
+    try:
+        result = run_applescript(script, timeout=180)
+    finally:
+        if os.path.exists(body_temp_path):
+            os.unlink(body_temp_path)
+
+    if result.startswith("Error:"):
+        return result + "\nThe original draft was left untouched."
+
+    replacement_id = None
+    for _ in range(5):
+        replacement_id = _draft_id_for_subject(new_subject, exclude_id=existing["id"])
+        if replacement_id:
+            break
+        time.sleep(1.5)
+
+    if not replacement_id:
+        return (
+            "Error: the rewritten draft did not turn up in Drafts. The original "
+            f"draft {existing['subject']!r} was left untouched — check Mail before retrying."
+        )
+
+    deleted = _delete_draft_by_id(existing["id"], existing["account"])
+
+    # The extracted copies have served their purpose; leaving them behind would
+    # pile up a second copy of every attachment ever edited.
+    _discard_draft_export(existing["id"])
+
+    lines = [
+        "UPDATING DRAFT",
+        "",
+        "✓ Draft rewritten.",
+        "Subject: " + new_subject,
+        "To: " + (", ".join(recipients_to) or "[none]"),
+    ]
+    if recipients_cc:
+        lines.append("CC: " + ", ".join(recipients_cc))
+    if recipients_bcc:
+        lines.append("BCC: " + ", ".join(recipients_bcc))
+    if not reuse_content:
+        lines.append("Body: replaced")
+    elif reused_html is not None:
+        lines.append("Body: unchanged (HTML formatting and signature kept)")
+    else:
+        lines.append(
+            "Body: unchanged (plain text — the stored HTML could not be read, "
+            "so formatting and the signature link are lost)"
+        )
+    if removed_names:
+        lines.append("Removed attachments: " + ", ".join(removed_names))
+    if new_paths:
+        lines.append(
+            "Added attachments: " + ", ".join(os.path.basename(p) for p in new_paths)
+        )
+    if keep_names:
+        lines.append("Kept attachments: " + ", ".join(keep_names))
+    if reused_html is not None and (kept_paths or new_paths):
+        lines.append(
+            "Note: Mail re-renders the body when an attachment is added, so "
+            "the HTML formatting of this draft is flattened. The signature "
+            "link survives; the styling does not."
+        )
+    if not deleted:
+        lines.append(
+            "⚠ The old version could not be deleted and is still in Drafts. "
+            "Remove it in Mail so you do not send the outdated one."
+        )
+    output = "\n".join(lines)
+    output += _draft_location_note(new_subject, len(kept_paths) + len(new_paths))
+    return output
+
+
 @mcp.tool()
 @inject_preferences
 def reply_to_email(
     account: str,
     subject_keyword: str,
     reply_body: str,
+    mailbox: str = "INBOX",
     reply_to_all: bool = False,
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
@@ -637,17 +2032,24 @@ def reply_to_email(
     """
     Reply to an email matching a subject keyword.
 
+    The reply is built by Mail itself, exactly like hitting Reply: Mail's quote
+    of the original with its formatting, the attribution line and the account
+    signature. The new text is pasted above it, so Mail briefly comes to the
+    front. When it cannot (screen locked), draft mode falls back to a
+    plain-text quote and says so; send and open modes stop without sending.
+
     Args:
         account: Account name (e.g., "Gmail", "Work")
         subject_keyword: Keyword to search for in email subjects
         reply_body: The body text of the reply
+        mailbox: Mailbox to search the original message in (default: "INBOX"). Use e.g. "Archive" to reply to an already archived message; nested mailboxes use "/" (e.g. "Projects/2026").
         reply_to_all: If True, reply to all recipients; if False, reply only to sender (default: False)
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         send: If True (default), send immediately; if False, save as draft. Ignored if mode is set.
         mode: Delivery mode — "send" (send immediately), "draft" (save silently), or "open" (open compose window for review). Overrides send parameter when set.
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
-        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). Pasted above Mail's own quote of the original. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
@@ -661,97 +2063,7 @@ def reply_to_email(
     if sender_error:
         return sender_error
 
-    # Escape all user inputs for AppleScript
-    safe_account = escape_applescript(account)
-    safe_subject_keyword = escape_applescript(subject_keyword)
-
-    # Write reply body to a temp file to avoid AppleScript string escaping
-    # issues with special characters (em dashes, curly quotes, colons, etc.)
-    body_tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        prefix="mail_reply_",
-        delete=False,
-        encoding="utf-8",
-    )
-    body_tmp.write(reply_body)
-    body_tmp.close()
-    body_temp_path = body_tmp.name
-
-    # If body_html provided, write it to a temp file for the AppleScript to read.
-    # If plain text only, wrap it in basic HTML so the clipboard paste renders
-    # properly in Mail's HTML compose view (preserving line breaks and gap).
-    html_temp_path = None
-    # Append an empty paragraph to create a visible gap before the quoted original.
-    # Mail strips trailing <br> tags, so we use a <p> with &nbsp; instead.
-    gap_html = "<div><br></div><div><br></div>"
-    if body_html:
-        html_content = body_html + gap_html
-    else:
-        # Wrap plain text in HTML, converting newlines to <br>
-        escaped_plain = html_escape(reply_body)
-        escaped_plain = escaped_plain.replace("\n", "<br>")
-        html_content = f"<div>{escaped_plain}</div>{gap_html}"
-    html_tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".html",
-        prefix="mail_reply_html_",
-        delete=False,
-        encoding="utf-8",
-    )
-    html_tmp.write(html_content)
-    html_tmp.close()
-    html_temp_path = html_tmp.name
-
-    # Build the reply command based on reply_to_all flag
-    if reply_to_all:
-        reply_command = "set replyMessage to reply foundMessage with opening window and reply to all"
-    else:
-        reply_command = "set replyMessage to reply foundMessage with opening window"
-
-    # Build CC recipients if provided
-    cc_script = ""
-    if cc:
-        cc_addresses = [addr.strip() for addr in cc.split(",")]
-        for addr in cc_addresses:
-            safe_addr = escape_applescript(addr)
-            cc_script += f'''
-            make new cc recipient at end of cc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build BCC recipients if provided
-    bcc_script = ""
-    if bcc:
-        bcc_addresses = [addr.strip() for addr in bcc.split(",")]
-        for addr in bcc_addresses:
-            safe_addr = escape_applescript(addr)
-            bcc_script += f'''
-            make new bcc recipient at end of bcc recipients of replyMessage with properties {{address:"{safe_addr}"}}
-            '''
-
-    # Build attachment script if provided
-    attachment_script = ""
-    attachment_info = ""
-    if attachments:
-        validated_paths, error = _validate_attachment_paths(attachments)
-        if error:
-            return error
-        for path in validated_paths:
-            safe_path = escape_applescript(path)
-            attachment_script += f'''
-                set theFile to POSIX file "{safe_path}"
-                make new attachment with properties {{file name:theFile}} at after the last paragraph
-                delay 1
-            '''
-            attachment_info += f"  {path}\n"
-
-    safe_cc = escape_applescript(cc) if cc else ""
-    safe_bcc = escape_applescript(bcc) if bcc else ""
-    safe_attachment_info = (
-        escape_applescript(attachment_info) if attachment_info else ""
-    )
-
-    # Resolve delivery mode: mode parameter takes precedence over send boolean
+    # Resolve delivery mode up front.
     if mode is not None:
         if mode not in ("send", "draft", "open"):
             return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
@@ -759,204 +2071,25 @@ def reply_to_email(
     else:
         effective_mode = "send" if send else "draft"
 
-    # Read body from temp file in AppleScript (avoids all string escaping issues)
-    read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
-
-    # Determine behavior per mode
-    # All modes use HTML clipboard paste (via NSPasteboard) to insert the reply body.
-    # This preserves Mail.app's native quoted original in the HTML layer.
-    # (setting `content` via AppleScript overwrites the HTML layer entirely,
-    # destroying the email thread history.)
-
-    if effective_mode == "send":
-        header_text = "SENDING REPLY"
-        post_paste_action = """
-                delay 0.5
-                tell application "Mail"
-                    send replyMessage
-                end tell"""
-        success_text = "Reply sent successfully!"
-    elif effective_mode == "open":
-        header_text = "OPENING REPLY FOR REVIEW"
-        post_paste_action = ""
-        success_text = "Reply opened in Mail for review. Edit and send when ready."
-    else:  # draft
-        header_text = "SAVING REPLY AS DRAFT"
-        post_paste_action = """
-                delay 0.5
-                tell application "Mail"
-                    close window 1 saving yes
-                end tell"""
-        success_text = "Reply saved as draft!"
-
-    cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
-    html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
-
-    sender_script = _compose_sender_script(
-        "replyMessage", "targetAccount", sender_override
-    )
-
-    script = f'''
-use framework "Foundation"
-use framework "AppKit"
-use scripting additions
-
--- Step 1: Place the reply body on the clipboard as RTF (rendered rich text)
--- plus a plain-text fallback. The previous raw-HTML-source approach made
--- Mail paste the body twice (rendered + literal tags); RTF pastes once.
-{_html_to_pasteboard_script(html_temp_path)}
-
--- Step 2: Find the email and create reply
-tell application "Mail"
-    set outputText to "{header_text}" & return & return
-
-    try
-        -- Read reply body from temp file (for output text only)
-        {read_body_script}
-
-        set targetAccount to account "{safe_account}"
-        {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-        set inboxMessages to every message of inboxMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in inboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
-
-        if foundMessage is not missing value then
-            set messageSubject to subject of foundMessage
-            set messageSender to sender of foundMessage
-            set messageDate to date received of foundMessage
-
-            -- Create reply
-            {reply_command}
-            delay 0.5
-
-            {sender_script}
-
-            -- Add CC/BCC recipients
-            {cc_script}
-            {bcc_script}
-
-            -- Add attachments (must be scoped to replyMessage so `last paragraph` resolves;
-            -- bare `make new attachment ... at after the last paragraph` inside `tell application "Mail"`
-            -- raises "Can't get last paragraph" because the reference has no implicit owner)
-            tell replyMessage
-                {attachment_script}
-            end tell
-
-            -- Paste reply body (HTML already on clipboard from Step 1).
-            -- The body is inserted via a blind Cmd+V into the compose window, so the
-            -- window MUST have keyboard focus when the keystroke fires. If Mail is not
-            -- frontmost at that moment (common on the first compose of a session, when
-            -- another app holds focus, or when the machine is busy), the paste lands
-            -- nowhere and an EMPTY reply is sent with no error returned.
-            --
-            -- We deliberately do NOT verify the paste by reading `content of
-            -- replyMessage` afterwards: Mail's GUI editor buffer is decoupled from the
-            -- scriptable `content` property, so reading it always returns the pre-paste
-            -- value (verified empirically — it reports 0 chars even after a successful
-            -- paste). A content-read-back guard would therefore false-fail every send.
-            -- Instead we make the paste deterministic by polling until Mail is genuinely
-            -- frontmost (re-asserting focus each iteration) before issuing the keystroke.
-            set visible of replyMessage to true
-            activate
-
-            tell application "System Events"
-                set focusWaited to 0
-                repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
-                    try
-                        set frontmost of process "Mail" to true
-                    end try
-                    delay 0.1
-                    set focusWaited to focusWaited + 1
-                end repeat
-                -- settle delay so the compose window's body holds keyboard focus
-                delay 0.8
-                tell process "Mail"
-                    keystroke "v" using command down
-                end tell
-            end tell
-            delay 0.5
-
-            {post_paste_action}
-
-            set outputText to outputText & "{success_text}" & return
-            set outputText to outputText & "To: " & messageSender & return
-            set outputText to outputText & "Subject: " & messageSubject & return
-    '''
-
-    if cc:
-        script += f"""
-                set outputText to outputText & "CC: {safe_cc}" & return
-    """
-
-    if bcc:
-        script += f"""
-                set outputText to outputText & "BCC: {safe_bcc}" & return
-    """
-
-    if attachments:
-        script += f'''
-                set outputText to outputText & "Attachments:" & return & "{safe_attachment_info}" & return
-    '''
-
-    script += f"""
-            else
-                set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
-            end if
-
-            -- Clean up temp files
-            {cleanup_script}
-            {html_cleanup_script}
-
-        on error errMsg
-            -- Clean up temp files even on error
-            try
-                {cleanup_script}
-                {html_cleanup_script}
-            end try
-            return "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
-        end try
-
-        return outputText
-    end tell
-
-    -- Restore clipboard
-    if oldClip is not missing value then
-        pb's clearContents()
-        pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
-    end if
-    """
-
-    try:
-        # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
+    if server.READ_ONLY and effective_mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
         )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            return f"Error in reply: {stderr}"
-        return result.stdout.decode("utf-8", errors="replace").strip()
-    except subprocess.TimeoutExpired:
-        return "Error: Reply script timed out"
-    finally:
-        # Belt-and-suspenders cleanup in case AppleScript didn't run
-        if os.path.exists(body_temp_path):
-            os.unlink(body_temp_path)
-        if html_temp_path and os.path.exists(html_temp_path):
-            os.unlink(html_temp_path)
+
+    return _reply_native(
+        account=account,
+        mailbox=mailbox,
+        subject_keyword=subject_keyword,
+        reply_body=reply_body,
+        body_html=body_html,
+        reply_to_all=reply_to_all,
+        cc=cc,
+        bcc=bcc,
+        effective_mode=effective_mode,
+        attachments=attachments,
+        sender_override=sender_override,
+    )
 
 
 @mcp.tool()
@@ -985,7 +2118,7 @@ def compose_email(
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
-        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
+        body_html: Optional HTML body for rich formatting (bold, headings, links, colors). Handed to Mail verbatim via its `html content` property, so markup and non-ASCII text survive unchanged and your Mail signature stays attached. The plain 'body' field is still required as fallback text. Two Mail limits apply: the body is wrapped in Mail's share template on macOS 15+ (see README, Known Mail.app limitations), and adding an attachment makes Mail re-render the body, which flattens the formatting.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
     Returns:
@@ -995,6 +2128,12 @@ def compose_email(
     # Validate mode
     if mode not in ("send", "draft", "open"):
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the message, or mode="open" to review it in Mail.'
+        )
 
     body = _strip_cdata_wrappers(body) or ""
     body_html = _strip_cdata_wrappers(body_html)
@@ -1007,10 +2146,12 @@ def compose_email(
     # Validate and resolve attachments early
     attachment_script = ""
     attachment_info = ""
+    validated_attachment_paths: List[str] = []
     if attachments:
         validated_paths, error = _validate_attachment_paths(attachments)
         if error:
             return error
+        validated_attachment_paths = validated_paths
         for path in validated_paths:
             safe_path = escape_applescript(path)
             attachment_script += f'''
@@ -1022,7 +2163,7 @@ def compose_email(
 
     # --- HTML path: use NSPasteboard clipboard injection ---
     if body_html:
-        return _send_html_email(
+        html_result = _send_html_email(
             account=account,
             to=to,
             subject=subject,
@@ -1035,6 +2176,11 @@ def compose_email(
             mode=mode,
             sender_override=sender_override,
         )
+        if mode == "draft" and not html_result.startswith("Error"):
+            html_result += _draft_location_note(
+                subject, len(validated_attachment_paths)
+            )
+        return html_result
 
     # --- Plain-text path: existing AppleScript approach ---
     safe_account = escape_applescript(account)
@@ -1095,7 +2241,13 @@ def compose_email(
     else:  # draft
         header_text = "SAVING EMAIL AS DRAFT"
         visible = "false"
-        send_command = "close window 1 saving yes"
+        # Close the message object, never `window 1`. The message is created
+        # with visible:false and therefore owns no window, so `close window 1`
+        # targeted Mail's frontmost window instead — it closed (and silently
+        # saved as a draft) whatever the user had open, and the attachment of
+        # the message we actually wanted to save was lost. Closing the object
+        # itself saves it to Drafts with its attachments intact.
+        send_command = "close newMessage saving yes"
         success_text = "✓ Email saved as draft!"
 
     script = f'''
@@ -1156,6 +2308,8 @@ def compose_email(
     '''
 
     result = run_applescript(script)
+    if mode == "draft" and not result.startswith("Error:"):
+        result += _draft_location_note(subject, len(validated_attachment_paths))
     return result
 
 
@@ -1170,6 +2324,7 @@ def forward_email(
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     from_address: Optional[str] = None,
+    mode: str = "send",
 ) -> str:
     """
     Forward an email to one or more recipients.
@@ -1178,15 +2333,25 @@ def forward_email(
         account: Account name (e.g., "Gmail", "Work")
         subject_keyword: Keyword to search for in email subjects
         to: Recipient email address(es), comma-separated for multiple
-        message: Optional message to add before forwarded content
+        message: Optional message to add before forwarded content. Inserting it needs Mail in the foreground; without a message the forward runs without touching the GUI.
         mailbox: Mailbox to search in (default: "INBOX")
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open the forward for review)
 
     Returns:
         Confirmation message with details of forwarded email
     """
+
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the forward, or mode="open" to review it in Mail.'
+        )
 
     message = _strip_cdata_wrappers(message)
 
@@ -1260,7 +2425,23 @@ def forward_email(
         fwd_html_paste_script = f"""
                 set visible of forwardMessage to true
                 activate
-                delay 1.5
+
+                tell application "System Events"
+                    set focusWaited to 0
+                    repeat until (frontmost of process "Mail") or (focusWaited is greater than or equal to 40)
+                        try
+                            set frontmost of process "Mail" to true
+                        end try
+                        delay 0.1
+                        set focusWaited to focusWaited + 1
+                    end repeat
+                    -- Never type blind: without focus the paste lands in
+                    -- another app and the note silently goes missing.
+                    if not (frontmost of process "Mail") then
+                        error "Mail could not be brought to the front, so the note could not be inserted. Nothing was sent or saved. Forward without `message` to stay out of the GUI."
+                    end if
+                end tell
+                delay 0.5
 
                 -- Place the prepended note on the clipboard as RTF (rendered)
                 -- plus a plain-text fallback, instead of raw HTML source which
@@ -1279,6 +2460,22 @@ def forward_email(
                     pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
                 end if
         """
+
+    if mode == "send":
+        forward_final_action = "send forwardMessage"
+        forward_success_text = "Email forwarded successfully."
+    elif mode == "open":
+        forward_final_action = (
+            "set visible of forwardMessage to true\n            activate"
+        )
+        forward_success_text = (
+            "Forward opened in Mail for review. Edit and send when ready."
+        )
+    else:
+        # `save` commits it to Drafts. Never `close window 1` — that closes
+        # whatever window Mail has in front, not this forward.
+        forward_final_action = "save forwardMessage"
+        forward_success_text = "Forward saved as draft."
 
     use_frameworks = ""
     if message:
@@ -1304,20 +2501,27 @@ tell application "Mail"
             end if
         end try
 
-        set mailboxMessages to every message of targetMailbox
+        -- `whose` filters inside Mail instead of pulling every message over
+        -- Apple Events, and the NEWEST match is forwarded: with several
+        -- messages in a thread the latest one is what the caller means.
+        set matchingMessages to (messages of targetMailbox whose subject contains "{safe_subject_keyword}")
+        set matchCount to count of matchingMessages
         set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in mailboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
+        if matchCount > 0 then
+            set foundMessage to item 1 of matchingMessages
+            set newestDate to date received of foundMessage
+            set scanLimit to matchCount
+            if scanLimit > 100 then set scanLimit to 100
+            repeat with scanIndex from 2 to scanLimit
+                try
+                    set candidate to item scanIndex of matchingMessages
+                    if (date received of candidate) > newestDate then
+                        set foundMessage to candidate
+                        set newestDate to date received of candidate
+                    end if
+                end try
+            end repeat
+        end if
 
         if foundMessage is not missing value then
             set messageSubject to subject of foundMessage
@@ -1339,15 +2543,18 @@ tell application "Mail"
             -- Add optional message via HTML clipboard paste (preserves forwarded content)
             {fwd_html_paste_script}
 
-            -- Send the forward
-            send forwardMessage
+            -- Send, save as draft, or leave open for review
+            {forward_final_action}
 
             -- Clean up temp files
             {fwd_html_cleanup_script}
 
-            set outputText to outputText & "Email forwarded successfully." & return
+            set outputText to outputText & "{forward_success_text}" & return
             set outputText to outputText & "To: {safe_to}" & return
-            set outputText to outputText & "Subject: " & messageSubject & return
+            set outputText to outputText & "Forwarded message: " & messageSubject & return
+            if matchCount > 1 then
+                set outputText to outputText & "Note: " & matchCount & " messages matched, forwarded the newest one." & return
+            end if
     '''
 
     if cc:
@@ -1410,23 +2617,34 @@ def manage_drafts(
     bcc: Optional[str] = None,
     draft_subject: Optional[str] = None,
     from_address: Optional[str] = None,
+    attachments: Optional[str] = None,
+    remove_attachments: Optional[str] = None,
 ) -> str:
     """
-    Manage draft emails - list, create, send, open, or delete drafts.
+    Manage draft emails - list, create, update, send, open, or delete drafts.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        action: Action to perform: "list", "create", "send", "open", "delete". Use "open" to open a draft in a visible compose window for review before sending.
-        subject: Email subject (required for create)
-        to: Recipient email(s) for create (comma-separated)
-        body: Email body (required for create)
-        cc: Optional CC recipients for create
-        bcc: Optional BCC recipients for create
-        draft_subject: Subject keyword to find draft (required for send/open/delete)
+        action: Action to perform: "list", "create", "update", "send", "open", "delete". Use "open" to open a draft in a visible compose window for review before sending, "update" to change an existing draft (text, recipients, attachments).
+        subject: Email subject (required for create; for update the NEW subject, omit to keep the current one)
+        to: Recipient email(s) (comma-separated). Required for create; for update it REPLACES the current recipients, omit to keep them.
+        body: Email body. Required for create; for update it replaces the body, omit to keep the current text.
+        cc: Optional CC recipients; for update it replaces the current CC list.
+        bcc: Optional BCC recipients; for update it replaces the current BCC list.
+        draft_subject: Subject keyword to find the draft (required for update/send/open/delete)
         from_address: Optional sender address for new drafts (action="create"). Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        attachments: File paths to attach, comma-separated. For action="update" these are ADDED to the attachments the draft already carries. Note that Mail re-renders the body when a file is attached, which flattens HTML formatting.
+        remove_attachments: action="update" only. Comma-separated name fragments of attachments to drop, or "all" to drop every attachment. Combine with `attachments` to swap a file.
 
     Returns:
         Formatted output based on action
+
+    Note on update: Mail cannot edit a stored draft in place, so the draft is
+    rebuilt and the old version deleted afterwards. Existing attachments are
+    extracted to disk and re-attached; if any of them cannot be extracted the
+    draft is left untouched rather than rebuilt without them. When `body` is
+    omitted the stored HTML is reused, so formatting and the Mail signature
+    survive the edit; the return value says which of the two paths was taken.
     """
 
     body = _strip_cdata_wrappers(body)
@@ -1529,8 +2747,10 @@ def manage_drafts(
                     {bcc_script}
                 end tell
 
-                -- Save to drafts (don't send)
-                -- The draft is automatically saved to Drafts folder
+                -- Save the draft explicitly instead of trusting Mail's autosave.
+                -- Closing the message object (never `window 1`) commits it to
+                -- Drafts and disposes of the compose object.
+                close newDraft saving yes
 
                 set outputText to outputText & "✓ Draft created successfully!" & return & return
                 set outputText to outputText & "Subject: {escaped_subject}" & return
@@ -1544,8 +2764,23 @@ def manage_drafts(
         end tell
         '''
 
+    elif action == "update":
+        if not draft_subject:
+            return "Error: 'draft_subject' is required for updating drafts"
+        return _update_draft(
+            account=account,
+            draft_subject=draft_subject,
+            subject=subject,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            body=body,
+            attachments=attachments,
+            remove_attachments=remove_attachments,
+        )
+
     elif action == "send":
-        if READ_ONLY:
+        if server.READ_ONLY:
             return "Error: Sending drafts is disabled in read-only mode."
         if not draft_subject:
             return "Error: 'draft_subject' is required for sending drafts"
@@ -1559,22 +2794,21 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
+                set matchingDrafts to (messages of draftsMailbox whose subject contains "{safe_draft_subject}")
+                set matchCount to count of matchingDrafts
 
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
+                -- Sending the wrong draft cannot be undone, so an ambiguous
+                -- keyword is refused instead of resolved by guessing.
+                if matchCount > 1 then
+                    set outputText to outputText & "⚠ " & matchCount & " drafts match the keyword. Refusing to guess which one to send. Narrow the keyword; the candidates are:" & return
+                    repeat with aDraft in matchingDrafts
+                        set outputText to outputText & "   - " & (subject of aDraft) & return
+                    end repeat
+                    return outputText
+                end if
 
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
+                if matchCount is 1 then
+                    set foundDraft to item 1 of matchingDrafts
                     set draftSubject to subject of foundDraft
 
                     -- Send the draft
@@ -1608,22 +2842,22 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
+                set matchingDrafts to (messages of draftsMailbox whose subject contains "{safe_draft_subject}")
+                set matchCount to count of matchingDrafts
 
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
+                if matchCount is not 0 then
+                    -- Opening is harmless, so the newest match wins and the
+                    -- caller is told how many there were.
+                    set foundDraft to item 1 of matchingDrafts
+                    set newestDate to date sent of foundDraft
+                    repeat with aDraft in matchingDrafts
+                        try
+                            if (date sent of aDraft) > newestDate then
+                                set foundDraft to aDraft
+                                set newestDate to date sent of aDraft
+                            end if
+                        end try
+                    end repeat
                     set draftSubject to subject of foundDraft
 
                     -- Open the draft in a visible compose window
@@ -1632,6 +2866,9 @@ def manage_drafts(
 
                     set outputText to outputText & "✓ Draft opened in Mail for review!" & return
                     set outputText to outputText & "Subject: " & draftSubject & return
+                    if matchCount > 1 then
+                        set outputText to outputText & "Note: " & matchCount & " drafts matched, opened the newest one." & return
+                    end if
                     set outputText to outputText & return & "Edit and send when ready." & return
 
                 else
@@ -1659,28 +2896,51 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
+                set matchingDrafts to (messages of draftsMailbox whose subject contains "{safe_draft_subject}")
+                set matchCount to count of matchingDrafts
 
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
+                -- Deleting the wrong draft throws away written work, so an
+                -- ambiguous keyword is refused instead of resolved by guessing.
+                if matchCount > 1 then
+                    set outputText to outputText & "⚠ " & matchCount & " drafts match the keyword. Refusing to guess which one to delete. Narrow the keyword; the candidates are:" & return
+                    repeat with aDraft in matchingDrafts
+                        set outputText to outputText & "   - " & (subject of aDraft) & return
+                    end repeat
+                    return outputText
+                end if
 
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
+                if matchCount is 1 then
+                    set foundDraft to item 1 of matchingDrafts
                     set draftSubject to subject of foundDraft
+                    set draftId to id of foundDraft
 
-                    -- Delete the draft
                     delete foundDraft
 
-                    set outputText to outputText & "✓ Draft deleted successfully!" & return
+                    -- Mail keeps the compose object alive after a draft is
+                    -- saved, and autosaves it again ~15 s later — which
+                    -- recreated the draft we just deleted (measured
+                    -- 25.08.2026: gone at t+10 s, back at t+15 s). Closing the
+                    -- object without saving stops that. Only invisible objects
+                    -- are touched: a visible one is a compose window the user
+                    -- has open, and closing it would throw away their work.
+                    set liveComposes to outgoing messages
+                    repeat with composeIndex from (count of liveComposes) to 1 by -1
+                        try
+                            set aCompose to item composeIndex of liveComposes
+                            if (visible of aCompose) is false and (subject of aCompose) is draftSubject then
+                                close aCompose saving no
+                            end if
+                        end try
+                    end repeat
+                    delay 0.5
+
+                    -- Verify instead of assuming: report what the mailbox says.
+                    set stillThere to (messages of draftsMailbox whose id is draftId)
+                    if (count of stillThere) is 0 then
+                        set outputText to outputText & "✓ Draft deleted." & return
+                    else
+                        set outputText to outputText & "⚠ Draft is still in Drafts after the delete. Remove it in Mail." & return
+                    end if
                     set outputText to outputText & "Subject: " & draftSubject & return
 
                 else
@@ -1697,8 +2957,11 @@ def manage_drafts(
 
     else:
         return (
-            f"Error: Invalid action '{action}'. Use: list, create, send, open, delete"
+            f"Error: Invalid action '{action}'. "
+            "Use: list, create, update, send, open, delete"
         )
 
     result = run_applescript(script)
+    if action == "create" and not result.startswith("Error:"):
+        result += _draft_location_note(subject)
     return result

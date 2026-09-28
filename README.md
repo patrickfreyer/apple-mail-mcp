@@ -146,7 +146,9 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 ### Read-Only Mode
 
-Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_email`, `forward_email`). Draft management remains available (list, create, delete) but sending a draft via `manage_drafts` is blocked.
+Pass `--read-only` to block delivery. Nothing leaves the machine: `compose_email` and `reply_to_email` refuse `mode="send"`, `manage_drafts` refuses `action="send"`, and `forward_email` is removed entirely because it has no non-sending mode.
+
+The composing tools stay registered so that `mode="draft"` and `mode="open"` keep working. Those never deliver anything, and they are the only place in the compose surface that supports `attachments` — `manage_drafts` and `create_rich_email_draft` cannot attach files.
 
 ```json
 {
@@ -204,14 +206,26 @@ Create a rich HTML draft for a weekly update and open it in Mail
 
 ### Rich HTML Drafts
 
-Use `create_rich_email_draft` when you need a visually formatted email, newsletter, or leadership update.
+For a formatted message that has to land in Drafts and stay sendable, pass `body_html` to
+`compose_email` (`mode="draft"`, `"send"` or `"open"`). Mail receives the markup through its
+`html content` property, so headings, lists, links, inline colours and non-ASCII text arrive
+verbatim, and Mail attaches your real signature.
 
-- It generates an unsent `.eml` file with multipart plain-text + HTML bodies
-- It can open the draft directly in Mail for editing
-- It can optionally ask Mail to save the opened compose window into Drafts
-- It accepts partial details, so you can start with just an account and subject and fill in the rest later
+`create_rich_email_draft` is the alternative when you want the message as a file: it writes an
+unsent `.eml` with multipart plain-text + HTML bodies and opens it in Mail. Note that Mail opens
+a `.eml` as a read-only viewer, so it can never be saved into Drafts — use `compose_email` for
+that.
 
-This is more reliable than injecting raw HTML into AppleScript `content`, which Mail often stores as literal markup.
+## Known Mail.app limitations
+
+These are Mail's behaviour, not this server's. They are listed here because they are visible in
+the messages it produces and there is no way around them from AppleScript.
+
+| Behaviour | Effect | Why it is not fixed here |
+|---|---|---|
+| macOS 15+ wraps every AppleScript-supplied body in `<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">` | Recipients whose client ignores the wrapper's inline `inherit` styles (Outlook's Word engine) see the message indented; clients that collapse `type="cite"` (Gmail) may hide it behind a "…" toggle | The wrapper is added by Mail after the body is set. All four routes produce it identically: a `content` property, a later `set content`, `set html content`, and a GUI paste into a scripted compose window. Nothing in this package writes it, and no ordering avoids it. The server does make sure the wrapper never *stacks* when a draft is edited repeatedly. |
+| Adding an attachment re-renders the body through Mail's editor | HTML formatting on a message with attachments is flattened to plain font runs | Setting the body after the attachment drops the attachment instead. The tools say so in their output rather than letting you find out from the sent mail. |
+| `close <message> saving no` does not always discard the message | An abandoned compose object can stay in Drafts | Mail's own scripting behaviour |
 
 ## Email Management Skill
 
@@ -237,7 +251,9 @@ cp -r plugin/skills/email-management ~/.claude/skills/email-management
 | Slow searches | Set `include_content: false` and lower `max_results` |
 | Mailbox not found | Use exact folder names; nested folders use `/` separator (e.g., `Projects/Alpha`) |
 | Permission errors | Grant access in **System Settings > Privacy & Security > Automation** |
-| Rich draft shows raw HTML | Use `create_rich_email_draft` instead of pasting HTML into `manage_drafts` or AppleScript `content` |
+| Rich draft shows raw HTML | Pass the markup as `body_html` to `compose_email`, not as plain `body` / `manage_drafts` content |
+| Message looks quoted or indented at the recipient | Mail's share wrapper, see [Known Mail.app limitations](#known-mailapp-limitations) |
+| Formatting lost on a message with attachments | Mail re-renders the body when a file is attached, see [Known Mail.app limitations](#known-mailapp-limitations) |
 
 ## Project Structure
 

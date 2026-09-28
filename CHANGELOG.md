@@ -7,7 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- HTML bodies now go to Mail through `set html content` instead of the clipboard.
+  `compose_email(body_html=...)` used to convert the markup to an
+  `NSAttributedString`, write it back to the pasteboard as RTF, open a *visible*
+  compose window and drive Cmd+A / Cmd+V through System Events. That route stole
+  keyboard focus from whatever the user was doing, aborted whenever Mail did not
+  come to the front, and the RTF round-trip discarded all CSS, so every message
+  arrived as 12px black Helvetica. `set html content` hands Mail the markup
+  verbatim: headings, lists, links, inline colours and non-ASCII text survive
+  byte-for-byte, the message signature stays attached, and nothing is typed.
+  `reply_to_email` and `forward_email` keep the paste route on purpose — they
+  have to preserve the quoted original that Mail puts in the body, and
+  `set html content` would replace it.
+- `reply_to_email` now replies the way Mail does by hand, for plain and HTML
+  bodies alike: `reply ... with opening window` lets Mail build its own quote
+  (blue quote bar, the original's formatting, attribution line, signature) and
+  the new text is pasted above it as HTML. Plain-text replies used to set
+  `content`, which discarded that quote, rebuilt it as `>` lines and wrapped
+  the whole body in Mail's share template. The paste waits until the reply's
+  own window has focus; if Mail cannot come to the front, draft mode falls
+  back to the plain-text quote and says so, send and open modes stop without
+  sending.
+- `--read-only` now blocks delivery instead of removing the composing tools.
+  `compose_email` and `reply_to_email` stay registered and refuse `mode="send"`
+  themselves; only `forward_email`, which has no non-sending mode, is still
+  removed. Previously the flag took away the entire compose surface, and with
+  it the only tools that accept `attachments` — leaving no supported way to
+  attach a file to a draft in read-only mode.
+
 ### Fixed
+- Editing a draft no longer costs it its signature. `manage_drafts(action="update")`
+  rebuilt the message from `content of theDraft` — Mail's *plain-text* rendering,
+  in which the signature is already reduced to unformatted text — and then set
+  `message signature` to `missing value` so that flattened copy would not be
+  doubled. The result had no `X-Apple-Mail-Signature` header, Mail's compose
+  window reported "Signature: None", and the signature had lost its table, image
+  and colours. The rebuild now reuses the stored HTML instead (via the raw
+  message source), cuts the baked-in signature block out of it, and leaves
+  `message signature` alone so Mail attaches the live one again. When the HTML
+  cannot be recovered the old plain-text rebuild is used and the return value
+  says so instead of pretending nothing was lost.
+- Repeated draft edits no longer nest Mail's share wrapper. macOS 15+ Mail wraps
+  every AppleScript-supplied body in
+  `<div class="Apple-Mail-URLShareWrapperClass"><blockquote type="cite">`; feeding
+  a stored body back through the composer therefore added a layer on every edit
+  (measured two layers deep on a draft edited twice). The reuse path now peels
+  the existing layers off first. The wrapper itself is Mail's and cannot be
+  suppressed — see "Known Mail.app limitations" in the README.
+- `--read-only` had no effect on `manage_drafts(action="send")`. `compose.py`
+  did `from apple_mail_mcp.server import READ_ONLY`, which binds the value
+  `False` at import time, while `__main__` sets `server.READ_ONLY` afterwards.
+  The guard therefore never fired. The module now reads the flag through the
+  `server` module at call time.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two

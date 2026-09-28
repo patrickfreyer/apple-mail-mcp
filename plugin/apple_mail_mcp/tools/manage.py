@@ -13,7 +13,6 @@ from apple_mail_mcp.core import (
     normalize_message_ids,
     normalize_search_terms,
     run_applescript,
-    inbox_mailbox_script,
     build_mailbox_ref,
     build_filter_condition,
 )
@@ -242,7 +241,11 @@ def move_email(
 @mcp.tool()
 @inject_preferences
 def save_email_attachment(
-    account: str, subject_keyword: str, attachment_name: str, save_path: str
+    account: str,
+    subject_keyword: str,
+    attachment_name: str,
+    save_path: str,
+    mailbox: str = "INBOX",
 ) -> str:
     """
     Save a specific attachment from an email to disk.
@@ -252,6 +255,7 @@ def save_email_attachment(
         subject_keyword: Keyword to search for in email subjects
         attachment_name: Name of the attachment to save
         save_path: Full path where to save the attachment
+        mailbox: Mailbox to search in (default: "INBOX"). Use e.g. "Archive" for an already archived message; nested mailboxes use "/".
 
     Returns:
         Confirmation message with save location
@@ -293,6 +297,7 @@ def save_email_attachment(
     escaped_keyword = escape_applescript(subject_keyword)
     escaped_attachment = escape_applescript(attachment_name)
     escaped_path = escape_applescript(expanded_path)
+    escaped_mailbox = escape_applescript(mailbox)
 
     script = f'''
     tell application "Mail"
@@ -300,44 +305,65 @@ def save_email_attachment(
 
         try
             set targetAccount to account "{escaped_account}"
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
-            set inboxMessages to every message of inboxMailbox
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="inboxMailbox")}
+            -- `whose` filters inside Mail instead of pulling every message
+            -- over Apple Events, and the NEWEST match wins: the same subject
+            -- often shows up several times in a thread.
+            set matchingMessages to (messages of inboxMailbox whose subject contains "{escaped_keyword}")
+            set matchCount to count of matchingMessages
             set foundAttachment to false
 
-            repeat with aMessage in inboxMessages
-                try
-                    set messageSubject to subject of aMessage
+            if matchCount is 0 then
+                set outputText to "⚠ No message found matching: {escaped_keyword}" & return
+                set outputText to outputText & "Searched mailbox: {escaped_mailbox}" & return
+            else
+                set foundMessage to item 1 of matchingMessages
+                set newestDate to date received of foundMessage
+                set scanLimit to matchCount
+                if scanLimit > 100 then set scanLimit to 100
+                repeat with scanIndex from 2 to scanLimit
+                    try
+                        set candidate to item scanIndex of matchingMessages
+                        if (date received of candidate) > newestDate then
+                            set foundMessage to candidate
+                            set newestDate to date received of candidate
+                        end if
+                    end try
+                end repeat
 
-                    -- Check if subject contains keyword
-                    if messageSubject contains "{escaped_keyword}" then
-                        set msgAttachments to mail attachments of aMessage
+                set messageSubject to subject of foundMessage
+                set availableNames to ""
+                repeat with anAttachment in (mail attachments of foundMessage)
+                    set attachmentFileName to name of anAttachment
+                    set availableNames to availableNames & "   - " & attachmentFileName & return
+                    if not foundAttachment and attachmentFileName contains "{escaped_attachment}" then
+                        save anAttachment in POSIX file "{escaped_path}"
 
-                        repeat with anAttachment in msgAttachments
-                            set attachmentFileName to name of anAttachment
-
-                            if attachmentFileName contains "{escaped_attachment}" then
-                                -- Save the attachment
-                                save anAttachment in POSIX file "{escaped_path}"
-
-                                set outputText to "✓ Attachment saved successfully!" & return & return
-                                set outputText to outputText & "Email: " & messageSubject & return
-                                set outputText to outputText & "Attachment: " & attachmentFileName & return
-                                set outputText to outputText & "Saved to: {escaped_path}" & return
-
-                                set foundAttachment to true
-                                exit repeat
-                            end if
-                        end repeat
-
-                        if foundAttachment then exit repeat
+                        set outputText to "✓ Attachment saved successfully!" & return & return
+                        set outputText to outputText & "Email: " & messageSubject & return
+                        set outputText to outputText & "Attachment: " & attachmentFileName & return
+                        set outputText to outputText & "Saved to: {escaped_path}" & return
+                        set foundAttachment to true
                     end if
-                end try
-            end repeat
+                end repeat
 
-            if not foundAttachment then
-                set outputText to "⚠ Attachment not found" & return
-                set outputText to outputText & "Email keyword: {escaped_keyword}" & return
-                set outputText to outputText & "Attachment name: {escaped_attachment}" & return
+                if foundAttachment then
+                    if matchCount > 1 then
+                        set outputText to outputText & "Note: " & matchCount & " messages matched, took the newest one." & return
+                    end if
+                else
+                    set outputText to "⚠ Attachment not found" & return
+                    set outputText to outputText & "Email: " & messageSubject & return
+                    if matchCount > 1 then
+                        set outputText to outputText & "(" & matchCount & " messages matched the keyword, looked at the newest one)" & return
+                    end if
+                    set outputText to outputText & "Looked for: {escaped_attachment}" & return
+                    if availableNames is "" then
+                        set outputText to outputText & "That message has no attachments." & return
+                    else
+                        set outputText to outputText & "Attachments on that message:" & return & availableNames
+                    end if
+                end if
             end if
 
         on error errMsg
@@ -622,6 +648,13 @@ def manage_trash(
     When dry_run=True (default) and action is "move_to_trash", previews what
     would be deleted without acting. Set dry_run=False to actually move to trash.
 
+    Mail's AppleScript interface has no command that erases a message: `delete`
+    means "move to Trash", and on a message that already sits in Trash it does
+    nothing. "delete_permanent" and "empty_trash" therefore usually remove
+    nothing at all. Both report the real before/after mailbox count instead of
+    the number of delete calls, and say so when nothing was removed — emptying
+    the trash for good has to happen in Mail itself.
+
     Args:
         account: Account name (e.g., "Gmail", "Work")
         action: Action to perform: "move_to_trash", "delete_permanent", "empty_trash"
@@ -661,16 +694,30 @@ def manage_trash(
                 set messageCount to count of trashMessages
                 set deleteCount to 0
 
-                -- Delete messages in trash, respecting max_deletes
-                repeat with aMessage in trashMessages
+                -- Delete messages in trash, respecting max_deletes.
+                -- Iterate backwards over the captured list: deleting a message
+                -- shifts every later index down by one, so a forward loop skips
+                -- every second message and eventually reads past the end.
+                repeat with msgIndex from messageCount to 1 by -1
                     if deleteCount >= {max_deletes} then exit repeat
-                    delete aMessage
+                    delete (item msgIndex of trashMessages)
                     set deleteCount to deleteCount + 1
                 end repeat
 
-                set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
-                set outputText to outputText & "   Deleted " & deleteCount & " of " & messageCount & " message(s)" & return
-                if deleteCount < messageCount then
+                -- Report what actually left the mailbox, not how often the
+                -- delete command was issued. Mail's AppleScript `delete` means
+                -- "move to Trash"; on a message that already sits in Trash it
+                -- is a no-op, and the old count reported those no-ops as
+                -- successful deletions.
+                set remainingCount to count of messages of trashMailbox
+                set removedCount to messageCount - remainingCount
+
+                set outputText to outputText & "Account: {safe_account}" & return
+                set outputText to outputText & "   Trash before: " & messageCount & ", after: " & remainingCount & return
+                set outputText to outputText & "   Actually removed: " & removedCount & " message(s)" & return
+                if removedCount is 0 then
+                    set outputText to outputText & "⚠ Nothing was removed. Mail's AppleScript interface has no command that erases messages from the trash; `delete` only moves a message to Trash. Empty the trash in Mail itself." & return
+                else if deleteCount < messageCount then
                     set outputText to outputText & "   (limited by max_deletes=" & {max_deletes} & ")" & return
                 end if
 
@@ -723,21 +770,36 @@ def manage_trash(
                         set targetMessages to matchingMessages
                     end if
 
-                    repeat with aMessage in targetMessages
+                    set trashBefore to count of messages of trashMailbox
+
+                    -- Backwards over the captured list (deleting shifts later
+                    -- indices) and only name a message once its delete call
+                    -- returned without error.
+                    repeat with msgIndex from (count of targetMessages) to 1 by -1
                         try
+                            set aMessage to item msgIndex of targetMessages
                             set messageSubject to subject of aMessage
                             set messageSender to sender of aMessage
 
-                            set outputText to outputText & "✓ Permanently deleted: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return & return
-
                             delete aMessage
                             set deleteCount to deleteCount + 1
+
+                            set outputText to outputText & "Targeted: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return & return
                         end try
                     end repeat
 
+                    -- The truth is the mailbox count, not the number of delete
+                    -- calls: Mail's `delete` means "move to Trash" and does
+                    -- nothing to a message that is already there.
+                    set trashAfter to count of messages of trashMailbox
+                    set removedCount to trashBefore - trashAfter
+
                     set outputText to outputText & "========================================" & return
-                    set outputText to outputText & "TOTAL DELETED: " & deleteCount & " email(s)" & return
+                    set outputText to outputText & "TARGETED: " & deleteCount & ", ACTUALLY REMOVED: " & removedCount & return
+                    if removedCount is 0 and deleteCount > 0 then
+                        set outputText to outputText & "⚠ Nothing was erased. Mail's AppleScript interface cannot permanently delete a message that already sits in Trash. Erase it in Mail itself." & return
+                    end if
                     set outputText to outputText & "========================================" & return
 
                 on error errMsg
