@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Account names containing `|` (e.g. `Jane Doe | Example Corp`) were split
+  into two unusable fragments by `list_accounts`, `list_account_addresses`
+  and `get_mailbox_unread_counts(summary_only=True)`, because `|` was also
+  the record delimiter. Every follow-up call with such a fragment failed
+  with "account not found". Records are now one per line, and the count or
+  address list is split off at the last delimiter.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
