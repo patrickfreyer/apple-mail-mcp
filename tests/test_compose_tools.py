@@ -900,10 +900,6 @@ class PasteboardUtf8EncodingTests(unittest.TestCase):
         self.assertIn("dictionaryWithObjects:", snippet)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReadOnlyModeTests(unittest.TestCase):
     """--read-only blocks delivery, not the draft and review modes."""
 
@@ -985,3 +981,44 @@ class ReadOnlyModeTests(unittest.TestCase):
             )
 
         self.assertNotIn("Error: Sending is disabled", result)
+
+    def test_reply_refusal_writes_no_temp_files(self):
+        """The guard runs before the body/HTML temp files are created."""
+        with (
+            patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.tempfile.NamedTemporaryFile"
+            ) as mock_tmp,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                mode="send",
+            )
+
+        mock_tmp.assert_not_called()
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_manage_drafts_refuses_to_send(self):
+        """Regression for #102: action="send" must not reach Mail."""
+        with (
+            patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run,
+            patch("apple_mail_mcp.tools.compose.subprocess.run") as mock_subprocess,
+        ):
+            result = compose_tools.manage_drafts(
+                account="Work",
+                action="send",
+                draft_subject="Invoice",
+            )
+
+        mock_run.assert_not_called()
+        mock_subprocess.assert_not_called()
+        self.assertEqual(
+            result, "Error: Sending drafts is disabled in read-only mode."
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
