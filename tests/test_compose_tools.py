@@ -900,5 +900,70 @@ class PasteboardUtf8EncodingTests(unittest.TestCase):
         self.assertIn("dictionaryWithObjects:", snippet)
 
 
+class ClipboardRestoreTests(unittest.TestCase):
+    """Regression for #106: the reply script returned before the code that
+    restores the user's clipboard, so every reply left the body on it."""
+
+    RESTORE = "pb's setString:oldClip forType:(current application's NSPasteboardTypeString)"
+
+    def _render(self, func, **kwargs):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+        ):
+            func(account="Work", subject_keyword="test", **kwargs)
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    @staticmethod
+    def _return_lines(text):
+        # AppleScript `return` statements; `& return &` (a newline) doesn't count.
+        return [ln for ln in text.splitlines() if ln.strip().startswith("return ")]
+
+    def test_reply_restores_clipboard_before_any_return(self):
+        for mode in ("send", "draft", "open"):
+            with self.subTest(mode=mode):
+                script = self._render(
+                    compose_tools.reply_to_email, reply_body="Hi", mode=mode
+                )
+                restore_at = script.rfind(self.RESTORE)
+                self.assertNotEqual(restore_at, -1)
+                self.assertEqual(self._return_lines(script[:restore_at]), [])
+                self.assertEqual(
+                    [ln.strip() for ln in self._return_lines(script[restore_at:])],
+                    ["return outputText"],
+                )
+
+    def test_forward_error_path_restores_clipboard(self):
+        script = self._render(
+            compose_tools.forward_email,
+            to="x@example.com",
+            message="A note",
+        )
+        error_block = script[script.index("on error errMsg"):]
+        self.assertLess(
+            error_block.index(self.RESTORE),
+            error_block.index('return "Error: " & errMsg'),
+        )
+
+    def test_forward_without_message_has_no_clipboard_code(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ) as mock_applescript,
+        ):
+            compose_tools.forward_email(
+                account="Work", subject_keyword="test", to="x@example.com"
+            )
+        script = mock_applescript.call_args.args[0]
+        self.assertNotIn("oldClip", script)
+
+
 if __name__ == "__main__":
     unittest.main()

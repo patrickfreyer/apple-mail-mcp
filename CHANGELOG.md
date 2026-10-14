@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `reply_to_email` now restores the user's clipboard. The restore step sat
+  after the script's `return`, so it never ran and every reply (send, draft
+  or open) left the reply body on the clipboard. The error path now restores
+  it too, as does `forward_email`'s error path when a `message` was pasted
+  (#106).
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two

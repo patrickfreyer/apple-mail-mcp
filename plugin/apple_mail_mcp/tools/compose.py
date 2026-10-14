@@ -924,17 +924,19 @@ tell application "Mail"
                 {cleanup_script}
                 {html_cleanup_script}
             end try
-            return "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
+            set outputText to "Error: " & errMsg & return & "Please check that the account name is correct and the email exists."
         end try
-
-        return outputText
     end tell
 
-    -- Restore clipboard
+    -- Restore clipboard. Every path must fall through to here: a `return`
+    -- inside the tell block above would skip this and leave the reply body
+    -- on the user's clipboard (#106).
     if oldClip is not missing value then
         pb's clearContents()
         pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
     end if
+
+    return outputText
     """
 
     try:
@@ -1280,6 +1282,18 @@ def forward_email(
                 end if
         """
 
+    # If the script fails after the note was put on the clipboard, restore the
+    # user's clipboard before returning. Wrapped in `try` because oldClip is
+    # undefined when the error happens before the paste step (#106).
+    fwd_clipboard_restore_on_error = ""
+    if message:
+        fwd_clipboard_restore_on_error = """try
+                if oldClip is not missing value then
+                    pb's clearContents()
+                    pb's setString:oldClip forType:(current application's NSPasteboardTypeString)
+                end if
+            end try"""
+
     use_frameworks = ""
     if message:
         use_frameworks = """use framework "Foundation"
@@ -1369,6 +1383,7 @@ tell application "Mail"
             try
                 {fwd_html_cleanup_script}
             end try
+            {fwd_clipboard_restore_on_error}
             return "Error: " & errMsg
         end try
 
