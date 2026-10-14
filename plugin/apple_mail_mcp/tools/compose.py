@@ -655,6 +655,21 @@ def reply_to_email(
         Confirmation message with details of the reply sent, saved draft, or opened draft
     """
 
+    # Resolve the delivery mode and apply the read-only guard before anything
+    # else: the temp files written below would otherwise leak on refusal.
+    if mode is not None:
+        if mode not in ("send", "draft", "open"):
+            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+        effective_mode = mode
+    else:
+        effective_mode = "send" if send else "draft"
+
+    if server.READ_ONLY and effective_mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
+        )
+
     reply_body = _strip_cdata_wrappers(reply_body) or ""
     body_html = _strip_cdata_wrappers(body_html)
 
@@ -751,20 +766,6 @@ def reply_to_email(
     safe_attachment_info = (
         escape_applescript(attachment_info) if attachment_info else ""
     )
-
-    # Resolve delivery mode: mode parameter takes precedence over send boolean
-    if mode is not None:
-        if mode not in ("send", "draft", "open"):
-            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
-        effective_mode = mode
-    else:
-        effective_mode = "send" if send else "draft"
-
-    if server.READ_ONLY and effective_mode == "send":
-        return (
-            "Error: Sending is disabled in read-only mode. "
-            'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
-        )
 
     # Read body from temp file in AppleScript (avoids all string escaping issues)
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
