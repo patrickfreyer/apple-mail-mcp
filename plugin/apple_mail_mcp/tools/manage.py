@@ -13,7 +13,6 @@ from apple_mail_mcp.core import (
     normalize_message_ids,
     normalize_search_terms,
     run_applescript,
-    inbox_mailbox_script,
     build_mailbox_ref,
     build_filter_condition,
 )
@@ -242,7 +241,11 @@ def move_email(
 @mcp.tool()
 @inject_preferences
 def save_email_attachment(
-    account: str, subject_keyword: str, attachment_name: str, save_path: str
+    account: str,
+    subject_keyword: str,
+    attachment_name: str,
+    save_path: str,
+    mailbox: str = "INBOX",
 ) -> str:
     """
     Save a specific attachment from an email to disk.
@@ -252,6 +255,7 @@ def save_email_attachment(
         subject_keyword: Keyword to search for in email subjects
         attachment_name: Name of the attachment to save
         save_path: Full path where to save the attachment
+        mailbox: Mailbox to search in (default: "INBOX"). Use e.g. "Archive" for an already archived message; nested mailboxes use "/".
 
     Returns:
         Confirmation message with save location
@@ -293,6 +297,7 @@ def save_email_attachment(
     escaped_keyword = escape_applescript(subject_keyword)
     escaped_attachment = escape_applescript(attachment_name)
     escaped_path = escape_applescript(expanded_path)
+    escaped_mailbox = escape_applescript(mailbox)
 
     script = f'''
     tell application "Mail"
@@ -300,7 +305,7 @@ def save_email_attachment(
 
         try
             set targetAccount to account "{escaped_account}"
-            {inbox_mailbox_script("inboxMailbox", "targetAccount")}
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="inboxMailbox")}
             set inboxMessages to every message of inboxMailbox
             set foundAttachment to false
 
@@ -338,6 +343,7 @@ def save_email_attachment(
                 set outputText to "⚠ Attachment not found" & return
                 set outputText to outputText & "Email keyword: {escaped_keyword}" & return
                 set outputText to outputText & "Attachment name: {escaped_attachment}" & return
+                set outputText to outputText & "Searched mailbox: {escaped_mailbox}" & return
             end if
 
         on error errMsg

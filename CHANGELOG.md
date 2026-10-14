@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `save_email_attachment` only ever searched the inbox, so an attachment on
+  an archived or filed message could not be saved. It now takes an optional
+  `mailbox` parameter (default `"INBOX"`, nested mailboxes with `/`) and
+  names the searched mailbox when nothing is found.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
