@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `manage_trash` reported deletions that never happened. `empty_trash` and
+  `delete_permanent` counted `delete` calls, but Mail's AppleScript `delete`
+  means "move to Trash" and is a no-op on a message that already sits in
+  Trash. Both actions now report the real before/after Trash count and say
+  plainly when nothing was removed. The delete loops also iterate backwards
+  over the captured list: a forward loop skipped every second message,
+  because each delete shifts the later indices.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
