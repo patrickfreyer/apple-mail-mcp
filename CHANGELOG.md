@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `get_email_thread` grouped messages by subject alone, so unrelated
+  conversations that happened to share a subject ("Invoice", "Meeting") were
+  mixed into one thread, and only `Re:`/`Fwd:`/`FW:` prefixes were stripped.
+  **Behavior change:** candidates are still found by subject (now filtered
+  inside Mail with `whose` instead of walking every message), but the thread
+  is then built from the newest match outward through `Message-ID`,
+  `In-Reply-To` and `References`. Same-subject messages without a link are
+  listed in a separate section instead of inside the thread, messages without
+  any Message-ID stay in the thread, the output is sorted oldest first, and
+  repeated or localized prefixes (`Re: AW: Fwd:`, `WG:`) are stripped.
+  `max_messages` now caps the number of candidates inspected.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
