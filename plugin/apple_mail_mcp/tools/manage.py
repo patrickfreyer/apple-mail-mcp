@@ -628,6 +628,13 @@ def manage_trash(
     When dry_run=True (default) and action is "move_to_trash", previews what
     would be deleted without acting. Set dry_run=False to actually move to trash.
 
+    Mail's AppleScript interface has no command that erases a message: `delete`
+    means "move to Trash", and on a message that already sits in Trash it does
+    nothing. "delete_permanent" and "empty_trash" therefore usually remove
+    nothing at all. Both report the real before/after mailbox count instead of
+    the number of delete calls, and say so when nothing was removed; emptying
+    the trash for good has to happen in Mail itself.
+
     Args:
         account: Account name (e.g., "Gmail", "Work")
         action: Action to perform: "move_to_trash", "delete_permanent", "empty_trash"
@@ -653,7 +660,7 @@ def manage_trash(
     if action == "empty_trash":
         if not confirm_empty:
             return (
-                "Error: empty_trash permanently deletes ALL messages in the trash. "
+                "Error: empty_trash attempts to delete ALL messages in the trash. "
                 "Set confirm_empty=True to proceed."
             )
         script = f'''
@@ -667,16 +674,29 @@ def manage_trash(
                 set messageCount to count of trashMessages
                 set deleteCount to 0
 
-                -- Delete messages in trash, respecting max_deletes
-                repeat with aMessage in trashMessages
+                -- Delete messages in trash, respecting max_deletes.
+                -- trashMessages is a list captured up front, so deleting does
+                -- not shift its indices; a forward loop takes the first N.
+                repeat with msgIndex from 1 to messageCount
                     if deleteCount >= {max_deletes} then exit repeat
-                    delete aMessage
+                    delete (item msgIndex of trashMessages)
                     set deleteCount to deleteCount + 1
                 end repeat
 
-                set outputText to outputText & "✓ Emptied trash for account: {safe_account}" & return
-                set outputText to outputText & "   Deleted " & deleteCount & " of " & messageCount & " message(s)" & return
-                if deleteCount < messageCount then
+                -- Report what actually left the mailbox, not how often the
+                -- delete command was issued. Mail's AppleScript `delete` means
+                -- "move to Trash"; on a message that already sits in Trash it
+                -- is a no-op, and the old count reported those no-ops as
+                -- successful deletions.
+                set remainingCount to count of messages of trashMailbox
+                set removedCount to messageCount - remainingCount
+
+                set outputText to outputText & "Account: {safe_account}" & return
+                set outputText to outputText & "   Trash before: " & messageCount & ", after: " & remainingCount & return
+                set outputText to outputText & "   Actually removed: " & removedCount & " message(s)" & return
+                if removedCount is 0 then
+                    set outputText to outputText & "⚠ Nothing was removed. Mail's AppleScript interface has no command that erases messages from the trash; `delete` only moves a message to Trash. Empty the trash in Mail itself." & return
+                else if deleteCount < messageCount then
                     set outputText to outputText & "   (limited by max_deletes=" & {max_deletes} & ")" & return
                 end if
 
@@ -729,21 +749,36 @@ def manage_trash(
                         set targetMessages to matchingMessages
                     end if
 
-                    repeat with aMessage in targetMessages
+                    set trashBefore to count of messages of trashMailbox
+
+                    -- Walk the captured list (deleting does not shift its
+                    -- indices) and only name a message once its delete call
+                    -- returned without error.
+                    repeat with msgIndex from (count of targetMessages) to 1 by -1
                         try
+                            set aMessage to item msgIndex of targetMessages
                             set messageSubject to subject of aMessage
                             set messageSender to sender of aMessage
 
-                            set outputText to outputText & "✓ Permanently deleted: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return & return
-
                             delete aMessage
                             set deleteCount to deleteCount + 1
+
+                            set outputText to outputText & "Targeted: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return & return
                         end try
                     end repeat
 
+                    -- The truth is the mailbox count, not the number of delete
+                    -- calls: Mail's `delete` means "move to Trash" and does
+                    -- nothing to a message that is already there.
+                    set trashAfter to count of messages of trashMailbox
+                    set removedCount to trashBefore - trashAfter
+
                     set outputText to outputText & "========================================" & return
-                    set outputText to outputText & "TOTAL DELETED: " & deleteCount & " email(s)" & return
+                    set outputText to outputText & "TARGETED: " & deleteCount & ", ACTUALLY REMOVED: " & removedCount & return
+                    if removedCount is 0 and deleteCount > 0 then
+                        set outputText to outputText & "⚠ Nothing was erased. Mail's AppleScript interface cannot permanently delete a message that already sits in Trash. Erase it in Mail itself." & return
+                    end if
                     set outputText to outputText & "========================================" & return
 
                 on error errMsg
