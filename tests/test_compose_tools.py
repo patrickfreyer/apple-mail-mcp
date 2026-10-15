@@ -971,9 +971,63 @@ class ReplyDraftVerificationTests(unittest.TestCase):
         self.assertLess(script.index("set priorDraftIDs"), script.index("set replyMessage to reply"))
         self.assertIn("whose subject is savedReplySubject", script)
         self.assertIn("priorDraftIDs does not contain", script)
-        self.assertIn("if (count of newDrafts) is greater than 1 then exit repeat", script)
-        self.assertIn("message id of (item 1 of newDrafts)", script)
+        self.assertIn("if (count of newDraftMessageIDs) is greater than 1 then exit repeat", script)
+        self.assertIn("set candidateMessageID to message id of candidate", script)
         self.assertIn("Saved draft Message-ID: ", script)
+
+    def _draft_script(self):
+        with (
+            patch("apple_mail_mcp.tools.compose.subprocess.run",
+                  return_value=_make_subprocess_result()) as mock_run,
+            patch("apple_mail_mcp.tools.compose.run_applescript", return_value=""),
+        ):
+            compose_tools.reply_to_email("Work", "test", "Reply", send=False)
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def test_drafts_snapshot_has_its_own_try(self):
+        """A missing "Drafts" mailbox must not abort the reply itself."""
+        script = self._draft_script()
+        snapshot = script.index("set priorDraftIDs to id of every message of draftMailbox")
+        # The bare "try" line that opens the snapshot's guarded block.
+        own_try = script.index("\n            try\n", script.index("set draftSnapshotOK to false"))
+        self.assertLess(own_try, script.index("set draftMailbox to mailbox"))
+        main_try_end = script.index("on error errMsg")
+        # Defaults are set before the guarded block, so later code always sees them.
+        self.assertLess(script.index("set priorDraftIDs to {}"), own_try)
+        self.assertLess(script.index("set draftSnapshotOK to false"), own_try)
+        self.assertLess(script.index("set draftMailbox to missing value"), own_try)
+        # The snapshot's own try closes before the reply is created.
+        own_end = script.index("end try", snapshot)
+        self.assertLess(snapshot, script.index("set draftSnapshotOK to true"))
+        self.assertLess(script.index("set draftSnapshotOK to true"), own_end)
+        self.assertLess(own_end, script.index("set replyMessage to reply"))
+        self.assertLess(own_end, main_try_end)
+        # No lookup against the Drafts mailbox runs without a snapshot.
+        lookup = script.index("whose subject is savedReplySubject")
+        self.assertLess(script.index("if draftSnapshotOK then"), lookup)
+
+    def test_new_candidates_sharing_one_message_id_count_as_one(self):
+        """Gmail autosave copies share a Message-ID and are one draft."""
+        script = self._draft_script()
+        self.assertIn(
+            "if newDraftMessageIDs does not contain candidateMessageID then", script
+        )
+        self.assertIn("set candidateMessageID to item 1 of newDraftMessageIDs", script)
+        self.assertNotIn("count of newDrafts", script)
+
+    def test_missing_drafts_mailbox_reports_failed_but_draft_saved(self):
+        result, mock_get_source = self._run_reply(
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            saved_output=(
+                b"Note: could not read the Drafts mailbox, so the saved draft "
+                b"cannot be verified.\nSaved draft Message-ID: \n"
+                b"Reply saved as draft!\nTo: a@example.com"
+            ),
+        )
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        self.assertIn("Reply saved as draft!", result)
+        self.assertIn("could not read the Drafts mailbox", result)
+        mock_get_source.assert_not_called()
 
     def test_html_sent_is_verified_instead_of_plain_fallback(self):
         result, _ = self._run_reply(

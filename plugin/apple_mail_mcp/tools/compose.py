@@ -860,35 +860,56 @@ def reply_to_email(
         # IDs before creating the reply (which can autosave), then resolve
         # the one new exact-subject draft after close/save. Reject ambiguity
         # rather than risk verifying an older or concurrently created reply.
+        # The snapshot has its own try: an account without a mailbox named
+        # "Drafts" must still save the reply. With no snapshot the identity
+        # lookup is skipped, so verification reports FAILED instead of
+        # risking a match against an older draft.
         draft_snapshot_script = f"""
-            {build_mailbox_ref("Drafts", var_name="draftMailbox")}
-            set priorDraftIDs to id of every message of draftMailbox
+            set draftMailbox to missing value
+            set priorDraftIDs to {{}}
+            set draftSnapshotOK to false
+            try
+                {build_mailbox_ref("Drafts", var_name="draftMailbox")}
+                set priorDraftIDs to id of every message of draftMailbox
+                set draftSnapshotOK to true
+            end try
         """
         post_paste_action = """
                 set savedReplySubject to subject of replyMessage
                 delay 0.5
                 close window 1 saving yes
         """
+        # New candidates are grouped by RFC Message-ID: Gmail can leave
+        # several autosave/sync copies of one draft, all sharing a
+        # Message-ID. Two distinct Message-IDs are still rejected as ambiguous.
         draft_identity_script = """
             set savedDraftMessageID to ""
-            repeat 20 times
-                set newDrafts to {}
-                set matchingDrafts to (messages of draftMailbox whose subject is savedReplySubject)
-                repeat with candidate in matchingDrafts
-                    if priorDraftIDs does not contain (id of candidate) then
-                        set end of newDrafts to contents of candidate
+            if draftSnapshotOK then
+                repeat 20 times
+                    set newDraftMessageIDs to {}
+                    set matchingDrafts to (messages of draftMailbox whose subject is savedReplySubject)
+                    repeat with candidate in matchingDrafts
+                        if priorDraftIDs does not contain (id of candidate) then
+                            set candidateMessageID to message id of candidate
+                            if candidateMessageID is missing value then set candidateMessageID to ""
+                            if newDraftMessageIDs does not contain candidateMessageID then
+                                set end of newDraftMessageIDs to candidateMessageID
+                            end if
+                        end if
+                    end repeat
+                    if (count of newDraftMessageIDs) is greater than 1 then exit repeat
+                    if (count of newDraftMessageIDs) is 1 then
+                        set candidateMessageID to item 1 of newDraftMessageIDs
+                        if candidateMessageID is not "" then
+                            set savedDraftMessageID to candidateMessageID
+                            exit repeat
+                        end if
                     end if
+                    delay 0.25
                 end repeat
-                if (count of newDrafts) is greater than 1 then exit repeat
-                if (count of newDrafts) is 1 then
-                    set candidateMessageID to message id of (item 1 of newDrafts)
-                    if candidateMessageID is not missing value and candidateMessageID is not "" then
-                        set savedDraftMessageID to candidateMessageID
-                        exit repeat
-                    end if
-                end if
-                delay 0.25
-            end repeat
+            else
+                set outputText to outputText & "Note: could not read the Drafts mailbox, so the saved draft cannot be verified." & return
+            end if
             set outputText to outputText & "Saved draft Message-ID: " & savedDraftMessageID & return
         """
 
