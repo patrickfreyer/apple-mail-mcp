@@ -443,6 +443,16 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
             patch(
                 "apple_mail_mcp.tools.compose.run_applescript"
             ) as mock_applescript,
+            # send=False maps to draft mode, which now reads the saved draft
+            # back for verification (#71). Mocked here so this test -- which
+            # is about the sender-alias fallback, not verification -- stays
+            # isolated from Mail.app rather than issuing a real AppleScript
+            # account lookup for an account ("Work") that doesn't exist on
+            # whatever machine runs the suite.
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source",
+                return_value="Error: account not found: Work",
+            ),
         ):
             compose_tools.reply_to_email(
                 account="Work",
@@ -468,6 +478,10 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
             patch(
                 "apple_mail_mcp.tools.compose.run_applescript",
                 return_value="default@example.com\nsecondary@example.org",
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source",
+                return_value="Error: account not found: Work",
             ),
         ):
             compose_tools.reply_to_email(
@@ -899,6 +913,301 @@ class PasteboardUtf8EncodingTests(unittest.TestCase):
         self.assertIn("NSDocumentTypeDocumentAttribute", snippet)
         self.assertIn("NSHTMLTextDocumentType", snippet)
         self.assertIn("dictionaryWithObjects:", snippet)
+
+
+class ReplyDraftVerificationTests(unittest.TestCase):
+    """Integration coverage for `_verify_saved_reply_body` (#71): the draft
+    path reads the just-saved reply back and reports whether the body
+    landed outside Mail's quoted original, rather than reporting success
+    from the AppleScript's text presence alone."""
+
+    def _run_reply(
+        self, get_email_source_return, run_applescript_return="",
+        saved_output=b"Reply saved as draft!\nSaved draft Message-ID: new@example.com",
+        **overrides
+    ):
+        kwargs = dict(
+            account="Work",
+            subject_keyword="test",
+            reply_body="Yes, 3pm works.",
+            send=False,
+        )
+        kwargs.update(overrides)
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(
+                    stdout=saved_output
+                ),
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value=run_applescript_return,
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source",
+                return_value=get_email_source_return,
+            ) as mock_get_source,
+        ):
+            result = compose_tools.reply_to_email(**kwargs)
+        return result, mock_get_source
+
+    def test_missing_draft_identity_fails_without_subject_fallback(self):
+        result, mock_get_source = self._run_reply(
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            saved_output=b"Reply saved as draft!",
+        )
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        mock_get_source.assert_not_called()
+
+    def test_draft_script_excludes_existing_ids_and_rejects_ambiguity(self):
+        with (
+            patch("apple_mail_mcp.tools.compose.subprocess.run",
+                  return_value=_make_subprocess_result()) as mock_run,
+            patch("apple_mail_mcp.tools.compose.run_applescript", return_value=""),
+        ):
+            compose_tools.reply_to_email("Work", "test", "Reply", send=False)
+        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        self.assertIn("set priorDraftIDs to id of every message of draftMailbox", script)
+        self.assertLess(script.index("set priorDraftIDs"), script.index("set replyMessage to reply"))
+        self.assertIn("whose subject is savedReplySubject", script)
+        self.assertIn("priorDraftIDs does not contain", script)
+        self.assertIn("if (count of newDraftMessageIDs) is greater than 1 then exit repeat", script)
+        self.assertIn("set candidateMessageID to message id of candidate", script)
+        self.assertIn("Saved draft Message-ID: ", script)
+
+    def _draft_script(self):
+        with (
+            patch("apple_mail_mcp.tools.compose.subprocess.run",
+                  return_value=_make_subprocess_result()) as mock_run,
+            patch("apple_mail_mcp.tools.compose.run_applescript", return_value=""),
+        ):
+            compose_tools.reply_to_email("Work", "test", "Reply", send=False)
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def test_drafts_snapshot_has_its_own_try(self):
+        """A missing "Drafts" mailbox must not abort the reply itself."""
+        script = self._draft_script()
+        snapshot = script.index("set priorDraftIDs to id of every message of draftMailbox")
+        # The bare "try" line that opens the snapshot's guarded block.
+        own_try = script.index("\n            try\n", script.index("set draftSnapshotOK to false"))
+        self.assertLess(own_try, script.index("set draftMailbox to mailbox"))
+        main_try_end = script.index("on error errMsg")
+        # Defaults are set before the guarded block, so later code always sees them.
+        self.assertLess(script.index("set priorDraftIDs to {}"), own_try)
+        self.assertLess(script.index("set draftSnapshotOK to false"), own_try)
+        self.assertLess(script.index("set draftMailbox to missing value"), own_try)
+        # The snapshot's own try closes before the reply is created.
+        own_end = script.index("end try", snapshot)
+        self.assertLess(snapshot, script.index("set draftSnapshotOK to true"))
+        self.assertLess(script.index("set draftSnapshotOK to true"), own_end)
+        self.assertLess(own_end, script.index("set replyMessage to reply"))
+        self.assertLess(own_end, main_try_end)
+        # No lookup against the Drafts mailbox runs without a snapshot.
+        lookup = script.index("whose subject is savedReplySubject")
+        self.assertLess(script.index("if draftSnapshotOK then"), lookup)
+
+    def test_new_candidates_sharing_one_message_id_count_as_one(self):
+        """Gmail autosave copies share a Message-ID and are one draft."""
+        script = self._draft_script()
+        self.assertIn(
+            "if newDraftMessageIDs does not contain candidateMessageID then", script
+        )
+        self.assertIn("set candidateMessageID to item 1 of newDraftMessageIDs", script)
+        self.assertNotIn("count of newDrafts", script)
+
+    def test_missing_drafts_mailbox_reports_failed_but_draft_saved(self):
+        result, mock_get_source = self._run_reply(
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            saved_output=(
+                b"Note: could not read the Drafts mailbox, so the saved draft "
+                b"cannot be verified.\nSaved draft Message-ID: \n"
+                b"Reply saved as draft!\nTo: a@example.com"
+            ),
+        )
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        self.assertIn("Reply saved as draft!", result)
+        self.assertIn("could not read the Drafts mailbox", result)
+        mock_get_source.assert_not_called()
+
+    def test_html_sent_is_verified_instead_of_plain_fallback(self):
+        result, _ = self._run_reply(
+            'Content-Type: text/html\r\n\r\n<p>Actual HTML</p><blockquote type="cite">old</blockquote>',
+            reply_body="Different fallback", body_html="<p>Actual <b>HTML</b></p>",
+        )
+        self.assertIn("Verification (PASSED)", result)
+
+    def test_failure_status_leads_with_reason(self):
+        result, _ = self._run_reply("Content-Type: text/plain\r\n\r\n> Yes, 3pm works.")
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        self.assertIn("only inside", result.splitlines()[0])
+
+    def test_success_status_leads_result(self):
+        result, _ = self._run_reply("Content-Type: text/plain\r\n\r\nYes, 3pm works.")
+        self.assertTrue(result.startswith("Status: VERIFIED"), result)
+
+    def test_source_error_is_a_leading_failure(self):
+        result, _ = self._run_reply("Error: draft unavailable")
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+
+    def test_body_outside_quote_reports_passed(self):
+        result, mock_get_source = self._run_reply(
+            "Content-Type: text/plain\r\n\r\n"
+            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n"
+        )
+
+        self.assertIn("Verification (PASSED)", result)
+        mock_get_source.assert_called_once_with(
+            account="Work", message_id="new@example.com", mailbox="Drafts"
+        )
+
+    def test_body_inside_quote_reports_failed(self):
+        """The #71 bug, caught rather than reported as a success."""
+        result, _ = self._run_reply(
+            "Content-Type: text/plain\r\n\r\n"
+            "> Yes, 3pm works.\r\n> On Jan 1, sender wrote:\r\n> hi\r\n"
+        )
+
+        self.assertIn("Verification (FAILED)", result)
+        self.assertIn("only inside the quoted original", result)
+
+    def test_get_email_source_error_is_reported_not_swallowed(self):
+        result, _ = self._run_reply("Error: account not found: Work")
+
+        self.assertIn("could not re-read the saved draft", result)
+
+    def test_no_overrides_reports_actual_saved_recipients(self):
+        result, _ = self._run_reply(
+            "From: sender@example.com\r\nTo: alice@example.com\r\nCc: bob@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            reply_to_all=True,
+        )
+        self.assertIn("Recipients (PASSED): To=['alice@example.com'] "
+                      "Cc=['bob@example.com'] From=['sender@example.com']", result)
+
+    def test_requested_cc_actually_saved_reports_passed(self):
+        """#70: verify the CC the caller asked for actually landed in the
+        saved draft, instead of trusting the request was honored."""
+        result, _ = self._run_reply(
+            "To: alice@example.com\r\nCc: carol@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\n"
+            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n",
+            cc="carol@example.com",
+        )
+
+        self.assertIn("Recipients (PASSED)", result)
+
+    def test_requested_cc_missing_from_saved_draft_reports_failed(self):
+        """The exact #70 scenario: a requested CC that Mail silently
+        dropped (e.g. bad address) must be caught, not glossed over."""
+        result, _ = self._run_reply(
+            "To: alice@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\n"
+            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n",
+            cc="carol@example.com",
+        )
+
+        self.assertIn("Recipients (FAILED)", result)
+        self.assertIn("carol@example.com", result)
+
+    def test_from_address_override_verified_against_saved_draft(self):
+        """A `from_address` override that Mail actually honored should
+        verify as PASSED against the saved draft's real From: header."""
+        result, _ = self._run_reply(
+            "From: alice@example.com\r\nTo: bob@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\n"
+            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n",
+            run_applescript_return="alice@example.com",
+            from_address="alice@example.com",
+        )
+
+        self.assertIn("Recipients (PASSED)", result)
+
+    def test_from_address_override_not_applied_reports_failed(self):
+        """If Mail did not actually stamp the requested From: address into
+        the saved draft, that must surface as a failure, not a silent
+        assumption that the override took effect."""
+        result, _ = self._run_reply(
+            "From: work-default@example.com\r\nTo: bob@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\n"
+            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n",
+            run_applescript_return="alice@example.com",
+            from_address="alice@example.com",
+        )
+
+        self.assertIn("Recipients (FAILED)", result)
+        self.assertIn("not found in saved From", result)
+
+    def test_send_mode_does_not_attempt_verification(self):
+        """Verification only runs for mode='draft' (see docstring on
+        `_verify_saved_reply_body` for why send/open are out of scope)."""
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(
+                    stdout=b"Reply sent successfully!"
+                ),
+            ),
+            patch("apple_mail_mcp.tools.compose.run_applescript"),
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source"
+            ) as mock_get_source,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Yes, 3pm works.",
+                send=True,
+            )
+
+        mock_get_source.assert_not_called()
+        self.assertNotIn("Verification", result)
+
+    def test_open_mode_does_not_attempt_verification(self):
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(
+                    stdout=b"Reply opened in Mail for review."
+                ),
+            ),
+            patch("apple_mail_mcp.tools.compose.run_applescript"),
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source"
+            ) as mock_get_source,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Yes, 3pm works.",
+                mode="open",
+            )
+
+        mock_get_source.assert_not_called()
+        self.assertNotIn("Verification", result)
+
+    def test_applescript_error_does_not_attempt_verification(self):
+        """If the reply itself failed, there is no saved draft to read back."""
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(
+                    stdout=b"No email found matching: test"
+                ),
+            ),
+            patch("apple_mail_mcp.tools.compose.run_applescript"),
+            patch(
+                "apple_mail_mcp.tools.compose.get_email_source"
+            ) as mock_get_source,
+        ):
+            compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Yes, 3pm works.",
+                send=False,
+            )
+
+        mock_get_source.assert_not_called()
 
 
 class ComposeFontStyleTests(unittest.TestCase):
