@@ -990,7 +990,7 @@ def _split_thread_by_linkage(records: List[Dict[str, Any]]):
 
     The newest candidate seeds the thread; everything reachable from it
     through Message-ID references belongs to it. A message without any
-    Message-ID at all stays in the thread — dropping it would hide mail that
+    Message-ID at all stays in the thread, since dropping it would hide mail that
     the old subject-only grouping did show.
     """
     if not records:
@@ -1064,7 +1064,11 @@ def get_email_thread(
         account: Account name (e.g., "Gmail", "Work")
         subject_keyword: Keyword to identify the thread (e.g., "Re: Project Update")
         mailbox: Mailbox to search in (default: "INBOX", use "All" for all mailboxes)
-        max_messages: Maximum number of candidate messages to inspect (default: 50)
+        max_messages: Maximum number of candidate messages to inspect (default: 50).
+            The cap applies before linking: only the first N subject matches
+            that Mail returns are considered, so the thread is seeded from the
+            newest of those N, not necessarily the newest message overall.
+            Raise it for long-running subjects.
 
     Returns:
         Formatted thread view sorted oldest first, with unlinked same-subject
