@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The server failed to start on any fresh install since the `mcp` SDK 2.0
+  release (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`, #97).
+  `server.py` imported `FastMCP` from the SDK's bundled v1 module instead of
+  from the declared `fastmcp` dependency, so once `fastmcp` 4.x pulled in
+  `mcp` 2.x the import path vanished. Now imports `from fastmcp import
+  FastMCP`. `--read-only` also called `FastMCP.remove_tool()`, which is
+  deprecated in fastmcp 3.x and removed in 4.x; it now goes through
+  `local_provider.remove_tool()`, which both support.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two

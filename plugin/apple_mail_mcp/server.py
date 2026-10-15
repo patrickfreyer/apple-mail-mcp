@@ -1,7 +1,7 @@
 """FastMCP server instance and user preferences."""
 
 import os
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 # Initialize FastMCP server
 mcp = FastMCP("Apple Mail MCP")
