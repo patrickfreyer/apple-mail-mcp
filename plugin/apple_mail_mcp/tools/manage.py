@@ -1,9 +1,9 @@
 """Management tools: moving, status updates, trash, and attachments."""
 
-import os
 from typing import Optional, List
 
 from apple_mail_mcp.server import mcp
+from apple_mail_mcp.paths import validate_write_path
 from apple_mail_mcp.core import (
     resolve_flag_color,
     contains_any_condition,
@@ -251,42 +251,19 @@ def save_email_attachment(
         account: Account name (e.g., "Gmail", "Work", "Personal")
         subject_keyword: Keyword to search for in email subjects
         attachment_name: Name of the attachment to save
-        save_path: Full path where to save the attachment
+        save_path: Full path where to save the attachment. Must be inside ~/Downloads,
+            ~/Desktop, ~/Documents or the temp dir (or a folder listed in
+            APPLE_MAIL_MCP_WRITE_DIRS); hidden files and folders are rejected.
 
     Returns:
         Confirmation message with save location
     """
 
-    # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
-    expanded_path = os.path.expanduser(save_path)
-
-    # Path validation: resolve to absolute path and enforce safety constraints
-    resolved_path = os.path.realpath(expanded_path)
-    home_dir = os.path.expanduser("~")
-
-    # Must be under the user's home directory
-    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
-        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
-
-    # Block sensitive directories
-    sensitive_dirs = [
-        os.path.join(home_dir, ".ssh"),
-        os.path.join(home_dir, ".gnupg"),
-        os.path.join(home_dir, ".config"),
-        os.path.join(home_dir, ".aws"),
-        os.path.join(home_dir, ".claude"),
-        os.path.join(home_dir, "Library", "LaunchAgents"),
-        os.path.join(home_dir, "Library", "LaunchDaemons"),
-        os.path.join(home_dir, "Library", "Keychains"),
-    ]
-    for sensitive_dir in sensitive_dirs:
-        if (
-            resolved_path.startswith(sensitive_dir + os.sep)
-            or resolved_path == sensitive_dir
-        ):
-            return f"Error: Cannot save attachments to sensitive directory: {sensitive_dir}"
-
-    expanded_path = resolved_path
+    # Resolve and confine the destination to the safe write roots (#103).
+    # Resolving also expands ~, which POSIX file in AppleScript does not.
+    expanded_path, path_error = validate_write_path(save_path)
+    if path_error:
+        return path_error
 
     # Escape for AppleScript
     escaped_account = escape_applescript(account)

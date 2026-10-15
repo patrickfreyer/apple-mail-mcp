@@ -191,6 +191,18 @@ Batch operations have conservative defaults to prevent accidental bulk actions:
 
 Override via function parameters when needed.
 
+### File Access
+
+Tools that write files (`save_email_attachment`, `export_emails`, `create_rich_email_draft`'s `output_path`) only write inside `~/Downloads`, `~/Desktop`, `~/Documents`, `~/Library/Caches/apple-mail-mcp` and the system temp dir. Hidden files and folders (dotfiles, `.git`, ...) are rejected even inside those folders. To allow more folders, set `APPLE_MAIL_MCP_WRITE_DIRS` (colon-separated) in the server's `env`:
+
+```json
+"env": {
+  "APPLE_MAIL_MCP_WRITE_DIRS": "~/Projects/mail-exports:~/Archive"
+}
+```
+
+Files attached to outgoing mail may come from anywhere in your home folder except hidden files and folders (`~/.ssh`, `~/.aws`, `.env`, ...) and `~/Library` (iCloud Drive and `~/Library/CloudStorage` stay allowed).
+
 ## Usage Examples
 
 ```

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- File-writing tools now use an allowlist instead of an incomplete denylist
+  (#103, follow-up to #19). The old list missed shell startup files, so a
+  prompt-injected `save_email_attachment(save_path="~/.zshrc")` could plant an
+  attacker-supplied attachment that ran on the next shell. `save_email_attachment`,
+  `export_emails` and `create_rich_email_draft`'s `output_path` (previously
+  unchecked) now only write inside `~/Downloads`, `~/Desktop`, `~/Documents`,
+  `~/Library/Caches/apple-mail-mcp` and the system temp dir, and reject hidden
+  files and folders inside them (`.git/hooks`, `.envrc`). Extra folders can be
+  allowed with the `APPLE_MAIL_MCP_WRITE_DIRS` environment variable. Writes
+  elsewhere in `$HOME` that used to work now return an error naming this option.
+- Attachment paths for `compose_email` and `reply_to_email` now reject every
+  hidden file or folder in `$HOME` (`.netrc`, `.config/gh`, `.env`, ...) and
+  `~/Library` internals (keychains, browser profiles, app data), except iCloud
+  Drive and `~/Library/CloudStorage`.
+- All checks live in one shared module (`apple_mail_mcp/paths.py`) instead of
+  three copies, resolve `..` and symlinks before checking, and compare
+  case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
+
 ### Fixed
 - The server failed to start on any fresh install since the `mcp` SDK 2.0
   release (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`, #97).
