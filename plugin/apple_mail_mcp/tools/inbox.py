@@ -257,19 +257,23 @@ def get_mailbox_unread_counts(
                 end try
             end repeat
 
-            set AppleScript's text item delimiters to "|"
+            set AppleScript's text item delimiters to linefeed
             return resultList as string
         end tell
         """
         result = run_applescript(script)
         counts: Dict[str, int] = {}
-        for item in result.split("|"):
-            if ":" in item:
-                acct_name, count_str = item.split(":", 1)
-                if count_str != "ERROR":
-                    counts[acct_name] = int(count_str)
-                else:
-                    counts[acct_name] = -1
+        # One record per line, count after the LAST colon: account names may
+        # contain both "|" and ":" ("Jane Doe | Example Corp").
+        for item in result.splitlines():
+            if ":" not in item:
+                continue
+            acct_name, _, count_str = item.rpartition(":")
+            acct_name = acct_name.strip()
+            if count_str != "ERROR":
+                counts[acct_name] = int(count_str)
+            else:
+                counts[acct_name] = -1
         return counts
 
     account_filter = (
@@ -356,6 +360,10 @@ def list_accounts() -> List[str]:
         List of account names
     """
 
+    # One name per line. The previous "|" delimiter split any account whose
+    # own name contains a pipe (e.g. "Jane Doe | Example Corp")
+    # into two unusable fragments, and every follow-up call with such a
+    # fragment failed with "account not found".
     script = """
     tell application "Mail"
         set accountNames to {}
@@ -366,13 +374,15 @@ def list_accounts() -> List[str]:
             set end of accountNames to accountName
         end repeat
 
-        set AppleScript's text item delimiters to "|"
+        set AppleScript's text item delimiters to linefeed
         return accountNames as string
     end tell
     """
 
     result = run_applescript(script)
-    return result.split("|") if result else []
+    if not result:
+        return []
+    return [line.strip() for line in result.splitlines() if line.strip()]
 
 
 @mcp.tool()
@@ -409,7 +419,7 @@ def list_account_addresses() -> Dict[str, List[str]]:
             set AppleScript's text item delimiters to ","
             set addrStr to emailAddrs as string
             set AppleScript's text item delimiters to ""
-            set end of outLines to acctName & "|" & addrStr
+            set end of outLines to acctName & "|||" & addrStr
         end repeat
 
         set AppleScript's text item delimiters to linefeed
@@ -424,10 +434,12 @@ def list_account_addresses() -> Dict[str, List[str]]:
     if not result:
         return out
     for line in result.splitlines():
-        if "|" not in line:
+        # Split on the LAST "|||" so an account name containing a pipe
+        # ("Jane Doe | Example Corp") stays intact.
+        if "|||" not in line:
             continue
-        name, addrs = line.split("|", 1)
-        out[name] = [a.strip() for a in addrs.split(",") if a.strip()]
+        name, _, addrs = line.rpartition("|||")
+        out[name.strip()] = [a.strip() for a in addrs.split(",") if a.strip()]
     return out
 
 
