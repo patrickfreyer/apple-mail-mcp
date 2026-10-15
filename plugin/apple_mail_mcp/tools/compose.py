@@ -1218,6 +1218,11 @@ def forward_email(
         Confirmation message with details of forwarded email
     """
 
+    # forward_email is removed from the tool list under --read-only; this
+    # guard keeps it safe even if that removal ever fails.
+    if server.READ_ONLY:
+        return "Error: Forwarding is disabled in read-only mode."
+
     message = _strip_cdata_wrappers(message)
 
     sender_override, sender_error = _validate_from_address(account, from_address)

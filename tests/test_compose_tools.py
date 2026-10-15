@@ -951,9 +951,17 @@ class ReadOnlyModeTests(unittest.TestCase):
         self.assertTrue(result.startswith("Error: Sending is disabled"))
 
     def test_reply_still_drafts(self):
-        with patch(
-            "apple_mail_mcp.tools.compose.run_applescript",
-            return_value="DRAFT SAVED",
+        # reply_to_email runs its main script through subprocess.run
+        # (osascript directly, for AppleScriptObjC), so patch both paths.
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="DRAFT SAVED",
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(stdout=b"DRAFT SAVED"),
+            ) as mock_subprocess,
         ):
             result = compose_tools.reply_to_email(
                 account="Work",
@@ -962,7 +970,8 @@ class ReadOnlyModeTests(unittest.TestCase):
                 mode="draft",
             )
 
-        self.assertNotIn("Error: Sending is disabled", result)
+        mock_subprocess.assert_called_once()
+        self.assertEqual(result, "DRAFT SAVED")
 
     def test_read_only_flag_is_read_at_call_time(self):
         """Regression: the module used to bind READ_ONLY's value at import."""
@@ -1018,6 +1027,31 @@ class ReadOnlyModeTests(unittest.TestCase):
         self.assertEqual(
             result, "Error: Sending drafts is disabled in read-only mode."
         )
+
+    def test_forward_email_refuses_under_read_only(self):
+        """Defense in depth: forward_email refuses even if tool removal failed."""
+        for message in (None, "FYI"):
+            with self.subTest(message=message):
+                with (
+                    patch(
+                        "apple_mail_mcp.tools.compose.run_applescript"
+                    ) as mock_run,
+                    patch(
+                        "apple_mail_mcp.tools.compose.subprocess.run"
+                    ) as mock_subprocess,
+                ):
+                    result = compose_tools.forward_email(
+                        account="Work",
+                        subject_keyword="Invoice",
+                        to="someone@example.com",
+                        message=message,
+                    )
+
+                mock_run.assert_not_called()
+                mock_subprocess.assert_not_called()
+                self.assertTrue(
+                    result.startswith("Error: Forwarding is disabled"), result
+                )
 
 
 if __name__ == "__main__":
