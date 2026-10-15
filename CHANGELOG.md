@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three copies, resolve `..` and symlinks before checking, and compare
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
+### Fixed
+- `reply_to_email` now restores the user's clipboard. The restore step sat
+  after the script's `return`, so it never ran and every reply (send, draft
+  or open) left the reply body on the clipboard. The error path now restores
+  it too, as does `forward_email`'s error path when a `message` was pasted
+  (#106).
+
 ## [3.2.1] - 2026-10-15
 
 ### Fixed
