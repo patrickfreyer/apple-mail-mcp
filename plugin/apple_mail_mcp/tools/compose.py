@@ -21,6 +21,8 @@ from apple_mail_mcp.core import (
     run_applescript,
     inbox_mailbox_script,
     build_mailbox_ref,
+    mail_automation_lock,
+    MAIL_AUTOMATION_BUSY_ERROR,
 )
 
 # Explicit font stack for HTML fragments that get pasted into Mail's compose
@@ -550,12 +552,13 @@ return "{success_text}"
 '''
 
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock():
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error sending HTML email: {stderr}"
@@ -571,6 +574,8 @@ return "{success_text}"
         return confirm
     except subprocess.TimeoutExpired:
         return "Error: HTML email script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
@@ -654,9 +659,18 @@ def _verify_saved_reply_body(
     """
     if not message_id:
         return "Status: FAILED — could not uniquely identify the saved draft."
-    raw_source = get_email_source(
-        account=account, message_id=message_id, mailbox="Drafts"
-    )
+    try:
+        raw_source = get_email_source(
+            account=account, message_id=message_id, mailbox="Drafts"
+        )
+    except TimeoutError:
+        # The draft is already saved; a busy automation lock only prevents
+        # re-reading it. Report that, rather than letting the caller's lock
+        # handler mask the successful save as a busy error.
+        return (
+            "Status: FAILED — Verification: could not re-read the saved draft "
+            f"({MAIL_AUTOMATION_BUSY_ERROR})"
+        )
     if raw_source.startswith("Error"):
         return f"Status: FAILED — Verification: could not re-read the saved draft ({raw_source})"
 
@@ -1065,12 +1079,13 @@ tell application "Mail"
 
     try:
         # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock():
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error in reply: {stderr}"
@@ -1099,6 +1114,8 @@ tell application "Mail"
         return output_text
     except subprocess.TimeoutExpired:
         return "Error: Reply script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         # Belt-and-suspenders cleanup in case AppleScript didn't run
         if os.path.exists(body_temp_path):
@@ -1529,12 +1546,13 @@ tell application "Mail"
     try:
         if message:
             # Use osascript directly for AppleScriptObjC (use framework) support
-            result = subprocess.run(
-                ["osascript", "-"],
-                input=script.encode("utf-8"),
-                capture_output=True,
-                timeout=30,
-            )
+            with mail_automation_lock():
+                result = subprocess.run(
+                    ["osascript", "-"],
+                    input=script.encode("utf-8"),
+                    capture_output=True,
+                    timeout=30,
+                )
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 return f"Error forwarding email: {stderr}"
@@ -1543,6 +1561,8 @@ tell application "Mail"
             return run_applescript(script)
     except subprocess.TimeoutExpired:
         return "Error: Forward script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if fwd_html_temp_path and os.path.exists(fwd_html_temp_path):
             os.unlink(fwd_html_temp_path)
