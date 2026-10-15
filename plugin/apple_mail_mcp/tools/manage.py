@@ -305,11 +305,11 @@ def save_email_attachment(
 
         try
             set targetAccount to account "{escaped_account}"
-            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="inboxMailbox")}
-            set inboxMessages to every message of inboxMailbox
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="targetMailbox")}
+            set mailboxMessages to every message of targetMailbox
             set foundAttachment to false
 
-            repeat with aMessage in inboxMessages
+            repeat with aMessage in mailboxMessages
                 try
                     set messageSubject to subject of aMessage
 

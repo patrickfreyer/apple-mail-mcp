@@ -27,18 +27,18 @@ class SaveEmailAttachmentMailboxTests(unittest.TestCase):
     def test_defaults_to_the_inbox(self):
         script = _script_for()
         # INBOX goes through the localized-name fallback, as before.
-        self.assertIn("set inboxMailbox to missing value", script)
+        self.assertIn("set targetMailbox to missing value", script)
         self.assertIn("repeat with __mailboxLookupName in", script)
 
     def test_searches_the_requested_mailbox(self):
         script = _script_for(mailbox="Archive")
-        self.assertIn('set inboxMailbox to mailbox "Archive" of targetAccount', script)
+        self.assertIn('set targetMailbox to mailbox "Archive" of targetAccount', script)
         self.assertIn("Searched mailbox: Archive", script)
 
     def test_resolves_nested_mailboxes(self):
         script = _script_for(mailbox="Projects/2026")
         self.assertIn(
-            'set inboxMailbox to mailbox "2026" of mailbox "Projects" of targetAccount',
+            'set targetMailbox to mailbox "2026" of mailbox "Projects" of targetAccount',
             script,
         )
 
