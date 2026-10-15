@@ -794,7 +794,12 @@ def reply_to_email(
         success_text = "Reply sent successfully!"
     elif effective_mode == "open":
         header_text = "OPENING REPLY FOR REVIEW"
-        post_paste_action = ""
+        # Nothing follows the paste in open mode, so the clipboard restore
+        # would run only 0.5s after Cmd+V. Wait as long as send/draft do
+        # before restoring, so a slow paste can't pick up the restored
+        # clipboard instead of the reply body (#106).
+        post_paste_action = """
+                delay 0.5"""
         success_text = "Reply opened in Mail for review. Edit and send when ready."
     else:  # draft
         header_text = "SAVING REPLY AS DRAFT"

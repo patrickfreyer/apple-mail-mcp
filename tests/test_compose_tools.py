@@ -1,5 +1,6 @@
 """Tests for compose and rich draft helpers."""
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -938,6 +939,19 @@ class ClipboardRestoreTests(unittest.TestCase):
                     [ln.strip() for ln in self._return_lines(script[restore_at:])],
                     ["return outputText"],
                 )
+
+    def test_reply_waits_at_least_one_second_after_paste_before_restore(self):
+        paste = 'keystroke "v" using command down'
+        for mode in ("send", "draft", "open"):
+            with self.subTest(mode=mode):
+                script = self._render(
+                    compose_tools.reply_to_email, reply_body="Hi", mode=mode
+                )
+                between = script[script.index(paste):script.rfind(self.RESTORE)]
+                waited = sum(
+                    float(m) for m in re.findall(r"^\s*delay ([0-9.]+)\s*$", between, re.M)
+                )
+                self.assertGreaterEqual(waited, 1.0)
 
     def test_forward_error_path_restores_clipboard(self):
         script = self._render(
