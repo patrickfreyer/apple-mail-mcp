@@ -626,7 +626,7 @@ def manage_trash(
     means "move to Trash", and on a message that already sits in Trash it does
     nothing. "delete_permanent" and "empty_trash" therefore usually remove
     nothing at all. Both report the real before/after mailbox count instead of
-    the number of delete calls, and say so when nothing was removed — emptying
+    the number of delete calls, and say so when nothing was removed; emptying
     the trash for good has to happen in Mail itself.
 
     Args:
@@ -654,7 +654,7 @@ def manage_trash(
     if action == "empty_trash":
         if not confirm_empty:
             return (
-                "Error: empty_trash permanently deletes ALL messages in the trash. "
+                "Error: empty_trash attempts to delete ALL messages in the trash. "
                 "Set confirm_empty=True to proceed."
             )
         script = f'''
@@ -669,10 +669,9 @@ def manage_trash(
                 set deleteCount to 0
 
                 -- Delete messages in trash, respecting max_deletes.
-                -- Iterate backwards over the captured list: deleting a message
-                -- shifts every later index down by one, so a forward loop skips
-                -- every second message and eventually reads past the end.
-                repeat with msgIndex from messageCount to 1 by -1
+                -- trashMessages is a list captured up front, so deleting does
+                -- not shift its indices; a forward loop takes the first N.
+                repeat with msgIndex from 1 to messageCount
                     if deleteCount >= {max_deletes} then exit repeat
                     delete (item msgIndex of trashMessages)
                     set deleteCount to deleteCount + 1
@@ -746,7 +745,7 @@ def manage_trash(
 
                     set trashBefore to count of messages of trashMailbox
 
-                    -- Backwards over the captured list (deleting shifts later
+                    -- Walk the captured list (deleting does not shift its
                     -- indices) and only name a message once its delete call
                     -- returned without error.
                     repeat with msgIndex from (count of targetMessages) to 1 by -1

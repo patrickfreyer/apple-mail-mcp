@@ -19,11 +19,16 @@ class EmptyTrashTests(unittest.TestCase):
     def setUp(self):
         self.script = _script_for(action="empty_trash", confirm_empty=True)
 
-    def test_iterates_backwards_over_the_captured_list(self):
-        # Deleting inside a forward loop shifts later indices, so every
-        # second message was skipped and the loop eventually read past the end.
-        self.assertIn("repeat with msgIndex from messageCount to 1 by -1", self.script)
+    def test_iterates_forward_over_the_captured_list(self):
+        # trashMessages is captured up front, so a forward index loop is safe
+        # and max_deletes takes the first N messages, not the last N.
+        self.assertIn("repeat with msgIndex from 1 to messageCount", self.script)
         self.assertNotIn("repeat with aMessage in trashMessages", self.script)
+
+    def test_confirmation_error_does_not_promise_permanent_deletion(self):
+        result = manage_tools.manage_trash(account="Work", action="empty_trash")
+        self.assertIn("attempts to delete", result)
+        self.assertNotIn("permanently deletes", result)
 
     def test_reports_the_measured_mailbox_count(self):
         self.assertIn("set remainingCount to count of messages of trashMailbox", self.script)
@@ -49,7 +54,7 @@ class DeletePermanentTests(unittest.TestCase):
         self.assertNotIn("TOTAL DELETED", self.script)
         self.assertNotIn("Permanently deleted: ", self.script)
 
-    def test_iterates_backwards_over_the_captured_list(self):
+    def test_iterates_over_the_captured_list(self):
         self.assertIn(
             "repeat with msgIndex from (count of targetMessages) to 1 by -1",
             self.script,
