@@ -17,6 +17,18 @@ from apple_mail_mcp.core import (
     inbox_mailbox_script,
 )
 
+# Explicit font stack for HTML fragments that get pasted into Mail's compose
+# editor via NSPasteboard. Cocoa's HTML->NSAttributedString importer does not
+# resolve CSS shorthand like `font: inherit`, and a fragment with no
+# font-family at all resolves even worse (falls back to Times-Roman). Every
+# fragment needs a concrete font-family value or it silently renders in a
+# small serif font instead of the sans-serif Mail normally composes in.
+# See #100.
+_COMPOSE_FONT_STYLE = (
+    "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, "
+    "sans-serif; font-size: 13px;"
+)
+
 
 def _split_addresses(value):
     """Return trimmed recipient addresses preserving order."""
@@ -153,7 +165,9 @@ def _build_html_from_text(text_body):
     return (
         '<html><body style="font-family: -apple-system, BlinkMacSystemFont, '
         "'Segoe UI', Arial, sans-serif; line-height: 1.45; color: #111111;\">"
-        '<pre style="white-space: pre-wrap; font: inherit; margin: 0;">'
+        '<pre style="white-space: pre-wrap; margin: 0; font-family: '
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; "
+        'font-size: 13px;">'
         + safe_body
         + "</pre></body></html>"
     )
@@ -691,7 +705,9 @@ def reply_to_email(
         # Wrap plain text in HTML, converting newlines to <br>
         escaped_plain = html_escape(reply_body)
         escaped_plain = escaped_plain.replace("\n", "<br>")
-        html_content = f"<div>{escaped_plain}</div>{gap_html}"
+        html_content = (
+            f'<div style="{_COMPOSE_FONT_STYLE}">{escaped_plain}</div>{gap_html}'
+        )
     html_tmp = tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".html",
@@ -1245,7 +1261,9 @@ def forward_email(
     if message:
         escaped_plain = html_escape(message)
         escaped_plain = escaped_plain.replace("\n", "<br>")
-        fwd_html_content = f"{escaped_plain}<br><br>"
+        fwd_html_content = (
+            f'<div style="{_COMPOSE_FONT_STYLE}">{escaped_plain}<br><br></div>'
+        )
         fwd_html_tmp = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".html",
