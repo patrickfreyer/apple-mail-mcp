@@ -11,6 +11,7 @@ from typing import Optional, List, Tuple
 
 from apple_mail_mcp import server
 from apple_mail_mcp.server import mcp
+from apple_mail_mcp.paths import validate_read_path, validate_write_path
 from apple_mail_mcp.tools.raw_source import get_email_source
 from apple_mail_mcp.tools.reply_verification import (
     verify_reply_body_outside_quote,
@@ -289,7 +290,8 @@ def create_rich_email_draft(
         html_body: Optional HTML body. If omitted but text_body is provided, a basic HTML wrapper is generated.
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
-        output_path: Optional path for the generated `.eml` file
+        output_path: Optional path for the generated `.eml` file (same protected-location
+            rules as save_email_attachment; defaults to ~/Library/Caches/apple-mail-mcp/rich-drafts)
         open_in_mail: If True, open the generated `.eml` in Mail (default: True)
         save_as_draft: Not currently supported. Mail opens a `.eml` as a read-only message
             viewer, not a compose object, so it can never be saved into Drafts this way.
@@ -341,11 +343,13 @@ def create_rich_email_draft(
     message.set_content(plain_body)
     message.add_alternative(rich_body, subtype="html")
 
-    draft_path = (
-        Path(output_path).expanduser()
-        if output_path
-        else _default_rich_draft_path(subject)
-    )
+    if output_path:
+        safe_output_path, path_error = validate_write_path(output_path)
+        if path_error:
+            return path_error
+        draft_path = Path(safe_output_path)
+    else:
+        draft_path = _default_rich_draft_path(subject)
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.write_bytes(bytes(message))
 
@@ -586,25 +590,13 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     """Validate and resolve attachment file paths.
 
     Splits comma-separated paths, expands tildes, resolves symlinks,
-    and enforces security constraints (home-dir-only, no sensitive dirs,
-    file must exist).
+    and enforces the shared read guard from ``apple_mail_mcp.paths``
+    (no secrets such as ~/.ssh, keychains or browser profiles; file must exist).
 
     Returns:
         A tuple of (resolved_paths, error_message).
         If error_message is not None, resolved_paths should be ignored.
     """
-    home_dir = os.path.expanduser("~")
-    sensitive_dirs = [
-        os.path.join(home_dir, ".ssh"),
-        os.path.join(home_dir, ".gnupg"),
-        os.path.join(home_dir, ".config"),
-        os.path.join(home_dir, ".aws"),
-        os.path.join(home_dir, ".claude"),
-        os.path.join(home_dir, "Library", "LaunchAgents"),
-        os.path.join(home_dir, "Library", "LaunchDaemons"),
-        os.path.join(home_dir, "Library", "Keychains"),
-    ]
-
     resolved_paths: List[str] = []
     raw_paths = [p.strip() for p in attachments.split(",")]
 
@@ -612,24 +604,9 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
         if not raw_path:
             continue
 
-        # Expand tilde and resolve symlinks
-        expanded = os.path.expanduser(raw_path)
-        resolved = os.path.realpath(expanded)
-
-        # Must be under the user's home directory
-        if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
-            return (
-                [],
-                f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}",
-            )
-
-        # Block sensitive directories
-        for sensitive_dir in sensitive_dirs:
-            if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
-                return (
-                    [],
-                    f"Error: Cannot attach files from sensitive directory: {sensitive_dir}",
-                )
+        resolved, path_error = validate_read_path(raw_path)
+        if path_error:
+            return [], path_error
 
         # File must exist
         if not os.path.isfile(resolved):
