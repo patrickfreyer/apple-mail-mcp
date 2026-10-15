@@ -63,3 +63,57 @@ class DeletePermanentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgeFilterBeforeCapTests(unittest.TestCase):
+    """The age check used to run per message after the list was cut to the
+    cap, so when the newest matches were too recent nothing was acted on even
+    though older qualifying messages existed. It now sits in the `whose`
+    clause, so the cap applies to qualifying messages only."""
+
+    def _whose_line(self, script):
+        return next(
+            line for line in script.splitlines()
+            if "set matchingMessages to every message of" in line
+        )
+
+    def test_update_status_filters_by_age_before_the_cap(self):
+        with patch(
+            "apple_mail_mcp.tools.manage.run_applescript", return_value=""
+        ) as mock_run:
+            manage_tools.update_email_status(
+                account="Work", action="mark_read", older_than_days=30, max_updates=10
+            )
+        script = mock_run.call_args[0][0]
+        self.assertIn("date received < cutoffDate", self._whose_line(script))
+        self.assertNotIn("(date received of aMessage) < cutoffDate", script)
+        self.assertLess(
+            script.index("set cutoffDate to"), script.index("set matchingMessages to")
+        )
+
+    def test_move_to_trash_filters_by_age_before_the_cap(self):
+        with patch(
+            "apple_mail_mcp.tools.manage.run_applescript", return_value=""
+        ) as mock_run:
+            manage_tools.manage_trash(
+                account="Work", action="move_to_trash", subject_keyword="Invoice",
+                older_than_days=30, max_deletes=10, dry_run=False,
+            )
+        script = mock_run.call_args[0][0]
+        whose = self._whose_line(script)
+        self.assertIn("date received < cutoffDate", whose)
+        self.assertIn('subject contains "Invoice"', whose)
+        self.assertNotIn("(date received of aMessage) < cutoffDate", script)
+
+    def test_age_alone_still_uses_a_whose_clause_for_trash(self):
+        with patch(
+            "apple_mail_mcp.tools.manage.run_applescript", return_value=""
+        ) as mock_run:
+            manage_tools.manage_trash(
+                account="Work", action="move_to_trash", older_than_days=30,
+                max_deletes=10, dry_run=False,
+            )
+        script = mock_run.call_args[0][0]
+        self.assertIn(
+            "every message of sourceMailbox whose date received < cutoffDate", script
+        )

@@ -519,16 +519,18 @@ def update_email_status(
     if sender:
         conditions.append(f'sender contains "{escape_applescript(sender)}"')
 
-    search_condition = " and ".join(conditions)
-
-    # Date filter
+    # Date filter. It goes into the `whose` clause, not a per-message check
+    # after the max_updates cap: checking it after the cap meant that when
+    # the newest matches were too recent, older qualifying ones were never
+    # reached and nothing was updated.
     date_setup = ""
     date_check_start = ""
     date_check_end = ""
     if older_than_days and older_than_days > 0:
         date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        date_check_start = "if (date received of aMessage) < cutoffDate then"
-        date_check_end = "end if"
+        conditions.append("date received < cutoffDate")
+
+    search_condition = " and ".join(conditions)
 
     script = f'''
     tell application "Mail"
@@ -785,21 +787,21 @@ def manage_trash(
         if sender:
             conditions.append(f'sender contains "{escape_applescript(sender)}"')
 
+        # Date filter, in the `whose` clause so max_deletes caps qualifying
+        # messages rather than cutting the list before the age is checked.
+        date_setup = ""
+        date_check_start = ""
+        date_check_end = ""
+        if older_than_days and older_than_days > 0:
+            date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
+            conditions.append("date received < cutoffDate")
+
         if conditions:
             matching_messages_script = f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
         else:
             matching_messages_script = (
                 "set matchingMessages to every message of sourceMailbox"
             )
-
-        # Date filter
-        date_setup = ""
-        date_check_start = ""
-        date_check_end = ""
-        if older_than_days and older_than_days > 0:
-            date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-            date_check_start = "if (date received of aMessage) < cutoffDate then"
-            date_check_end = "end if"
 
         if dry_run:
             mode_label = "DRY RUN - PREVIEW TRASH"

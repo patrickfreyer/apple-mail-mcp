@@ -107,6 +107,79 @@ class ListInboxIdentityTests(unittest.TestCase):
         self.assertIn('"   Link: message://%3C"', captured["script"])
 
 
+class InboxFilterTests(unittest.TestCase):
+    def test_list_inbox_limits_included_messages(self):
+        for output_format in ("text", "json"):
+            with self.subTest(output_format=output_format):
+                with patch(
+                    "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+                ) as mock_run:
+                    inbox_tools.list_inbox_emails(
+                        include_read=False, max_emails=10, output_format=output_format
+                    )
+                mock_run.assert_called_once()
+                script = mock_run.call_args[0][0]
+                self.assertNotIn("currentIndex > 10", script)
+                self.assertIn("repeat with msgIndex from 1 to messageCount", script)
+                self.assertIn("set aMessage to item msgIndex of inboxMessages", script)
+                branch = script.split("if shouldInclude then", 1)[1]
+                increment = branch.index("set currentIndex to currentIndex + 1")
+                cap = branch.index("if 10 > 0 and currentIndex >= 10 then exit repeat")
+                self.assertLess(increment, cap)
+                self.assertTrue(
+                    branch[cap:].split("end try", 1)[0].rstrip().endswith("end if")
+                )
+                self.assertEqual(script.count("set currentIndex to currentIndex + 1"), 1)
+                # Mail is asked for unread messages only, so the scan stops
+                # after max_emails instead of walking a large inbox.
+                self.assertIn(
+                    "set inboxMessages to every message of inboxMailbox whose read status is false",
+                    script,
+                )
+
+    def test_list_inbox_with_read_messages_takes_every_message(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails(include_read=True, max_emails=10)
+        script = mock_run.call_args[0][0]
+        self.assertIn("set inboxMessages to every message of inboxMailbox\n", script)
+
+    def test_list_inbox_text_filters_account(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails(account="Work")
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][0]
+        self.assertIn('if accountName is "Work" then', script)
+        self.assertLess(
+            script.index('if accountName is "Work" then'),
+            script.index("set inboxMessages to every message of inboxMailbox"),
+        )
+        self.assertIn("end try\n            end if\n        end repeat", script)
+
+    def test_unread_summary_filters_account(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.get_mailbox_unread_counts(account="Work", summary_only=True)
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][0]
+        self.assertIn('if accountName is not "Work" then', script)
+        self.assertIn("set shouldIncludeAccount to true", script)
+        self.assertIn("set shouldIncludeAccount to false", script)
+        self.assertLess(
+            script.index('if accountName is not "Work" then'),
+            script.index("if shouldIncludeAccount then"),
+        )
+        self.assertLess(
+            script.index("if shouldIncludeAccount then"),
+            script.index("set unreadCount to unread count of inboxMailbox"),
+        )
+        self.assertIn("end try\n                end if\n            end repeat", script)
+
+
 class AccountNameWithPipeTests(unittest.TestCase):
     """Account names may contain "|", which used to be the record delimiter."""
 

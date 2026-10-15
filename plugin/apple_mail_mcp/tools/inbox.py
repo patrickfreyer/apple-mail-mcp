@@ -74,6 +74,18 @@ def list_inbox_emails(
     if output_format == "json":
         return _list_inbox_emails_json(account, max_emails, include_read, include_content)
 
+    # Unread-only listings ask Mail for unread messages, so max_emails caps
+    # what is returned rather than how many messages were looked at.
+    inbox_messages_expr = (
+        "every message of inboxMailbox"
+        if include_read
+        else "every message of inboxMailbox whose read status is false"
+    )
+
+    escaped_account = escape_applescript(account) if account else None
+    account_filter = f'if accountName is "{escaped_account}" then' if account else ""
+    account_filter_end = "end if" if account else ""
+
     script = f"""
     tell application "Mail"
         set outputText to "INBOX EMAILS - ALL ACCOUNTS" & return & return
@@ -82,10 +94,11 @@ def list_inbox_emails(
 
         repeat with anAccount in allAccounts
             set accountName to name of anAccount
+            {account_filter}
 
             try
                 {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                set inboxMessages to every message of inboxMailbox
+                set inboxMessages to {inbox_messages_expr}
                 set messageCount to count of inboxMessages
 
                 if messageCount > 0 then
@@ -94,9 +107,9 @@ def list_inbox_emails(
                     set outputText to outputText & "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" & return & return
 
                     set currentIndex to 0
-                    repeat with aMessage in inboxMessages
-                        set currentIndex to currentIndex + 1
-                        if {max_emails} > 0 and currentIndex > {max_emails} then exit repeat
+                    -- Scan the captured list newest-first, bounded by messageCount.
+                    repeat with msgIndex from 1 to messageCount
+                        set aMessage to item msgIndex of inboxMessages
 
                         try
                             set messageSubject to subject of aMessage
@@ -135,6 +148,8 @@ def list_inbox_emails(
                                 set outputText to outputText & return
 
                                 set totalCount to totalCount + 1
+                                set currentIndex to currentIndex + 1
+                                if {max_emails} > 0 and currentIndex >= {max_emails} then exit repeat
                             end if
                         end try
                     end repeat
@@ -143,6 +158,7 @@ def list_inbox_emails(
                 set outputText to outputText & "⚠ Error accessing inbox for account " & accountName & return
                 set outputText to outputText & "   " & errMsg & return & return
             end try
+            {account_filter_end}
         end repeat
 
         set outputText to outputText & "========================================" & return
@@ -164,6 +180,14 @@ def _list_inbox_emails_json(
     include_content: bool = False,
 ) -> str:
     """Return inbox emails as a JSON string."""
+    # Unread-only listings ask Mail for unread messages, so max_emails caps
+    # what is returned rather than how many messages were looked at.
+    inbox_messages_expr = (
+        "every message of inboxMailbox"
+        if include_read
+        else "every message of inboxMailbox whose read status is false"
+    )
+
     escaped_account = escape_applescript(account) if account else None
     account_filter = f'if accountName is "{escaped_account}" then' if account else ""
     account_filter_end = "end if" if account else ""
@@ -177,11 +201,12 @@ def _list_inbox_emails_json(
             {account_filter}
             try
                 {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                set inboxMessages to every message of inboxMailbox
+                set inboxMessages to {inbox_messages_expr}
+                set messageCount to count of inboxMessages
                 set currentIndex to 0
-                repeat with aMessage in inboxMessages
-                    set currentIndex to currentIndex + 1
-                    if {max_emails} > 0 and currentIndex > {max_emails} then exit repeat
+                -- Scan the captured list newest-first, bounded by messageCount.
+                repeat with msgIndex from 1 to messageCount
+                    set aMessage to item msgIndex of inboxMessages
                     try
                         set messageSubject to subject of aMessage
                         set messageSender to sender of aMessage
@@ -198,6 +223,8 @@ def _list_inbox_emails_json(
                         end if
                         if shouldInclude then
                             set end of resultLines to messageSubject & "|||" & messageSender & "|||" & (messageDate as string) & "|||" & messageRead & "|||" & accountName & "|||" & messageInternalId & "|||" & messageInternetId
+                            set currentIndex to currentIndex + 1
+                            if {max_emails} > 0 and currentIndex >= {max_emails} then exit repeat
                         end if
                     end try
                 end repeat
@@ -238,6 +265,16 @@ def get_mailbox_unread_counts(
     """
     escaped_account = escape_applescript(account) if account else None
 
+    account_filter = (
+        f'''
+            if accountName is not "{escaped_account}" then
+                set shouldIncludeAccount to false
+            end if
+    '''
+        if account
+        else ""
+    )
+
     # Fast path: summary_only returns just per-account inbox unread totals
     if summary_only:
         script = f"""
@@ -247,14 +284,18 @@ def get_mailbox_unread_counts(
 
             repeat with anAccount in allAccounts
                 set accountName to name of anAccount
+                set shouldIncludeAccount to true
+                {account_filter}
 
-                try
-                    {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                    set unreadCount to unread count of inboxMailbox
-                    set end of resultList to accountName & ":" & unreadCount
-                on error
-                    set end of resultList to accountName & ":ERROR"
-                end try
+                if shouldIncludeAccount then
+                    try
+                        {inbox_mailbox_script("inboxMailbox", "anAccount")}
+                        set unreadCount to unread count of inboxMailbox
+                        set end of resultList to accountName & ":" & unreadCount
+                    on error
+                        set end of resultList to accountName & ":ERROR"
+                    end try
+                end if
             end repeat
 
             set AppleScript's text item delimiters to linefeed
@@ -275,16 +316,6 @@ def get_mailbox_unread_counts(
             else:
                 counts[acct_name] = -1
         return counts
-
-    account_filter = (
-        f'''
-            if accountName is not "{escaped_account}" then
-                set shouldIncludeAccount to false
-            end if
-    '''
-        if account
-        else ""
-    )
 
     script = f"""
     tell application "Mail"
