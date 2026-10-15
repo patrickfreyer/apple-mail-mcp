@@ -333,10 +333,11 @@ class SearchToolTests(unittest.TestCase):
             )
 
         self.assertIn("messageFlagIndex is 0", captured["script"])
-        # Read in both the scan loop and the record emission block.
+        # Read in both scan loops (bounded for large mailboxes, full for the
+        # rest) and in the record emission block.
         self.assertEqual(
             captured["script"].count("set messageFlagIndex to flag index of aMessage"),
-            2,
+            3,
         )
 
     def test_search_emails_body_search_skips_flag_read_without_flag_filter(self):
@@ -413,7 +414,11 @@ class SearchToolTests(unittest.TestCase):
     def test_search_emails_bounded_scan_direction_follows_sort(self):
         """date_desc (the default) must scan from the newest end of the
         mailbox first, so a capped scan still surfaces the most relevant
-        matches instead of the oldest ones; date_asc scans from the start."""
+        matches instead of the oldest ones.
+
+        In Mail, message 1 is the newest: checked on a 75,190-message Gmail
+        INBOX (message 1 received today, message 4000 three months earlier,
+        the last one in 2005). So newest-first walks the indexes upward."""
         captured = {}
 
         def fake_run(script, timeout=120):
@@ -425,7 +430,7 @@ class SearchToolTests(unittest.TestCase):
         ):
             search_tools.search_emails(account="Work", sort="date_desc", limit=5)
         self.assertIn(
-            "repeat with msgIndex from totalMessageCount to 1 by -1",
+            "repeat with msgIndex from 1 to totalMessageCount by 1",
             captured["script"],
         )
 
@@ -434,8 +439,59 @@ class SearchToolTests(unittest.TestCase):
         ):
             search_tools.search_emails(account="Work", sort="date_asc", limit=5)
         self.assertIn(
-            "repeat with msgIndex from 1 to totalMessageCount by 1",
+            "repeat with msgIndex from totalMessageCount to 1 by -1",
             captured["script"],
+        )
+
+    def test_search_emails_scan_cap_is_shared_across_mailboxes(self):
+        """mailbox="All" must not get a fresh cap per large mailbox: the
+        counter is set once per call and never reset inside the loop."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", mailbox="All", limit=5)
+        script = captured["script"]
+        self.assertEqual(script.count("set scannedTotal to 0"), 1)
+        self.assertLess(
+            script.index("set scannedTotal to 0"),
+            script.index("repeat with targetAccount in searchAccounts"),
+        )
+        self.assertIn(
+            f"if scannedTotal > {search_tools.BOUNDED_SCAN_MAX_MESSAGES} then",
+            script,
+        )
+
+    def test_search_emails_body_search_is_bounded_on_large_mailboxes(self):
+        """body_text reads every message's content; on a very large mailbox it
+        must use the capped, newest-first index scan with an early exit."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", body_text="invoice", limit=5)
+        script = captured["script"]
+        self.assertIn(
+            f"if totalMessageCount > {search_tools.WHOSE_CLAUSE_SAFE_LIMIT} then",
+            script,
+        )
+        self.assertIn(
+            f"if scannedTotal > {search_tools.BOUNDED_BODY_SCAN_MAX_MESSAGES} then",
+            script,
+        )
+        self.assertIn("repeat with msgIndex from 1 to totalMessageCount by 1", script)
+        self.assertIn(
+            "if (count of matchingMessages) >= scanTarget then exit repeat", script
         )
 
     def test_search_emails_reports_scan_limited_instead_of_silent_empty(self):
