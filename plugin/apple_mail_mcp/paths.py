@@ -244,7 +244,11 @@ def validate_write_path(path: str) -> Tuple[Optional[str], Optional[str]]:
         return None, "Error: A destination path is required."
 
     resolved = _resolve(path)
-    reason = _is_denied_write(resolved)
+    # Check the path as given as well as where it resolves to: a symlink that
+    # sits in a protected folder (e.g. /opt/homebrew/bin/python3) points
+    # outside it, but writing through it still replaces what it runs.
+    requested = os.path.normpath(os.path.abspath(os.path.expanduser(path.strip())))
+    reason = _is_denied_write(requested) or _is_denied_write(resolved)
     if reason:
         return None, (
             f"Error: Refusing to write to a protected location ({reason}). Got: {resolved}"
