@@ -163,11 +163,9 @@ def _build_html_from_text(text_body):
     """Return a simple HTML wrapper for plain text content."""
     safe_body = html_escape(text_body or "")
     return (
-        '<html><body style="font-family: -apple-system, BlinkMacSystemFont, '
-        "'Segoe UI', Arial, sans-serif; line-height: 1.45; color: #111111;\">"
-        '<pre style="white-space: pre-wrap; margin: 0; font-family: '
-        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; "
-        'font-size: 13px;">'
+        f'<html><body style="{_COMPOSE_FONT_STYLE} line-height: 1.45; '
+        'color: #111111;">'
+        f'<pre style="white-space: pre-wrap; margin: 0; {_COMPOSE_FONT_STYLE}">'
         + safe_body
         + "</pre></body></html>"
     )
