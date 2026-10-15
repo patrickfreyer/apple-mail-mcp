@@ -915,6 +915,160 @@ class PasteboardUtf8EncodingTests(unittest.TestCase):
         self.assertIn("dictionaryWithObjects:", snippet)
 
 
+class ReadOnlyModeTests(unittest.TestCase):
+    """--read-only blocks delivery, not the draft and review modes."""
+
+    def setUp(self):
+        self._previous = compose_tools.server.READ_ONLY
+        compose_tools.server.READ_ONLY = True
+
+    def tearDown(self):
+        compose_tools.server.READ_ONLY = self._previous
+
+    def test_compose_email_refuses_to_send(self):
+        with patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run:
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="send",
+            )
+
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_compose_email_still_drafts(self):
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            return_value="DRAFT SAVED",
+        ):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="draft",
+            )
+
+        self.assertNotIn("Error: Sending is disabled", result)
+
+    def test_reply_refuses_to_send_via_send_flag(self):
+        with patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run:
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                send=True,
+            )
+
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_reply_still_drafts(self):
+        # reply_to_email runs its main script through subprocess.run
+        # (osascript directly, for AppleScriptObjC), so patch both paths.
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="DRAFT SAVED",
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(stdout=b"DRAFT SAVED"),
+            ) as mock_subprocess,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                mode="draft",
+            )
+
+        mock_subprocess.assert_called_once()
+        self.assertEqual(result, "DRAFT SAVED")
+
+    def test_read_only_flag_is_read_at_call_time(self):
+        """Regression: the module used to bind READ_ONLY's value at import."""
+        compose_tools.server.READ_ONLY = False
+
+        with patch(
+            "apple_mail_mcp.tools.compose.run_applescript",
+            return_value="SENT",
+        ):
+            result = compose_tools.compose_email(
+                account="Work",
+                to="someone@example.com",
+                subject="Test",
+                body="Body",
+                mode="send",
+            )
+
+        self.assertNotIn("Error: Sending is disabled", result)
+
+    def test_reply_refusal_writes_no_temp_files(self):
+        """The guard runs before the body/HTML temp files are created."""
+        with (
+            patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run,
+            patch(
+                "apple_mail_mcp.tools.compose.tempfile.NamedTemporaryFile"
+            ) as mock_tmp,
+        ):
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="Invoice",
+                reply_body="Body",
+                mode="send",
+            )
+
+        mock_tmp.assert_not_called()
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Sending is disabled"))
+
+    def test_manage_drafts_refuses_to_send(self):
+        """Regression for #102: action="send" must not reach Mail."""
+        with (
+            patch("apple_mail_mcp.tools.compose.run_applescript") as mock_run,
+            patch("apple_mail_mcp.tools.compose.subprocess.run") as mock_subprocess,
+        ):
+            result = compose_tools.manage_drafts(
+                account="Work",
+                action="send",
+                draft_subject="Invoice",
+            )
+
+        mock_run.assert_not_called()
+        mock_subprocess.assert_not_called()
+        self.assertEqual(
+            result, "Error: Sending drafts is disabled in read-only mode."
+        )
+
+    def test_forward_email_refuses_under_read_only(self):
+        """Defense in depth: forward_email refuses even if tool removal failed."""
+        for message in (None, "FYI"):
+            with self.subTest(message=message):
+                with (
+                    patch(
+                        "apple_mail_mcp.tools.compose.run_applescript"
+                    ) as mock_run,
+                    patch(
+                        "apple_mail_mcp.tools.compose.subprocess.run"
+                    ) as mock_subprocess,
+                ):
+                    result = compose_tools.forward_email(
+                        account="Work",
+                        subject_keyword="Invoice",
+                        to="someone@example.com",
+                        message=message,
+                    )
+
+                mock_run.assert_not_called()
+                mock_subprocess.assert_not_called()
+                self.assertTrue(
+                    result.startswith("Error: Forwarding is disabled"), result
+                )
+
+
 class ReplyDraftVerificationTests(unittest.TestCase):
     """Integration coverage for `_verify_saved_reply_body` (#71): the draft
     path reads the just-saved reply back and reports whether the body

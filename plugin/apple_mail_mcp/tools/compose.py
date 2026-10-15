@@ -9,7 +9,8 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from apple_mail_mcp.server import mcp, READ_ONLY
+from apple_mail_mcp import server
+from apple_mail_mcp.server import mcp
 from apple_mail_mcp.tools.raw_source import get_email_source
 from apple_mail_mcp.tools.reply_verification import (
     verify_reply_body_outside_quote,
@@ -728,6 +729,21 @@ def reply_to_email(
         Confirmation message with details of the reply sent, saved draft, or opened draft
     """
 
+    # Resolve the delivery mode and apply the read-only guard before anything
+    # else: the temp files written below would otherwise leak on refusal.
+    if mode is not None:
+        if mode not in ("send", "draft", "open"):
+            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+        effective_mode = mode
+    else:
+        effective_mode = "send" if send else "draft"
+
+    if server.READ_ONLY and effective_mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
+        )
+
     reply_body = _strip_cdata_wrappers(reply_body) or ""
     body_html = _strip_cdata_wrappers(body_html)
 
@@ -826,14 +842,6 @@ def reply_to_email(
     safe_attachment_info = (
         escape_applescript(attachment_info) if attachment_info else ""
     )
-
-    # Resolve delivery mode: mode parameter takes precedence over send boolean
-    if mode is not None:
-        if mode not in ("send", "draft", "open"):
-            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
-        effective_mode = mode
-    else:
-        effective_mode = "send" if send else "draft"
 
     # Read body from temp file in AppleScript (avoids all string escaping issues)
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
@@ -1161,6 +1169,12 @@ def compose_email(
     if mode not in ("send", "draft", "open"):
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
 
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the message, or mode="open" to review it in Mail.'
+        )
+
     body = _strip_cdata_wrappers(body) or ""
     body_html = _strip_cdata_wrappers(body_html)
 
@@ -1352,6 +1366,11 @@ def forward_email(
     Returns:
         Confirmation message with details of forwarded email
     """
+
+    # forward_email is removed from the tool list under --read-only; this
+    # guard keeps it safe even if that removal ever fails.
+    if server.READ_ONLY:
+        return "Error: Forwarding is disabled in read-only mode."
 
     message = _strip_cdata_wrappers(message)
 
@@ -1715,7 +1734,7 @@ def manage_drafts(
         '''
 
     elif action == "send":
-        if READ_ONLY:
+        if server.READ_ONLY:
             return "Error: Sending drafts is disabled in read-only mode."
         if not draft_subject:
             return "Error: 'draft_subject' is required for sending drafts"
