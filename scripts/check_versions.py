@@ -48,6 +48,25 @@ def get_versions(repo_root: Path) -> dict[str, str]:
         )
     versions["plugin/apple_mail_mcp/__init__.py"] = match.group(1)
 
+    # 5. plugin/.claude-plugin/plugin.json — what Claude Code compares when it
+    #    looks for a plugin update. If it lags, `claude plugin update` reports
+    #    the plugin as already up to date and installs keep running old code.
+    plugin_manifest = json.loads(
+        (repo_root / "plugin" / ".claude-plugin" / "plugin.json").read_text()
+    )
+    versions["plugin/.claude-plugin/plugin.json"] = plugin_manifest["version"]
+
+    # 6. .claude-plugin/marketplace.json — the plugin's entry (the file's own
+    #    top-level "version" is the marketplace's, not the plugin's).
+    marketplace = json.loads(
+        (repo_root / ".claude-plugin" / "marketplace.json").read_text()
+    )
+    for entry in marketplace["plugins"]:
+        if entry.get("source") == "./plugin":
+            versions[".claude-plugin/marketplace.json#plugins[./plugin].version"] = (
+                entry["version"]
+            )
+
     return versions
 
 
