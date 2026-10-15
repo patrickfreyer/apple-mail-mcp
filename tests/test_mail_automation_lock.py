@@ -187,5 +187,114 @@ class TestRunApplescriptHoldsLock(MailAutomationLockTestCase):
         )
 
 
+class TestLockWaitIsIndependentOfAppleScriptTimeout(MailAutomationLockTestCase):
+    """The lock wait uses its own short bound, not the AppleScript timeout."""
+
+    def test_lock_wait_constant_is_short(self):
+        self.assertLessEqual(self._core.LOCK_WAIT_SECONDS, 60)
+
+    def test_default_lock_timeout_is_lock_wait_seconds(self):
+        import inspect
+
+        default = inspect.signature(
+            self._core.mail_automation_lock
+        ).parameters["timeout"].default
+        self.assertEqual(default, self._core.LOCK_WAIT_SECONDS)
+
+    def test_run_applescript_waits_lock_wait_seconds_not_script_timeout(self):
+        seen = []
+        real_lock = self._core.mail_automation_lock
+
+        def spy_lock(timeout=self._core.LOCK_WAIT_SECONDS):
+            seen.append(timeout)
+            return real_lock(timeout=timeout)
+
+        with (
+            patch.object(self._core, "mail_automation_lock", side_effect=spy_lock),
+            patch.object(
+                self._core,
+                "_popen_factory",
+                side_effect=lambda *a, **kw: FakePopen(stdout=b"ok"),
+            ),
+        ):
+            self._core.run_applescript('return "ok"', timeout=240)
+
+        self.assertEqual(seen, [self._core.LOCK_WAIT_SECONDS])
+
+
+class TestComposeToolsReportBusyLock(unittest.TestCase):
+    """Direct-osascript compose paths turn a lock TimeoutError into a clean error."""
+
+    def _busy_lock(self, *args, **kwargs):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            raise TimeoutError("Mail automation is busy (lock held) after 30s")
+            yield  # pragma: no cover
+
+        return _cm()
+
+    def _patches(self):
+        return (
+            patch(
+                "apple_mail_mcp.tools.compose.mail_automation_lock",
+                side_effect=self._busy_lock,
+            ),
+            patch(
+                "apple_mail_mcp.tools.compose.run_applescript",
+                return_value="a@b.com",
+            ),
+            patch("apple_mail_mcp.tools.compose.subprocess.run"),
+        )
+
+    def _assert_busy(self, result, mock_run):
+        mock_run.assert_not_called()
+        self.assertTrue(
+            result.startswith("Error: Mail automation is busy"), result
+        )
+
+    def test_send_html_email_reports_busy(self):
+        from apple_mail_mcp.tools import compose as compose_tools
+
+        p1, p2, p3 = self._patches()
+        with p1, p2, p3 as mock_run:
+            result = compose_tools.compose_email(
+                account="Work",
+                to="x@example.com",
+                subject="s",
+                body="Body",
+                body_html="<p>Body</p>",
+                mode="send",
+            )
+        self._assert_busy(result, mock_run)
+
+    def test_reply_to_email_reports_busy(self):
+        from apple_mail_mcp.tools import compose as compose_tools
+
+        p1, p2, p3 = self._patches()
+        with p1, p2, p3 as mock_run:
+            result = compose_tools.reply_to_email(
+                account="Work",
+                subject_keyword="test",
+                reply_body="Reply",
+                send=False,
+            )
+        self._assert_busy(result, mock_run)
+
+    def test_forward_email_reports_busy(self):
+        from apple_mail_mcp.tools import compose as compose_tools
+
+        p1, p2, p3 = self._patches()
+        with p1, p2, p3 as mock_run:
+            result = compose_tools.forward_email(
+                account="Work",
+                subject_keyword="test",
+                to="x@example.com",
+                message="FYI",
+            )
+        self._assert_busy(result, mock_run)
+
+
 if __name__ == "__main__":
     unittest.main()

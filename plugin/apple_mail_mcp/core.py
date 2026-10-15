@@ -26,9 +26,21 @@ _LOCK_PATH = os.path.expanduser(
     "~/Library/Application Support/apple-mail-mcp/mail_automation.lock"
 )
 
+# How long a caller waits to acquire the lock before giving up. Deliberately
+# independent of (and much shorter than) the AppleScript execution timeout, so
+# a busy lock fails fast instead of stacking a second full timeout on top of
+# the script's own and overrunning the MCP client's tool timeout.
+LOCK_WAIT_SECONDS = 30
+
+# User-facing error returned by tools when the lock cannot be acquired in time.
+MAIL_AUTOMATION_BUSY_ERROR = (
+    "Error: Mail automation is busy (another apple-mail-mcp process is "
+    "running an AppleScript call). Please try again shortly."
+)
+
 
 @contextmanager
-def mail_automation_lock(timeout: float = 30):
+def mail_automation_lock(timeout: float = LOCK_WAIT_SECONDS):
     """Serialize AppleScript calls to Mail.app across every plugin process.
 
     Blocks (polling, not a raw blocking flock) until the lock is acquired or
@@ -244,7 +256,7 @@ def run_applescript(script: str, timeout: int = 120) -> str:
     # the Python process is killed before communicate() can enforce its timeout.
     wrapped = _apply_applescript_timeout(script, timeout)
 
-    with mail_automation_lock(timeout=timeout):
+    with mail_automation_lock():
         proc = _popen_factory(
             ["osascript", "-"],
             stdin=subprocess.PIPE,

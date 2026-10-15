@@ -16,6 +16,7 @@ from apple_mail_mcp.core import (
     run_applescript,
     inbox_mailbox_script,
     mail_automation_lock,
+    MAIL_AUTOMATION_BUSY_ERROR,
 )
 
 # Explicit font stack for HTML fragments that get pasted into Mail's compose
@@ -547,7 +548,7 @@ return "{success_text}"
 '''
 
     try:
-        with mail_automation_lock(timeout=30):
+        with mail_automation_lock():
             result = subprocess.run(
                 ["osascript", "-"],
                 input=script.encode("utf-8"),
@@ -569,6 +570,8 @@ return "{success_text}"
         return confirm
     except subprocess.TimeoutExpired:
         return "Error: HTML email script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
@@ -957,7 +960,7 @@ tell application "Mail"
 
     try:
         # Use osascript directly for AppleScriptObjC (use framework) support
-        with mail_automation_lock(timeout=30):
+        with mail_automation_lock():
             result = subprocess.run(
                 ["osascript", "-"],
                 input=script.encode("utf-8"),
@@ -970,6 +973,8 @@ tell application "Mail"
         return result.stdout.decode("utf-8", errors="replace").strip()
     except subprocess.TimeoutExpired:
         return "Error: Reply script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         # Belt-and-suspenders cleanup in case AppleScript didn't run
         if os.path.exists(body_temp_path):
@@ -1400,7 +1405,7 @@ tell application "Mail"
     try:
         if message:
             # Use osascript directly for AppleScriptObjC (use framework) support
-            with mail_automation_lock(timeout=30):
+            with mail_automation_lock():
                 result = subprocess.run(
                     ["osascript", "-"],
                     input=script.encode("utf-8"),
@@ -1415,6 +1420,8 @@ tell application "Mail"
             return run_applescript(script)
     except subprocess.TimeoutExpired:
         return "Error: Forward script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if fwd_html_temp_path and os.path.exists(fwd_html_temp_path):
             os.unlink(fwd_html_temp_path)
