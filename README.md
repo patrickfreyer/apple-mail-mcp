@@ -70,6 +70,20 @@ claude mcp add apple-mail -- mcp-apple-mail
 </details>
 
 <details>
+<summary><strong>npx skills (skill only, for Claude Code, Codex, Cursor and other agents)</strong></summary>
+
+Installs the Email Management Expert skill via the open [skills CLI](https://skills.sh). The skill does not include the MCP server, so install that too (e.g. with uvx above):
+
+```bash
+npx skills add patrickfreyer/apple-mail-mcp
+claude mcp add apple-mail -- uvx mcp-apple-mail
+```
+
+Add `-g` to install the skill globally, or `-a <agent>` to target a specific agent.
+
+</details>
+
+<details>
 <summary><strong>Claude Desktop MCPB</strong></summary>
 
 1. Download the latest `apple-mail-mcp-vX.Y.Z.mcpb` from [Releases](https://github.com/patrickfreyer/apple-mail-mcp/releases)
@@ -239,7 +253,7 @@ This is more reliable than injecting raw HTML into AppleScript `content`, which 
 
 ## Email Management Skill
 
-A companion [Claude Code Skill](plugin/skills/email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). When installed as a plugin, the skill is loaded automatically. For standalone MCP installs, copy it manually:
+A companion [Claude Code Skill](plugin/skills/email-management/) is included that teaches Claude expert email workflows (Inbox Zero, daily triage, folder organization). When installed as a plugin, the skill is loaded automatically. For standalone MCP installs, add it with `npx skills add patrickfreyer/apple-mail-mcp` or copy it manually:
 
 ```bash
 cp -r plugin/skills/email-management ~/.claude/skills/email-management

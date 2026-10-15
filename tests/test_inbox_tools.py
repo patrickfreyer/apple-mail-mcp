@@ -107,5 +107,50 @@ class ListInboxIdentityTests(unittest.TestCase):
         self.assertIn('"   Link: message://%3C"', captured["script"])
 
 
+class AccountNameWithPipeTests(unittest.TestCase):
+    """Account names may contain "|", which used to be the record delimiter."""
+
+    NAME = "Jane Doe | Example Corp"
+
+    def test_list_accounts_keeps_pipe_in_name(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript",
+            return_value="Work\n" + self.NAME + "\nGoogle",
+        ) as mock_run:
+            result = inbox_tools.list_accounts()
+
+        self.assertEqual(result, ["Work", self.NAME, "Google"])
+        self.assertIn("delimiters to linefeed", mock_run.call_args[0][0])
+
+    def test_list_accounts_empty_result(self):
+        with patch("apple_mail_mcp.tools.inbox.run_applescript", return_value=""):
+            self.assertEqual(inbox_tools.list_accounts(), [])
+
+    def test_list_account_addresses_keeps_pipe_in_name(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript",
+            return_value=self.NAME + "|||jane@example.com,j.doe@example.com",
+        ):
+            result = inbox_tools.list_account_addresses()
+
+        self.assertEqual(
+            result, {self.NAME: ["jane@example.com", "j.doe@example.com"]}
+        )
+
+    def test_unread_summary_keeps_pipe_and_colon_in_name(self):
+        name_with_colon = "Team: Support | Example"
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript",
+            return_value=(
+                "Work:0\n" + self.NAME + ":7\n" + name_with_colon + ":ERROR"
+            ),
+        ):
+            result = inbox_tools.get_mailbox_unread_counts(summary_only=True)
+
+        self.assertEqual(
+            result, {"Work": 0, self.NAME: 7, name_with_colon: -1}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

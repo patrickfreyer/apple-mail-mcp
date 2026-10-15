@@ -11,11 +11,17 @@ from typing import Optional, List, Tuple
 
 from apple_mail_mcp.server import mcp, READ_ONLY
 from apple_mail_mcp.paths import validate_read_path, validate_write_path
+from apple_mail_mcp.tools.raw_source import get_email_source
+from apple_mail_mcp.tools.reply_verification import (
+    verify_reply_body_outside_quote,
+    verify_recipients,
+)
 from apple_mail_mcp.core import (
     inject_preferences,
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    build_mailbox_ref,
 )
 
 # Explicit font stack for HTML fragments that get pasted into Mail's compose
@@ -164,11 +170,9 @@ def _build_html_from_text(text_body):
     """Return a simple HTML wrapper for plain text content."""
     safe_body = html_escape(text_body or "")
     return (
-        '<html><body style="font-family: -apple-system, BlinkMacSystemFont, '
-        "'Segoe UI', Arial, sans-serif; line-height: 1.45; color: #111111;\">"
-        '<pre style="white-space: pre-wrap; margin: 0; font-family: '
-        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; "
-        'font-size: 13px;">'
+        f'<html><body style="{_COMPOSE_FONT_STYLE} line-height: 1.45; '
+        'color: #111111;">'
+        f'<pre style="white-space: pre-wrap; margin: 0; {_COMPOSE_FONT_STYLE}">'
         + safe_body
         + "</pre></body></html>"
     )
@@ -610,6 +614,48 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     return resolved_paths, None
 
 
+def _verify_saved_reply_body(
+    account: str,
+    message_id: Optional[str],
+    reply_body: str,
+    expected_cc: Optional[str] = None,
+    expected_from: Optional[str] = None,
+    body_html: Optional[str] = None,
+) -> str:
+    """Verify body placement and headers using the saved draft's RFC Message-ID.
+
+    The save script excludes pre-existing Drafts IDs and accepts only one
+    new draft with the exact reply subject. Never fall back to a subject
+    lookup when that identity is unavailable or ambiguous. Send/open modes
+    do not have a saved draft to inspect and do not call this helper.
+    """
+    if not message_id:
+        return "Status: FAILED — could not uniquely identify the saved draft."
+    raw_source = get_email_source(
+        account=account, message_id=message_id, mailbox="Drafts"
+    )
+    if raw_source.startswith("Error"):
+        return f"Status: FAILED — Verification: could not re-read the saved draft ({raw_source})"
+
+    body_verified, body_detail = verify_reply_body_outside_quote(
+        raw_source, reply_body, body_html=body_html
+    )
+    body_status = "PASSED" if body_verified else "FAILED"
+    lines = [f"Verification ({body_status}): {body_detail}"]
+
+    problems = [] if body_verified else [body_detail]
+    recipients_verified, recipients_detail = verify_recipients(
+        raw_source, expected_cc=expected_cc, expected_from=expected_from
+    )
+    if not recipients_verified:
+        problems.append(recipients_detail)
+    recipients_status = "PASSED" if recipients_verified else "FAILED"
+    lines.append(f"Recipients ({recipients_status}): {recipients_detail}")
+
+    status = "Status: FAILED — " + "; ".join(problems) if problems else "Status: VERIFIED"
+    return "\n".join([status] + lines)
+
+
 @mcp.tool()
 @inject_preferences
 def reply_to_email(
@@ -782,6 +828,66 @@ def reply_to_email(
                 end tell"""
         success_text = "Reply saved as draft!"
 
+    draft_snapshot_script = ""
+    draft_identity_script = ""
+    if effective_mode == "draft":
+        # Outgoing composer IDs are not RFC Message-IDs. Snapshot mailbox
+        # IDs before creating the reply (which can autosave), then resolve
+        # the one new exact-subject draft after close/save. Reject ambiguity
+        # rather than risk verifying an older or concurrently created reply.
+        # The snapshot has its own try: an account without a mailbox named
+        # "Drafts" must still save the reply. With no snapshot the identity
+        # lookup is skipped, so verification reports FAILED instead of
+        # risking a match against an older draft.
+        draft_snapshot_script = f"""
+            set draftMailbox to missing value
+            set priorDraftIDs to {{}}
+            set draftSnapshotOK to false
+            try
+                {build_mailbox_ref("Drafts", var_name="draftMailbox")}
+                set priorDraftIDs to id of every message of draftMailbox
+                set draftSnapshotOK to true
+            end try
+        """
+        post_paste_action = """
+                set savedReplySubject to subject of replyMessage
+                delay 0.5
+                close window 1 saving yes
+        """
+        # New candidates are grouped by RFC Message-ID: Gmail can leave
+        # several autosave/sync copies of one draft, all sharing a
+        # Message-ID. Two distinct Message-IDs are still rejected as ambiguous.
+        draft_identity_script = """
+            set savedDraftMessageID to ""
+            if draftSnapshotOK then
+                repeat 20 times
+                    set newDraftMessageIDs to {}
+                    set matchingDrafts to (messages of draftMailbox whose subject is savedReplySubject)
+                    repeat with candidate in matchingDrafts
+                        if priorDraftIDs does not contain (id of candidate) then
+                            set candidateMessageID to message id of candidate
+                            if candidateMessageID is missing value then set candidateMessageID to ""
+                            if newDraftMessageIDs does not contain candidateMessageID then
+                                set end of newDraftMessageIDs to candidateMessageID
+                            end if
+                        end if
+                    end repeat
+                    if (count of newDraftMessageIDs) is greater than 1 then exit repeat
+                    if (count of newDraftMessageIDs) is 1 then
+                        set candidateMessageID to item 1 of newDraftMessageIDs
+                        if candidateMessageID is not "" then
+                            set savedDraftMessageID to candidateMessageID
+                            exit repeat
+                        end if
+                    end if
+                    delay 0.25
+                end repeat
+            else
+                set outputText to outputText & "Note: could not read the Drafts mailbox, so the saved draft cannot be verified." & return
+            end if
+            set outputText to outputText & "Saved draft Message-ID: " & savedDraftMessageID & return
+        """
+
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
     html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
 
@@ -828,6 +934,9 @@ tell application "Mail"
             set messageSubject to subject of foundMessage
             set messageSender to sender of foundMessage
             set messageDate to date received of foundMessage
+
+            -- Snapshot before creation, since Mail may autosave the reply.
+            {draft_snapshot_script}
 
             -- Create reply
             {reply_command}
@@ -881,6 +990,7 @@ tell application "Mail"
             delay 0.5
 
             {post_paste_action}
+            {draft_identity_script}
 
             set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: " & messageSender & return
@@ -941,7 +1051,29 @@ tell application "Mail"
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error in reply: {stderr}"
-        return result.stdout.decode("utf-8", errors="replace").strip()
+        output_text = result.stdout.decode("utf-8", errors="replace").strip()
+        # Checking for the absence of "Error" is not enough: "No email found
+        # matching: <keyword>" is also a failure to reach a saved draft, and
+        # does not start with "Error" either. `success_text` is the one
+        # positive signal this function's own AppleScript emits only on the
+        # branch that actually saved something.
+        if effective_mode == "draft" and success_text in output_text:
+            identity_lines = [
+                line.removeprefix("Saved draft Message-ID: ").strip()
+                for line in output_text.splitlines()
+                if line.startswith("Saved draft Message-ID: ")
+            ]
+            saved_message_id = identity_lines[0] if len(identity_lines) == 1 else None
+            verification = _verify_saved_reply_body(
+                account,
+                saved_message_id,
+                reply_body,
+                expected_cc=cc,
+                expected_from=sender_override,
+                body_html=body_html,
+            )
+            output_text = verification + "\n" + output_text
+        return output_text
     except subprocess.TimeoutExpired:
         return "Error: Reply script timed out"
     finally:
