@@ -333,10 +333,11 @@ class SearchToolTests(unittest.TestCase):
             )
 
         self.assertIn("messageFlagIndex is 0", captured["script"])
-        # Read in both the scan loop and the record emission block.
+        # Read in both scan loops (bounded for large mailboxes, full for the
+        # rest) and in the record emission block.
         self.assertEqual(
             captured["script"].count("set messageFlagIndex to flag index of aMessage"),
-            2,
+            3,
         )
 
     def test_search_emails_body_search_skips_flag_read_without_flag_filter(self):
@@ -371,6 +372,179 @@ class SearchToolTests(unittest.TestCase):
 
         self.assertIn("flag_color cannot be combined", result)
         mock_run.assert_not_called()
+
+    # -- Issue #41: search_emails hangs / returns empty on very large
+    # (90,000+ message) mailboxes because it always materializes the full
+    # mailbox via `every message of currentMailbox [whose ...]`, an
+    # unindexed AppleScript scan with no upper bound. --------------------
+
+    def test_search_emails_large_mailbox_scan_is_bounded_by_index(self):
+        """The generated script must guard full-mailbox materialization
+        behind a cheap `count of messages` check and fall back to a capped,
+        early-exiting index scan instead of always pulling every message
+        into memory in one Apple event."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(
+                account="Work", sender="boss@example.com", limit=5
+            )
+
+        script = captured["script"]
+        self.assertIn("count of messages of currentMailbox", script)
+        self.assertIn("if totalMessageCount >", script)
+        # Bounded path reads messages by index and can stop early rather
+        # than pulling the whole mailbox into memory up front.
+        self.assertIn("repeat with msgIndex from", script)
+        self.assertIn("message msgIndex of currentMailbox", script)
+        # The size guard must appear before the whose-clause materialization
+        # — i.e. materialization is now conditional, not unconditional.
+        guard_pos = script.index("if totalMessageCount >")
+        materialize_pos = script.index(
+            "set matchingMessages to every message of currentMailbox whose"
+        )
+        self.assertLess(guard_pos, materialize_pos)
+
+    def test_search_emails_bounded_scan_direction_follows_sort(self):
+        """date_desc (the default) must scan from the newest end of the
+        mailbox first, so a capped scan still surfaces the most relevant
+        matches instead of the oldest ones.
+
+        In Mail, message 1 is the newest: checked on a 75,190-message Gmail
+        INBOX (message 1 received today, message 4000 three months earlier,
+        the last one in 2005). So newest-first walks the indexes upward."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", sort="date_desc", limit=5)
+        self.assertIn(
+            "repeat with msgIndex from 1 to totalMessageCount by 1",
+            captured["script"],
+        )
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", sort="date_asc", limit=5)
+        self.assertIn(
+            "repeat with msgIndex from totalMessageCount to 1 by -1",
+            captured["script"],
+        )
+
+    def test_search_emails_scan_cap_is_shared_across_mailboxes(self):
+        """mailbox="All" must not get a fresh cap per large mailbox: the
+        counter is set once per call and never reset inside the loop."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", mailbox="All", limit=5)
+        script = captured["script"]
+        self.assertEqual(script.count("set scannedTotal to 0"), 1)
+        self.assertLess(
+            script.index("set scannedTotal to 0"),
+            script.index("repeat with targetAccount in searchAccounts"),
+        )
+        self.assertIn(
+            f"if scannedTotal > {search_tools.BOUNDED_SCAN_MAX_MESSAGES} then",
+            script,
+        )
+
+    def test_search_emails_body_search_is_bounded_on_large_mailboxes(self):
+        """body_text reads every message's content; on a very large mailbox it
+        must use the capped, newest-first index scan with an early exit."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", body_text="invoice", limit=5)
+        script = captured["script"]
+        self.assertIn(
+            f"if totalMessageCount > {search_tools.WHOSE_CLAUSE_SAFE_LIMIT} then",
+            script,
+        )
+        self.assertIn(
+            f"if scannedTotal > {search_tools.BOUNDED_BODY_SCAN_MAX_MESSAGES} then",
+            script,
+        )
+        self.assertIn("repeat with msgIndex from 1 to totalMessageCount by 1", script)
+        self.assertIn(
+            "if (count of matchingMessages) >= scanTarget then exit repeat", script
+        )
+
+    def test_search_emails_reports_scan_limited_instead_of_silent_empty(self):
+        """When Mail signals that a large-mailbox scan hit its safety cap
+        before finishing, search_emails must surface that honestly instead
+        of returning an indistinguishable empty/partial result."""
+
+        def fake_run_with_hit(script, timeout=120):
+            return "SCAN_LIMITED=true\n" + _record_line(500, "Found before cap")
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript",
+            side_effect=fake_run_with_hit,
+        ):
+            response = json.loads(
+                search_tools.search_emails(
+                    account="Work", output_format="json", limit=5
+                )
+            )
+
+        self.assertEqual(len(response["items"]), 1)
+        self.assertTrue(response["scan_limited"])
+
+        def fake_run_empty(script, timeout=120):
+            return "SCAN_LIMITED=true\n"
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript",
+            side_effect=fake_run_empty,
+        ):
+            text_response = search_tools.search_emails(account="Work", limit=5)
+
+        self.assertIn("FOUND: 0", text_response)
+        self.assertIn("NOTE", text_response.upper())
+
+    def test_search_emails_scan_not_limited_by_default(self):
+        """Normal, non-truncated responses must not carry a scan_limited
+        flag or warning text."""
+
+        def fake_run(script, timeout=120):
+            return _record_line(600, "Normal result")
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            response = json.loads(
+                search_tools.search_emails(
+                    account="Work", output_format="json", limit=5
+                )
+            )
+        self.assertFalse(response["scan_limited"])
+
+        with patch("apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run):
+            text_response = search_tools.search_emails(account="Work", limit=5)
+        self.assertNotIn("NOTE", text_response.upper())
 
 
 class ManageToolTests(unittest.TestCase):

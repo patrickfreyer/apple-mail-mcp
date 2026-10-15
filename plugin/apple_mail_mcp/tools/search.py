@@ -3,7 +3,7 @@
 import json
 import re
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import quote
 
 from apple_mail_mcp.server import mcp
@@ -18,6 +18,40 @@ from apple_mail_mcp.core import (
     run_applescript,
     LOWERCASE_HANDLER,
 )
+
+
+# AppleScript's `whose` clause (and a bare `every message of mailbox`) forces
+# Mail to walk every message in the mailbox with no index to evaluate the
+# filter — fine for a few thousand messages, but on a very large mailbox
+# (issue #41: a Gmail INBOX with 90,000+ messages) that single Apple event
+# can run past the AppleScript timeout while Mail's main thread is pinned,
+# leaving the UI unresponsive and the tool call returning nothing useful.
+#
+# `count of messages of currentMailbox` is a cheap scalar read (Mail already
+# tracks the count; this project already relies on the same idiom elsewhere,
+# see tools/inbox.py). Above this threshold we skip materializing the whole
+# mailbox and instead run a capped, early-exiting index scan (see
+# BOUNDED_SCAN_MAX_MESSAGES) so the amount of work is bounded by us, not by
+# the mailbox size.
+WHOSE_CLAUSE_SAFE_LIMIT = 5000
+
+# Hard cap on how many messages a bounded index-scan will examine for a
+# single mailbox. Each examined message is one cheap `message N of mailbox`
+# metadata read (no content/body access), so this cap keeps the worst case
+# comfortably inside the existing 180s AppleScript timeout. When the cap is
+# hit before the requested page is filled, the response is marked
+# `scan_limited` instead of silently claiming a complete (possibly empty)
+# result.
+BOUNDED_SCAN_MAX_MESSAGES = 4000
+
+# The same idea for body_text searches on very large mailboxes, where every
+# examined message also costs a `content of` read, which is far slower than a
+# metadata read. Measured on a 75,190-message Gmail INBOX with a term that
+# never matches: 50 messages took 39 s, 100 took 140 s (older bodies are not
+# cached locally, so the cost is not linear). 50 keeps a worst case well
+# inside the 180 s timeout. Both caps are shared across all the mailboxes of
+# one call, so mailbox="All" does not get a fresh budget per mailbox.
+BOUNDED_BODY_SCAN_MAX_MESSAGES = 50
 
 
 MONTH_NAMES = [
@@ -114,6 +148,7 @@ def _sort_search_records(
 def _format_search_records_text(
     records: List[Dict[str, Any]],
     subject_only: bool = False,
+    scan_limited: bool = False,
 ) -> str:
     """Format search records as human-readable text."""
     lines = []
@@ -146,6 +181,16 @@ def _format_search_records_text(
     lines.append("========================================")
     lines.append(f"FOUND: {len(records)} matching email(s)")
     lines.append("========================================")
+
+    if scan_limited:
+        lines.append("")
+        lines.append(
+            "⚠ NOTE: a very large mailbox was only partially scanned "
+            "to avoid hanging Mail.app — results may be incomplete. "
+            "Narrow with date_from/date_to, sender, or a smaller mailbox "
+            "for full coverage."
+        )
+
     return "\n".join(lines)
 
 
@@ -156,6 +201,7 @@ def _build_search_response(
     sort: str,
     output_format: str,
     subject_only: bool = False,
+    scan_limited: bool = False,
 ) -> str:
     """Return either JSON or text for search results."""
     sorted_records = _sort_search_records(records, sort)
@@ -173,10 +219,13 @@ def _build_search_response(
                 "has_more": has_more,
                 "next_offset": next_offset,
                 "sort": sort,
+                "scan_limited": scan_limited,
             }
         )
 
-    return _format_search_records_text(items, subject_only=subject_only)
+    return _format_search_records_text(
+        items, subject_only=subject_only, scan_limited=scan_limited
+    )
 
 
 def _search_mail_records(
@@ -196,17 +245,23 @@ def _search_mail_records(
     limit: int = 100,
     sort: str = "date_desc",
     body_text: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Return structured search records from Apple Mail.
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Return structured search records from Apple Mail, plus a scan_limited flag.
 
     When account is None, iterates all accounts.
     When body_text is provided, uses per-message iteration with case-insensitive
     content matching (slower than subject/sender-only searches).
+
+    The second element of the returned tuple is ``True`` when a very large
+    mailbox's bounded index-scan (see WHOSE_CLAUSE_SAFE_LIMIT /
+    BOUNDED_SCAN_MAX_MESSAGES above) hit its safety cap before it could
+    confirm the result is complete — callers should surface this rather than
+    treating the result as authoritative.
     """
     if offset < 0:
         raise ValueError("offset must be >= 0")
     if limit <= 0:
-        return []
+        return [], False
     if sort not in {"date_desc", "date_asc"}:
         raise ValueError("Invalid sort. Use: date_desc, date_asc")
     if read_status not in {"all", "read", "unread"}:
@@ -263,6 +318,94 @@ def _search_mail_records(
         matching_messages_script = (
             "set matchingMessages to every message of currentMailbox"
         )
+
+    # Per-message equivalents of filter_conditions, for use inside the
+    # bounded index-scan loop below (large mailboxes only). Mirrors
+    # filter_conditions exactly but references `aMessage` explicitly instead
+    # of relying on the implicit `whose` element scope.
+    per_message_conditions = []
+    if not use_body_search:
+        if subject_terms:
+            subject_checks = " or ".join(
+                f'subject of aMessage contains "{escape_applescript(t)}"'
+                for t in subject_terms
+            )
+            per_message_conditions.append(f"({subject_checks})")
+        if sender:
+            per_message_conditions.append(
+                f'sender of aMessage contains "{escaped_sender}"'
+            )
+        if has_attachments is not None:
+            if has_attachments:
+                per_message_conditions.append(
+                    "(count of mail attachments of aMessage) > 0"
+                )
+            else:
+                per_message_conditions.append(
+                    "(count of mail attachments of aMessage) = 0"
+                )
+        if flag_index is not None:
+            per_message_conditions.append(
+                f"(flagged status of aMessage is true and flag index of aMessage is {flag_index})"
+            )
+        elif flagged is not None:
+            per_message_conditions.append(
+                f"flagged status of aMessage is {'true' if flagged else 'false'}"
+            )
+        if read_status == "read":
+            per_message_conditions.append("read status of aMessage is true")
+        elif read_status == "unread":
+            per_message_conditions.append("read status of aMessage is false")
+        if date_from:
+            per_message_conditions.append("date received of aMessage >= fromDate")
+        if date_to:
+            per_message_conditions.append("date received of aMessage <= toDate")
+
+    per_message_condition_expr = (
+        " and ".join(per_message_conditions) if per_message_conditions else "true"
+    )
+
+    # Scan from the end of the mailbox that matches the requested sort order,
+    # so a capped scan on a huge mailbox still surfaces the most relevant
+    # (newest, for the default date_desc) matches instead of the oldest ones.
+    # In Mail, message 1 of a mailbox is the newest (analytics.py relies on
+    # the same order), so newest-first walks the indexes upward.
+    if sort == "date_desc":
+        scan_from, scan_to, scan_step = "1", "totalMessageCount", "1"
+    else:
+        scan_from, scan_to, scan_step = "totalMessageCount", "1", "-1"
+
+    # Bounded index-scan: used instead of matching_messages_script when the
+    # mailbox is too large to safely materialize in one `whose`/`every`
+    # Apple event (see WHOSE_CLAUSE_SAFE_LIMIT). Reads at most
+    # BOUNDED_SCAN_MAX_MESSAGES messages by index and stops as soon as it has
+    # enough matches for this mailbox's contribution to the current page
+    # (offsetRemaining + collectLimit). If the cap is hit first,
+    # anyMailboxScanTruncated is set so the caller is told the result may be
+    # incomplete instead of silently returning less than the whole picture.
+    bounded_scan_script = f'''
+                            set totalMessageCount to count of messages of currentMailbox
+                            if totalMessageCount > {WHOSE_CLAUSE_SAFE_LIMIT} then
+                                set matchingMessages to {{}}
+                                set scanTarget to offsetRemaining + collectLimit
+                                repeat with msgIndex from {scan_from} to {scan_to} by {scan_step}
+                                    set scannedTotal to scannedTotal + 1
+                                    if scannedTotal > {BOUNDED_SCAN_MAX_MESSAGES} then
+                                        set anyMailboxScanTruncated to true
+                                        exit repeat
+                                    end if
+                                    try
+                                        set aMessage to message msgIndex of currentMailbox
+                                        if {per_message_condition_expr} then
+                                            set end of matchingMessages to aMessage
+                                            if (count of matchingMessages) >= scanTarget then exit repeat
+                                        end if
+                                    end try
+                                end repeat
+                            else
+                                {matching_messages_script}
+                            end if
+    '''
 
     if mailbox == "All":
         mailbox_script = """
@@ -349,8 +492,40 @@ def _search_mail_records(
 
         combined_condition = " and ".join(per_msg_conditions)
 
+        body_message_checks = f'''
+                                    set messageSubject to subject of aMessage
+                                    set messageSender to sender of aMessage
+                                    set messageRead to read status of aMessage
+                                    set messageDate to date received of aMessage
+                                    {flag_read_script}
+                                    set lowerSubject to my lowercase(messageSubject)
+                                    set lowerSender to my lowercase(messageSender)
+                                    set msgContent to ""
+                                    try
+                                        set msgContent to content of aMessage
+                                    end try
+                                    set lowerContent to my lowercase(msgContent)'''
         body_search_loop = f'''
                             set matchingMessages to {{}}
+                            set totalMessageCount to count of messages of currentMailbox
+                            if totalMessageCount > {WHOSE_CLAUSE_SAFE_LIMIT} then
+                                set scanTarget to offsetRemaining + collectLimit
+                                repeat with msgIndex from {scan_from} to {scan_to} by {scan_step}
+                                    set scannedTotal to scannedTotal + 1
+                                    if scannedTotal > {BOUNDED_BODY_SCAN_MAX_MESSAGES} then
+                                        set anyMailboxScanTruncated to true
+                                        exit repeat
+                                    end if
+                                    try
+                                        set aMessage to message msgIndex of currentMailbox
+                                        {body_message_checks}
+                                        if {combined_condition} then
+                                            set end of matchingMessages to aMessage
+                                            if (count of matchingMessages) >= scanTarget then exit repeat
+                                        end if
+                                    end try
+                                end repeat
+                            else
                             set allMessages to every message of currentMailbox
                             repeat with aMessage in allMessages
                                 if collectLimit <= 0 then exit repeat
@@ -372,6 +547,7 @@ def _search_mail_records(
                                     end if
                                 end try
                             end repeat
+                            end if
         '''
     else:
         body_search_loop = ""
@@ -380,7 +556,7 @@ def _search_mail_records(
     if use_body_search:
         message_collection = body_search_loop
     else:
-        message_collection = f"                            {matching_messages_script}"
+        message_collection = bounded_scan_script
 
     lowercase_handler = LOWERCASE_HANDLER if use_body_search else ""
 
@@ -439,6 +615,8 @@ def _search_mail_records(
                 set recordLines to {{}}
                 set offsetRemaining to {offset}
                 set collectLimit to {limit + 1}
+                set anyMailboxScanTruncated to false
+                set scannedTotal to 0
                 {date_setup}
                 {account_setup}
 
@@ -529,13 +707,18 @@ def _search_mail_records(
                 end repeat
 
                 if (count of recordLines) is 0 then
-                    return ""
+                    set outputText to ""
+                else
+                    set AppleScript's text item delimiters to linefeed
+                    set outputText to recordLines as string
+                    set AppleScript's text item delimiters to ""
                 end if
 
-                set AppleScript's text item delimiters to linefeed
-                set outputText to recordLines as string
-                set AppleScript's text item delimiters to ""
-                return outputText
+                set scanLimitedFlag to "false"
+                if anyMailboxScanTruncated then
+                    set scanLimitedFlag to "true"
+                end if
+                return "SCAN_LIMITED=" & scanLimitedFlag & linefeed & outputText
             on error errMsg
                 return "ERROR|||" & errMsg
             end try
@@ -547,7 +730,13 @@ def _search_mail_records(
     if result.startswith("ERROR|||"):
         raise ValueError(result.split("|||", 1)[1])
 
-    return _parse_search_records(result)
+    scan_limited = False
+    if result.startswith("SCAN_LIMITED="):
+        marker_line, _, remainder = result.partition("\n")
+        scan_limited = marker_line.strip() == "SCAN_LIMITED=true"
+        result = remainder
+
+    return _parse_search_records(result), scan_limited
 
 
 @mcp.tool()
@@ -615,7 +804,7 @@ def search_emails(
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
 
     try:
-        records = _search_mail_records(
+        records, scan_limited = _search_mail_records(
             account=account,
             mailbox=mailbox,
             subject_terms=subject_terms,
@@ -640,6 +829,7 @@ def search_emails(
             sort=sort,
             output_format=output_format,
             subject_only=False,
+            scan_limited=scan_limited,
         )
     except ValueError as exc:
         return f"Error: {exc}"

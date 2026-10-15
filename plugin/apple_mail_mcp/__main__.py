@@ -34,6 +34,19 @@ def _start_orphan_watcher(
     threading.Thread(target=_watch, daemon=True).start()
 
 
+def _remove_tool(mcp, name: str) -> None:
+    """Unregister a tool by name, ignoring names that were never registered.
+
+    Goes through the server's local provider rather than FastMCP.remove_tool:
+    the latter is deprecated in fastmcp 3.x and gone in 4.x, while
+    local_provider.remove_tool exists (and raises KeyError on a miss) in both.
+    """
+    try:
+        mcp.local_provider.remove_tool(name)
+    except KeyError:
+        pass
+
+
 def main():
     _start_orphan_watcher()
 
@@ -53,10 +66,7 @@ def main():
     SEND_TOOLS = ["compose_email", "reply_to_email", "forward_email"]
     if args.read_only:
         for name in SEND_TOOLS:
-            try:
-                mcp.remove_tool(name)
-            except (KeyError, ValueError):
-                pass
+            _remove_tool(mcp, name)
 
     mcp.run()
 
