@@ -296,5 +296,21 @@ class TestComposeToolsReportBusyLock(unittest.TestCase):
         self._assert_busy(result, mock_run)
 
 
+    def test_reply_verification_busy_keeps_saved_draft_result(self):
+        """A busy lock while re-reading the saved draft must not mask the save."""
+        from apple_mail_mcp.tools import compose as compose_tools
+
+        with patch(
+            "apple_mail_mcp.tools.compose.get_email_source",
+            side_effect=TimeoutError("Mail automation is busy (lock held) after 30s"),
+        ):
+            result = compose_tools._verify_saved_reply_body(
+                "Work", "<id@example.com>", "Reply"
+            )
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        self.assertIn("could not re-read the saved draft", result)
+        self.assertIn("Mail automation is busy", result)
+
+
 if __name__ == "__main__":
     unittest.main()
