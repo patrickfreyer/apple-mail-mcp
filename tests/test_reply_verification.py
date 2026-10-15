@@ -149,6 +149,19 @@ class VerifyReplyBodyOutsideQuoteTests(unittest.TestCase):
 
         self.assertTrue(verified)
 
+    def test_plain_literal_markup_is_preserved_in_html_draft(self):
+        source = _multipart_source(
+            "<div>use &lt;b&gt; tag in R&amp;amp;D</div>" + _ORIGINAL_HTML,
+            "use <b> tag in R&amp;D",
+        )
+        verified, detail = verify_reply_body_outside_quote(source, "use <b> tag in R&amp;D")
+        self.assertTrue(verified, detail)
+
+    def test_plain_body_line_wrapping_is_ignored(self):
+        source = _HEADERS + "Content-Type: text/plain\r\n\r\nYes,\n  3pm\tworks.\n> original"
+        verified, detail = verify_reply_body_outside_quote(source, "Yes, 3pm works.")
+        self.assertTrue(verified, detail)
+
     def test_empty_reply_body_does_not_verify(self):
         source = _multipart_source(
             new_body_html=_ORIGINAL_HTML, new_body_text="quoted only"
@@ -186,6 +199,24 @@ class VerifyRecipientsTests(unittest.TestCase):
         "Subject: Re: sync\r\n\r\n"
         "body\r\n"
     )
+
+    def test_cc_display_names_and_case_are_normalized(self):
+        from apple_mail_mcp.tools.reply_verification import verify_recipients
+
+        verified, detail = verify_recipients(
+            self.HEADERS.replace("bob@example.com", "Bob@Example.COM"),
+            expected_cc='"Example, Bob" <BOB@example.com>, Carol <CAROL@example.com>',
+        )
+        self.assertTrue(verified, detail)
+
+    def test_from_display_name_and_case_are_normalized(self):
+        from apple_mail_mcp.tools.reply_verification import verify_recipients
+
+        verified, detail = verify_recipients(
+            self.HEADERS.replace("sender@example.com", "Sender@Example.COM"),
+            expected_from="Sender <SENDER@example.com>",
+        )
+        self.assertTrue(verified, detail)
 
     def test_no_expectations_always_verifies(self):
         from apple_mail_mcp.tools.reply_verification import verify_recipients

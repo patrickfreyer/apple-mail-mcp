@@ -921,7 +921,9 @@ class ReplyDraftVerificationTests(unittest.TestCase):
     from the AppleScript's text presence alone."""
 
     def _run_reply(
-        self, get_email_source_return, run_applescript_return="", **overrides
+        self, get_email_source_return, run_applescript_return="",
+        saved_output=b"Reply saved as draft!\nSaved draft Message-ID: new@example.com",
+        **overrides
     ):
         kwargs = dict(
             account="Work",
@@ -934,7 +936,7 @@ class ReplyDraftVerificationTests(unittest.TestCase):
             patch(
                 "apple_mail_mcp.tools.compose.subprocess.run",
                 return_value=_make_subprocess_result(
-                    stdout=b"Reply saved as draft!"
+                    stdout=saved_output
                 ),
             ),
             patch(
@@ -949,6 +951,50 @@ class ReplyDraftVerificationTests(unittest.TestCase):
             result = compose_tools.reply_to_email(**kwargs)
         return result, mock_get_source
 
+    def test_missing_draft_identity_fails_without_subject_fallback(self):
+        result, mock_get_source = self._run_reply(
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            saved_output=b"Reply saved as draft!",
+        )
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        mock_get_source.assert_not_called()
+
+    def test_draft_script_excludes_existing_ids_and_rejects_ambiguity(self):
+        with (
+            patch("apple_mail_mcp.tools.compose.subprocess.run",
+                  return_value=_make_subprocess_result()) as mock_run,
+            patch("apple_mail_mcp.tools.compose.run_applescript", return_value=""),
+        ):
+            compose_tools.reply_to_email("Work", "test", "Reply", send=False)
+        script = mock_run.call_args.kwargs["input"].decode("utf-8")
+        self.assertIn("set priorDraftIDs to id of every message of draftMailbox", script)
+        self.assertLess(script.index("set priorDraftIDs"), script.index("set replyMessage to reply"))
+        self.assertIn("whose subject is savedReplySubject", script)
+        self.assertIn("priorDraftIDs does not contain", script)
+        self.assertIn("if (count of newDrafts) is greater than 1 then exit repeat", script)
+        self.assertIn("message id of (item 1 of newDrafts)", script)
+        self.assertIn("Saved draft Message-ID: ", script)
+
+    def test_html_sent_is_verified_instead_of_plain_fallback(self):
+        result, _ = self._run_reply(
+            'Content-Type: text/html\r\n\r\n<p>Actual HTML</p><blockquote type="cite">old</blockquote>',
+            reply_body="Different fallback", body_html="<p>Actual <b>HTML</b></p>",
+        )
+        self.assertIn("Verification (PASSED)", result)
+
+    def test_failure_status_leads_with_reason(self):
+        result, _ = self._run_reply("Content-Type: text/plain\r\n\r\n> Yes, 3pm works.")
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+        self.assertIn("only inside", result.splitlines()[0])
+
+    def test_success_status_leads_result(self):
+        result, _ = self._run_reply("Content-Type: text/plain\r\n\r\nYes, 3pm works.")
+        self.assertTrue(result.startswith("Status: VERIFIED"), result)
+
+    def test_source_error_is_a_leading_failure(self):
+        result, _ = self._run_reply("Error: draft unavailable")
+        self.assertTrue(result.startswith("Status: FAILED"), result)
+
     def test_body_outside_quote_reports_passed(self):
         result, mock_get_source = self._run_reply(
             "Content-Type: text/plain\r\n\r\n"
@@ -957,7 +1003,7 @@ class ReplyDraftVerificationTests(unittest.TestCase):
 
         self.assertIn("Verification (PASSED)", result)
         mock_get_source.assert_called_once_with(
-            account="Work", subject_keyword="test", mailbox="Drafts"
+            account="Work", message_id="new@example.com", mailbox="Drafts"
         )
 
     def test_body_inside_quote_reports_failed(self):
@@ -975,15 +1021,14 @@ class ReplyDraftVerificationTests(unittest.TestCase):
 
         self.assertIn("could not re-read the saved draft", result)
 
-    def test_no_cc_or_from_address_skips_recipients_check(self):
-        """Plain reply with no cc/from_address override: nothing to verify
-        beyond the body, so no 'Recipients' line should appear (#70)."""
+    def test_no_overrides_reports_actual_saved_recipients(self):
         result, _ = self._run_reply(
-            "Content-Type: text/plain\r\n\r\n"
-            "Yes, 3pm works.\r\n\r\n> On Jan 1, sender wrote:\r\n> hi\r\n"
+            "From: sender@example.com\r\nTo: alice@example.com\r\nCc: bob@example.com\r\n"
+            "Content-Type: text/plain\r\n\r\nYes, 3pm works.",
+            reply_to_all=True,
         )
-
-        self.assertNotIn("Recipients", result)
+        self.assertIn("Recipients (PASSED): To=['alice@example.com'] "
+                      "Cc=['bob@example.com'] From=['sender@example.com']", result)
 
     def test_requested_cc_actually_saved_reports_passed(self):
         """#70: verify the CC the caller asked for actually landed in the

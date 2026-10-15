@@ -26,6 +26,7 @@ behaviour, which never checked in the first place.
 import html
 import re
 from email import message_from_string, policy
+from email.utils import getaddresses
 from typing import List, Optional, Tuple
 
 _CITE_BLOCKQUOTE_RE = re.compile(
@@ -77,16 +78,11 @@ def _text_before_quote(text_body: str) -> str:
     return "\n".join(unquoted_lines)
 
 
-def _normalize(text: str) -> str:
-    """Strip HTML tags, unescape entities, and collapse whitespace.
-
-    Makes the substring check tolerant of Mail wrapping each line in its
-    own `<div>`/`<br>` and of `&nbsp;`/`&amp;`-style entity encoding, without
-    trying to reproduce Mail's exact rendering.
-    """
-    without_tags = _TAG_RE.sub(" ", text)
-    unescaped = html.unescape(without_tags)
-    return " ".join(unescaped.split())
+def _normalize(text: str, *, is_html: bool = False) -> str:
+    """Collapse whitespace, decoding markup only for an actual HTML body."""
+    if is_html:
+        text = html.unescape(_TAG_RE.sub(" ", text))
+    return " ".join(text.split())
 
 
 def _extract_addresses(raw_source: str, header_name: str) -> List[str]:
@@ -130,7 +126,7 @@ def verify_recipients(
             treated as a mismatch, since those were never the caller's to
             specify in the first place.
         expected_from: The `from_address` `reply_to_email` was called with,
-            if any. Checked for an exact match against the saved `From`.
+            if any. Compared as case-insensitive addresses against saved `From`.
 
     Returns:
         `(verified, detail)`. `detail` lists the actual saved To/Cc/From
@@ -144,15 +140,17 @@ def verify_recipients(
     problems: List[str] = []
 
     if expected_cc:
-        requested = [addr.strip() for addr in expected_cc.split(",") if addr.strip()]
-        missing = [addr for addr in requested if addr not in actual_cc]
+        requested = [addr for _, addr in getaddresses([expected_cc]) if addr]
+        saved_cc = {addr.lower() for addr in actual_cc}
+        missing = [addr for addr in requested if addr.lower() not in saved_cc]
         if missing:
             problems.append(
                 f"requested CC {missing} not found in saved Cc: {actual_cc}"
             )
 
     if expected_from:
-        if expected_from not in actual_from:
+        requested_from = [addr.lower() for _, addr in getaddresses([expected_from]) if addr]
+        if requested_from != [addr.lower() for addr in actual_from]:
             problems.append(
                 f"requested From {expected_from!r} not found in saved From: {actual_from}"
             )
@@ -164,13 +162,14 @@ def verify_recipients(
 
 
 def verify_reply_body_outside_quote(
-    raw_source: str, reply_body: str
+    raw_source: str, reply_body: str, *, body_html: Optional[str] = None
 ) -> Tuple[bool, str]:
     """Verify `reply_body` was saved outside Mail's quoted-original block.
 
     Args:
         raw_source: RFC 822 source of the saved draft (from `get_email_source`).
         reply_body: The plain-text reply body that was supposed to be pasted.
+        body_html: When supplied, the HTML actually pasted instead of reply_body.
 
     Returns:
         `(verified, detail)`. `verified` is `True` only when normalized
@@ -181,16 +180,16 @@ def verify_reply_body_outside_quote(
         an unrelated reason -- see the focus-polling comment in
         `compose.py`).
     """
-    reply_snippet = _normalize(reply_body)
+    reply_snippet = _normalize(body_html or reply_body, is_html=bool(body_html))
     if not reply_snippet:
         return False, "Reply body is empty; nothing to verify."
 
     html_body, text_body = _extract_bodies(raw_source)
 
     if html_body is not None:
-        if reply_snippet in _normalize(_html_before_quote(html_body)):
+        if reply_snippet in _normalize(_html_before_quote(html_body), is_html=True):
             return True, "Reply body found outside the quoted original (HTML)."
-        if reply_snippet in _normalize(html_body):
+        if reply_snippet in _normalize(html_body, is_html=True):
             return False, (
                 "Reply body found only inside the quoted original (HTML) -- "
                 'it landed inside <blockquote type="cite">, not above it.'
@@ -198,9 +197,9 @@ def verify_reply_body_outside_quote(
         return False, "Reply body not found in the saved draft's HTML body."
 
     if text_body is not None:
-        if reply_body.strip() in _text_before_quote(text_body):
+        if reply_snippet in _normalize(_text_before_quote(text_body)):
             return True, "Reply body found outside the quoted original (plain text)."
-        if reply_body.strip() in text_body:
+        if reply_snippet in _normalize(text_body):
             return False, (
                 "Reply body found only inside the quoted original (plain text) "
                 "-- it landed after a '>' quote marker, not above it."

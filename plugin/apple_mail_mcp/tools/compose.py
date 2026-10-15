@@ -20,6 +20,7 @@ from apple_mail_mcp.core import (
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    build_mailbox_ref,
 )
 
 
@@ -626,54 +627,44 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
 
 def _verify_saved_reply_body(
     account: str,
-    subject_keyword: str,
+    message_id: Optional[str],
     reply_body: str,
     expected_cc: Optional[str] = None,
     expected_from: Optional[str] = None,
+    body_html: Optional[str] = None,
 ) -> str:
-    """Read back a just-saved draft reply and verify (a) the body landed
-    above Mail's quoted original, not inside it (#71), and (b) the actual
-    saved To/Cc/From headers, rather than trusting the AppleScript's own
-    account of what it did (#70) -- the AppleScript's "To: " line above is
-    only the sender of the message being replied to, echoed unconditionally;
-    it does not reflect what `reply to all` or a rejected `from_address`
-    override actually produced in the saved draft.
+    """Verify body placement and headers using the saved draft's RFC Message-ID.
 
-    Only called for `mode="draft"`: that is the one case where the message
-    is guaranteed to already be sitting in a mailbox (Drafts) by the time
-    the AppleScript that saved it has returned, so re-reading it via the
-    existing `get_email_source` tool is safe and synchronous. "send" moves
-    the message to Sent, and "open" leaves it unsaved in a compose window
-    with nothing in a mailbox yet to read back -- neither is covered here.
-
-    Reuses `get_email_source` rather than adding new AppleScript, so this
-    verification step carries no additional live-execution risk beyond a
-    tool this codebase already runs and tests. Both checks share the single
-    `get_email_source` round-trip.
-
-    Best-effort: `get_email_source`'s subject match is "first message whose
-    subject contains this substring", the same matching the rest of this
-    tool already relies on -- a second draft with a similar subject could
-    in principle be read back instead of the one just saved.
+    The save script excludes pre-existing Drafts IDs and accepts only one
+    new draft with the exact reply subject. Never fall back to a subject
+    lookup when that identity is unavailable or ambiguous. Send/open modes
+    do not have a saved draft to inspect and do not call this helper.
     """
+    if not message_id:
+        return "Status: FAILED — could not uniquely identify the saved draft."
     raw_source = get_email_source(
-        account=account, subject_keyword=subject_keyword, mailbox="Drafts"
+        account=account, message_id=message_id, mailbox="Drafts"
     )
     if raw_source.startswith("Error"):
-        return f"Verification: could not re-read the saved draft ({raw_source})"
+        return f"Status: FAILED — Verification: could not re-read the saved draft ({raw_source})"
 
-    body_verified, body_detail = verify_reply_body_outside_quote(raw_source, reply_body)
+    body_verified, body_detail = verify_reply_body_outside_quote(
+        raw_source, reply_body, body_html=body_html
+    )
     body_status = "PASSED" if body_verified else "FAILED"
     lines = [f"Verification ({body_status}): {body_detail}"]
 
-    if expected_cc or expected_from:
-        recipients_verified, recipients_detail = verify_recipients(
-            raw_source, expected_cc=expected_cc, expected_from=expected_from
-        )
-        recipients_status = "PASSED" if recipients_verified else "FAILED"
-        lines.append(f"Recipients ({recipients_status}): {recipients_detail}")
+    problems = [] if body_verified else [body_detail]
+    recipients_verified, recipients_detail = verify_recipients(
+        raw_source, expected_cc=expected_cc, expected_from=expected_from
+    )
+    if not recipients_verified:
+        problems.append(recipients_detail)
+    recipients_status = "PASSED" if recipients_verified else "FAILED"
+    lines.append(f"Recipients ({recipients_status}): {recipients_detail}")
 
-    return "\n".join(lines)
+    status = "Status: FAILED — " + "; ".join(problems) if problems else "Status: VERIFIED"
+    return "\n".join([status] + lines)
 
 
 @mcp.tool()
@@ -846,6 +837,45 @@ def reply_to_email(
                 end tell"""
         success_text = "Reply saved as draft!"
 
+    draft_snapshot_script = ""
+    draft_identity_script = ""
+    if effective_mode == "draft":
+        # Outgoing composer IDs are not RFC Message-IDs. Snapshot mailbox
+        # IDs before creating the reply (which can autosave), then resolve
+        # the one new exact-subject draft after close/save. Reject ambiguity
+        # rather than risk verifying an older or concurrently created reply.
+        draft_snapshot_script = f"""
+            {build_mailbox_ref("Drafts", var_name="draftMailbox")}
+            set priorDraftIDs to id of every message of draftMailbox
+        """
+        post_paste_action = """
+                set savedReplySubject to subject of replyMessage
+                delay 0.5
+                close window 1 saving yes
+        """
+        draft_identity_script = """
+            set savedDraftMessageID to ""
+            repeat 20 times
+                set newDrafts to {}
+                set matchingDrafts to (messages of draftMailbox whose subject is savedReplySubject)
+                repeat with candidate in matchingDrafts
+                    if priorDraftIDs does not contain (id of candidate) then
+                        set end of newDrafts to contents of candidate
+                    end if
+                end repeat
+                if (count of newDrafts) is greater than 1 then exit repeat
+                if (count of newDrafts) is 1 then
+                    set candidateMessageID to message id of (item 1 of newDrafts)
+                    if candidateMessageID is not missing value and candidateMessageID is not "" then
+                        set savedDraftMessageID to candidateMessageID
+                        exit repeat
+                    end if
+                end if
+                delay 0.25
+            end repeat
+            set outputText to outputText & "Saved draft Message-ID: " & savedDraftMessageID & return
+        """
+
     cleanup_script = f'do shell script "rm -f " & quoted form of "{body_temp_path}"'
     html_cleanup_script = f'do shell script "rm -f \'{html_temp_path}\'"'
 
@@ -892,6 +922,9 @@ tell application "Mail"
             set messageSubject to subject of foundMessage
             set messageSender to sender of foundMessage
             set messageDate to date received of foundMessage
+
+            -- Snapshot before creation, since Mail may autosave the reply.
+            {draft_snapshot_script}
 
             -- Create reply
             {reply_command}
@@ -945,6 +978,7 @@ tell application "Mail"
             delay 0.5
 
             {post_paste_action}
+            {draft_identity_script}
 
             set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: " & messageSender & return
@@ -1012,13 +1046,21 @@ tell application "Mail"
         # positive signal this function's own AppleScript emits only on the
         # branch that actually saved something.
         if effective_mode == "draft" and success_text in output_text:
-            output_text += "\n" + _verify_saved_reply_body(
+            identity_lines = [
+                line.removeprefix("Saved draft Message-ID: ").strip()
+                for line in output_text.splitlines()
+                if line.startswith("Saved draft Message-ID: ")
+            ]
+            saved_message_id = identity_lines[0] if len(identity_lines) == 1 else None
+            verification = _verify_saved_reply_body(
                 account,
-                subject_keyword,
+                saved_message_id,
                 reply_body,
                 expected_cc=cc,
                 expected_from=sender_override,
+                body_html=body_html,
             )
+            output_text = verification + "\n" + output_text
         return output_text
     except subprocess.TimeoutExpired:
         return "Error: Reply script timed out"
