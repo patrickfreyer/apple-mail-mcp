@@ -251,15 +251,16 @@ def save_email_attachment(
         account: Account name (e.g., "Gmail", "Work", "Personal")
         subject_keyword: Keyword to search for in email subjects
         attachment_name: Name of the attachment to save
-        save_path: Full path where to save the attachment. Must be inside ~/Downloads,
-            ~/Desktop, ~/Documents or the temp dir (or a folder listed in
-            APPLE_MAIL_MCP_WRITE_DIRS); hidden files and folders are rejected.
+        save_path: Full path where to save the attachment. Protected locations
+            (shell startup and dotfiles in ~, .git/hooks, LaunchAgents,
+            ~/Library/Application Support, ...) are rejected; see "File Access"
+            in the README for opt-in restriction to specific folders.
 
     Returns:
         Confirmation message with save location
     """
 
-    # Resolve and confine the destination to the safe write roots (#103).
+    # Resolve the destination and reject protected locations (#103).
     # Resolving also expands ~, which POSIX file in AppleScript does not.
     expanded_path, path_error = validate_write_path(save_path)
     if path_error:

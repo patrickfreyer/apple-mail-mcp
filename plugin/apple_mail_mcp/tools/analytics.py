@@ -411,9 +411,9 @@ def export_emails(
         scope: Export scope: "single_email" (requires subject_keyword) or "entire_mailbox"
         subject_keyword: Keyword to find email (required for single_email)
         mailbox: Mailbox to export from (default: "INBOX")
-        save_directory: Directory to save exports (default: "~/Desktop"). Must be inside
-            ~/Downloads, ~/Desktop, ~/Documents or the temp dir (or a folder listed in
-            APPLE_MAIL_MCP_WRITE_DIRS).
+        save_directory: Directory to save exports (default: "~/Desktop"). Protected
+            locations (dot-folders in ~, LaunchAgents, ~/Library/Application Support,
+            ...) are rejected.
         format: Export format: "txt", "html" (default: "txt")
         max_emails: Maximum number of emails to export for entire_mailbox (default: 1000, safety cap)
 
@@ -421,7 +421,7 @@ def export_emails(
         Confirmation message with export location
     """
 
-    # Resolve and confine the export directory to the safe write roots (#103)
+    # Resolve the export directory and reject protected locations (#103)
     save_dir, path_error = validate_write_path(save_directory)
     if path_error:
         return path_error

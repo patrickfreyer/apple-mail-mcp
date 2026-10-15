@@ -6,6 +6,7 @@ import threading
 import time
 
 import apple_mail_mcp.server as server
+from apple_mail_mcp import paths
 
 
 # Workaround for modelcontextprotocol/python-sdk#526.
@@ -57,9 +58,27 @@ def main():
         help="Disable tools that send email (compose, reply, forward). "
              "Drafts can still be created and listed.",
     )
+    parser.add_argument(
+        "--write-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Only allow file-writing tools to write inside DIR (repeatable). "
+             "Adds to APPLE_MAIL_MCP_WRITE_DIRS. Default: anywhere except "
+             "protected locations.",
+    )
+    parser.add_argument(
+        "--attach-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Only allow attaching files from inside DIR (repeatable). "
+             "Adds to APPLE_MAIL_MCP_ATTACH_DIRS. Default: any file except secrets.",
+    )
     args = parser.parse_args()
 
     server.READ_ONLY = args.read_only
+    paths.configure(write_dirs=args.write_dir, attach_dirs=args.attach_dir)
 
     from apple_mail_mcp import mcp  # noqa: E402
 

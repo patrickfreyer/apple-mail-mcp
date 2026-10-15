@@ -283,8 +283,8 @@ def create_rich_email_draft(
         html_body: Optional HTML body. If omitted but text_body is provided, a basic HTML wrapper is generated.
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
-        output_path: Optional path for the generated `.eml` file (same allowed folders as
-            save_email_attachment; defaults to ~/Library/Caches/apple-mail-mcp/rich-drafts)
+        output_path: Optional path for the generated `.eml` file (same protected-location
+            rules as save_email_attachment; defaults to ~/Library/Caches/apple-mail-mcp/rich-drafts)
         open_in_mail: If True, open the generated `.eml` in Mail (default: True)
         save_as_draft: Not currently supported. Mail opens a `.eml` as a read-only message
             viewer, not a compose object, so it can never be saved into Drafts this way.
@@ -581,7 +581,7 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
 
     Splits comma-separated paths, expands tildes, resolves symlinks,
     and enforces the shared read guard from ``apple_mail_mcp.paths``
-    (home-dir-only, no hidden files or ~/Library internals, file must exist).
+    (no secrets such as ~/.ssh, keychains or browser profiles; file must exist).
 
     Returns:
         A tuple of (resolved_paths, error_message).
