@@ -15,6 +15,7 @@ from apple_mail_mcp.core import (
     escape_applescript,
     run_applescript,
     inbox_mailbox_script,
+    mail_automation_lock,
 )
 
 # Explicit font stack for HTML fragments that get pasted into Mail's compose
@@ -546,12 +547,13 @@ return "{success_text}"
 '''
 
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock(timeout=30):
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error sending HTML email: {stderr}"
@@ -955,12 +957,13 @@ tell application "Mail"
 
     try:
         # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock(timeout=30):
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error in reply: {stderr}"
@@ -1397,12 +1400,13 @@ tell application "Mail"
     try:
         if message:
             # Use osascript directly for AppleScriptObjC (use framework) support
-            result = subprocess.run(
-                ["osascript", "-"],
-                input=script.encode("utf-8"),
-                capture_output=True,
-                timeout=30,
-            )
+            with mail_automation_lock(timeout=30):
+                result = subprocess.run(
+                    ["osascript", "-"],
+                    input=script.encode("utf-8"),
+                    capture_output=True,
+                    timeout=30,
+                )
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 return f"Error forwarding email: {stderr}"
