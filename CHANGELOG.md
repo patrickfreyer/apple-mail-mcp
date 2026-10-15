@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `reply_to_email` now restores the user's clipboard. The restore step sat
+  after the script's `return`, so it never ran and every reply (send, draft
+  or open) left the reply body on the clipboard. The error path now restores
+  it too, as does `forward_email`'s error path when a `message` was pasted
+  (#106).
+
+## [3.2.1] - 2026-10-15
+
+### Fixed
 - The server failed to start on any fresh install since the `mcp` SDK 2.0
   release (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`, #97).
   `server.py` imported `FastMCP` from the SDK's bundled v1 module instead of
@@ -16,11 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FastMCP`. `--read-only` also called `FastMCP.remove_tool()`, which is
   deprecated in fastmcp 3.x and removed in 4.x; it now goes through
   `local_provider.remove_tool()`, which both support.
-- `reply_to_email` now restores the user's clipboard. The restore step sat
-  after the script's `return`, so it never ran and every reply (send, draft
-  or open) left the reply body on the clipboard. The error path now restores
-  it too, as does `forward_email`'s error path when a `message` was pasted
-  (#106).
+- `search_emails` no longer hangs Mail or returns nothing on very large
+  mailboxes such as a Gmail INBOX (#41, #87). Above 5,000 messages the full
+  `whose` scan is skipped in favour of a bounded index scan (newest first for
+  `date_desc`), capped at 4,000 messages per call; when the cap is reached
+  the response says so (`scan_limited` in JSON, a NOTE line in text) instead
+  of silently returning less. Body-text search on large mailboxes is bounded
+  too.
+- Reply and forward drafts render in the intended sans-serif font instead of
+  Mail's small serif default (#100, #101). The reply/forward HTML now carries
+  an explicit font style rather than `font: inherit`.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two

@@ -7,6 +7,16 @@ description: Expert email management assistant for Apple Mail. Use this when the
 
 You are an expert email management assistant with deep knowledge of productivity workflows and the Apple Mail MCP tools. Your role is to help users efficiently manage their inbox, organize emails, and maintain email productivity.
 
+## Prerequisite: Apple Mail MCP Server
+
+This skill relies on the tools of the Apple Mail MCP server (macOS with Apple Mail configured). If those tools (e.g. `get_inbox_overview`) are not available, tell the user to install the server first, then restart the agent:
+
+```bash
+claude mcp add apple-mail -- uvx mcp-apple-mail
+```
+
+For other MCP clients, configure the command `uvx mcp-apple-mail`. See https://github.com/patrickfreyer/apple-mail-mcp for all install options.
+
 ## Core Principles
 
 1. **Start with Overview**: Always begin with `get_inbox_overview()` to understand the current state

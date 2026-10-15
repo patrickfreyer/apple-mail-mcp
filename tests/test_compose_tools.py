@@ -979,5 +979,52 @@ class ClipboardRestoreTests(unittest.TestCase):
         self.assertNotIn("oldClip", script)
 
 
+class ComposeFontStyleTests(unittest.TestCase):
+    """Reply, forward and plain-text rich drafts share one font style (#100)."""
+
+    def _capture_pasted_html(self, call):
+        """Run ``call`` and return the HTML file content the script pastes."""
+        captured = []
+
+        def fake_run(args, input=None, **kwargs):
+            script = input.decode("utf-8")
+            match = re.search(r"cat '([^']+\.html)'", script)
+            self.assertIsNotNone(match, "script does not read an HTML temp file")
+            with open(match.group(1), encoding="utf-8") as fh:
+                captured.append(fh.read())
+            return _make_subprocess_result(stdout=b"ok")
+
+        with (
+            patch("apple_mail_mcp.tools.compose.subprocess.run", side_effect=fake_run),
+            patch("apple_mail_mcp.tools.compose.run_applescript", return_value=""),
+        ):
+            call()
+        self.assertEqual(len(captured), 1)
+        return captured[0]
+
+    def test_reply_html_carries_font_style(self):
+        html = self._capture_pasted_html(
+            lambda: compose_tools.reply_to_email(
+                "Work", "test", "Sounds good", mode="open"
+            )
+        )
+        self.assertIn(f'style="{compose_tools._COMPOSE_FONT_STYLE}"', html)
+        self.assertIn("Sounds good", html)
+
+    def test_forward_html_carries_font_style(self):
+        html = self._capture_pasted_html(
+            lambda: compose_tools.forward_email(
+                "Work", "test", "to@example.com", message="FYI below"
+            )
+        )
+        self.assertIn(f'style="{compose_tools._COMPOSE_FONT_STYLE}"', html)
+        self.assertIn("FYI below", html)
+
+    def test_plain_text_rich_body_reuses_font_style(self):
+        html = compose_tools._build_html_from_text("hello")
+        self.assertEqual(html.count(compose_tools._COMPOSE_FONT_STYLE), 2)
+        self.assertIn("white-space: pre-wrap", html)
+
+
 if __name__ == "__main__":
     unittest.main()
