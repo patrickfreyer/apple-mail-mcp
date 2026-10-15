@@ -6,6 +6,7 @@ import threading
 import time
 
 import apple_mail_mcp.server as server
+from apple_mail_mcp import paths
 
 
 # Workaround for modelcontextprotocol/python-sdk#526.
@@ -54,18 +55,42 @@ def main():
     parser.add_argument(
         "--read-only",
         action="store_true",
-        help="Disable tools that send email (compose, reply, forward). "
-             "Drafts can still be created and listed.",
+        help="Block sending email. compose_email and reply_to_email stay "
+             "available for mode=\"draft\" and mode=\"open\"; forward_email is "
+             "removed because it has no non-sending mode.",
+    )
+    parser.add_argument(
+        "--write-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Only allow file-writing tools to write inside DIR (repeatable). "
+             "Adds to APPLE_MAIL_MCP_WRITE_DIRS. Default: anywhere except "
+             "protected locations.",
+    )
+    parser.add_argument(
+        "--attach-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Only allow attaching files from inside DIR (repeatable). "
+             "Adds to APPLE_MAIL_MCP_ATTACH_DIRS. Default: any file except secrets.",
     )
     args = parser.parse_args()
 
     server.READ_ONLY = args.read_only
+    paths.configure(write_dirs=args.write_dir, attach_dirs=args.attach_dir)
 
     from apple_mail_mcp import mcp  # noqa: E402
 
-    SEND_TOOLS = ["compose_email", "reply_to_email", "forward_email"]
+    # Tools without a non-sending mode are removed entirely under --read-only.
+    # compose_email and reply_to_email stay registered because their "draft"
+    # and "open" modes never deliver anything; they refuse mode="send"
+    # themselves. Removing them would also take away attachment support, which
+    # exists nowhere else in the compose surface.
+    SEND_ONLY_TOOLS = ["forward_email"]
     if args.read_only:
-        for name in SEND_TOOLS:
+        for name in SEND_ONLY_TOOLS:
             _remove_tool(mcp, name)
 
     mcp.run()

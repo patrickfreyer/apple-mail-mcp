@@ -160,7 +160,9 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 ### Read-Only Mode
 
-Pass `--read-only` to disable tools that send email (`compose_email`, `reply_to_email`, `forward_email`). Draft management remains available (list, create, delete) but sending a draft via `manage_drafts` is blocked.
+Pass `--read-only` to block delivery. Nothing leaves the machine: `compose_email` and `reply_to_email` refuse `mode="send"`, `manage_drafts` refuses `action="send"`, and `forward_email` is removed entirely because it has no non-sending mode.
+
+The composing tools stay registered so that `mode="draft"` and `mode="open"` keep working. Those never deliver anything, and they are the only place in the compose surface that supports `attachments` — `manage_drafts` and `create_rich_email_draft` cannot attach files.
 
 ```json
 {
@@ -204,6 +206,30 @@ Batch operations have conservative defaults to prevent accidental bulk actions:
 | `move_email` | 1 email |
 
 Override via function parameters when needed.
+
+### File Access
+
+By default the server can write and attach files anywhere your user account can, except a hardened denylist of locations an attacker could use for code execution or credential theft. (Attachment bytes come from whoever emailed you, and a prompt-injected email can steer tool arguments.)
+
+**Writes** (`save_email_attachment`, `export_emails`, `create_rich_email_draft`'s `output_path`) are refused for:
+
+- any dotfile or dot-folder directly in your home folder: shell startup files (`~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`), `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config` (incl. `~/.config/git`), `~/.gitconfig`, `~/.netrc`, `~/.envrc`, `~/.local/bin`, ...
+- `.git/hooks`, `.git/config` and `.envrc` in any folder
+- autostart, persistence and app-config folders: `~/Library/LaunchAgents`, `~/Library/LaunchDaemons`, `/Library/LaunchAgents`, `/Library/LaunchDaemons`, `~/Library/Application Support` (incl. `com.apple.backgroundtaskmanagementagent`), `~/Library/Application Scripts`, `~/Library/Preferences`, `~/Library/Keychains`, `~/Library/Mail`, `~/Library/Containers`, ...
+- folders on `PATH`: `~/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and `/etc`
+
+**Attachments** (`compose_email`, `reply_to_email`, ...) may be any readable file except secrets: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `.env` files, `~/Library/Keychains`, and browser profiles and cookie stores (Safari, Chrome, Firefox, Edge, Brave, Arc, ...).
+
+Paths are resolved (`~`, `..`, symlinks) before checking, and matching is case-insensitive like APFS.
+
+**Restricting further (opt-in).** To confine writes or attachments to specific folders, list them (colon-separated) in the server's `env`, or pass `--write-dir` / `--attach-dir` (repeatable) as arguments. Once set, only those folders are allowed for that side, and the denylist still applies inside them. The tool's own cache (`~/Library/Caches/apple-mail-mcp`, the default rich-draft location) stays writable.
+
+```json
+"env": {
+  "APPLE_MAIL_MCP_WRITE_DIRS": "~/Downloads:~/Documents/mail-exports",
+  "APPLE_MAIL_MCP_ATTACH_DIRS": "~/Documents:~/Desktop"
+}
+```
 
 ## Usage Examples
 

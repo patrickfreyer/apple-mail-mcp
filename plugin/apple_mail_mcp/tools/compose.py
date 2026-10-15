@@ -9,7 +9,9 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from apple_mail_mcp.server import mcp, READ_ONLY
+from apple_mail_mcp import server
+from apple_mail_mcp.server import mcp
+from apple_mail_mcp.paths import validate_read_path, validate_write_path
 from apple_mail_mcp.tools.raw_source import get_email_source
 from apple_mail_mcp.tools.reply_verification import (
     verify_reply_body_outside_quote,
@@ -21,6 +23,8 @@ from apple_mail_mcp.core import (
     run_applescript,
     inbox_mailbox_script,
     build_mailbox_ref,
+    mail_automation_lock,
+    MAIL_AUTOMATION_BUSY_ERROR,
 )
 
 # Explicit font stack for HTML fragments that get pasted into Mail's compose
@@ -286,7 +290,8 @@ def create_rich_email_draft(
         html_body: Optional HTML body. If omitted but text_body is provided, a basic HTML wrapper is generated.
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
-        output_path: Optional path for the generated `.eml` file
+        output_path: Optional path for the generated `.eml` file (same protected-location
+            rules as save_email_attachment; defaults to ~/Library/Caches/apple-mail-mcp/rich-drafts)
         open_in_mail: If True, open the generated `.eml` in Mail (default: True)
         save_as_draft: Not currently supported. Mail opens a `.eml` as a read-only message
             viewer, not a compose object, so it can never be saved into Drafts this way.
@@ -338,11 +343,13 @@ def create_rich_email_draft(
     message.set_content(plain_body)
     message.add_alternative(rich_body, subtype="html")
 
-    draft_path = (
-        Path(output_path).expanduser()
-        if output_path
-        else _default_rich_draft_path(subject)
-    )
+    if output_path:
+        safe_output_path, path_error = validate_write_path(output_path)
+        if path_error:
+            return path_error
+        draft_path = Path(safe_output_path)
+    else:
+        draft_path = _default_rich_draft_path(subject)
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.write_bytes(bytes(message))
 
@@ -550,12 +557,13 @@ return "{success_text}"
 '''
 
     try:
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock():
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error sending HTML email: {stderr}"
@@ -571,6 +579,8 @@ return "{success_text}"
         return confirm
     except subprocess.TimeoutExpired:
         return "Error: HTML email script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if os.path.exists(html_temp_path):
             os.unlink(html_temp_path)
@@ -580,25 +590,13 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     """Validate and resolve attachment file paths.
 
     Splits comma-separated paths, expands tildes, resolves symlinks,
-    and enforces security constraints (home-dir-only, no sensitive dirs,
-    file must exist).
+    and enforces the shared read guard from ``apple_mail_mcp.paths``
+    (no secrets such as ~/.ssh, keychains or browser profiles; file must exist).
 
     Returns:
         A tuple of (resolved_paths, error_message).
         If error_message is not None, resolved_paths should be ignored.
     """
-    home_dir = os.path.expanduser("~")
-    sensitive_dirs = [
-        os.path.join(home_dir, ".ssh"),
-        os.path.join(home_dir, ".gnupg"),
-        os.path.join(home_dir, ".config"),
-        os.path.join(home_dir, ".aws"),
-        os.path.join(home_dir, ".claude"),
-        os.path.join(home_dir, "Library", "LaunchAgents"),
-        os.path.join(home_dir, "Library", "LaunchDaemons"),
-        os.path.join(home_dir, "Library", "Keychains"),
-    ]
-
     resolved_paths: List[str] = []
     raw_paths = [p.strip() for p in attachments.split(",")]
 
@@ -606,24 +604,9 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
         if not raw_path:
             continue
 
-        # Expand tilde and resolve symlinks
-        expanded = os.path.expanduser(raw_path)
-        resolved = os.path.realpath(expanded)
-
-        # Must be under the user's home directory
-        if not resolved.startswith(home_dir + os.sep) and resolved != home_dir:
-            return (
-                [],
-                f"Error: Attachment path must be under your home directory ({home_dir}). Got: {resolved}",
-            )
-
-        # Block sensitive directories
-        for sensitive_dir in sensitive_dirs:
-            if resolved.startswith(sensitive_dir + os.sep) or resolved == sensitive_dir:
-                return (
-                    [],
-                    f"Error: Cannot attach files from sensitive directory: {sensitive_dir}",
-                )
+        resolved, path_error = validate_read_path(raw_path)
+        if path_error:
+            return [], path_error
 
         # File must exist
         if not os.path.isfile(resolved):
@@ -654,9 +637,18 @@ def _verify_saved_reply_body(
     """
     if not message_id:
         return "Status: FAILED — could not uniquely identify the saved draft."
-    raw_source = get_email_source(
-        account=account, message_id=message_id, mailbox="Drafts"
-    )
+    try:
+        raw_source = get_email_source(
+            account=account, message_id=message_id, mailbox="Drafts"
+        )
+    except TimeoutError:
+        # The draft is already saved; a busy automation lock only prevents
+        # re-reading it. Report that, rather than letting the caller's lock
+        # handler mask the successful save as a busy error.
+        return (
+            "Status: FAILED — Verification: could not re-read the saved draft "
+            f"({MAIL_AUTOMATION_BUSY_ERROR})"
+        )
     if raw_source.startswith("Error"):
         return f"Status: FAILED — Verification: could not re-read the saved draft ({raw_source})"
 
@@ -713,6 +705,21 @@ def reply_to_email(
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
     """
+
+    # Resolve the delivery mode and apply the read-only guard before anything
+    # else: the temp files written below would otherwise leak on refusal.
+    if mode is not None:
+        if mode not in ("send", "draft", "open"):
+            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+        effective_mode = mode
+    else:
+        effective_mode = "send" if send else "draft"
+
+    if server.READ_ONLY and effective_mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the reply, or mode="open" to review it in Mail.'
+        )
 
     reply_body = _strip_cdata_wrappers(reply_body) or ""
     body_html = _strip_cdata_wrappers(body_html)
@@ -812,14 +819,6 @@ def reply_to_email(
     safe_attachment_info = (
         escape_applescript(attachment_info) if attachment_info else ""
     )
-
-    # Resolve delivery mode: mode parameter takes precedence over send boolean
-    if mode is not None:
-        if mode not in ("send", "draft", "open"):
-            return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
-        effective_mode = mode
-    else:
-        effective_mode = "send" if send else "draft"
 
     # Read body from temp file in AppleScript (avoids all string escaping issues)
     read_body_script = f'set replyBodyText to do shell script "cat " & quoted form of "{body_temp_path}"'
@@ -1072,12 +1071,13 @@ tell application "Mail"
 
     try:
         # Use osascript directly for AppleScriptObjC (use framework) support
-        result = subprocess.run(
-            ["osascript", "-"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        with mail_automation_lock():
+            result = subprocess.run(
+                ["osascript", "-"],
+                input=script.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             return f"Error in reply: {stderr}"
@@ -1106,6 +1106,8 @@ tell application "Mail"
         return output_text
     except subprocess.TimeoutExpired:
         return "Error: Reply script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         # Belt-and-suspenders cleanup in case AppleScript didn't run
         if os.path.exists(body_temp_path):
@@ -1150,6 +1152,12 @@ def compose_email(
     # Validate mode
     if mode not in ("send", "draft", "open"):
         return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Sending is disabled in read-only mode. "
+            'Use mode="draft" to save the message, or mode="open" to review it in Mail.'
+        )
 
     body = _strip_cdata_wrappers(body) or ""
     body_html = _strip_cdata_wrappers(body_html)
@@ -1342,6 +1350,11 @@ def forward_email(
     Returns:
         Confirmation message with details of forwarded email
     """
+
+    # forward_email is removed from the tool list under --read-only; this
+    # guard keeps it safe even if that removal ever fails.
+    if server.READ_ONLY:
+        return "Error: Forwarding is disabled in read-only mode."
 
     message = _strip_cdata_wrappers(message)
 
@@ -1549,12 +1562,13 @@ tell application "Mail"
     try:
         if message:
             # Use osascript directly for AppleScriptObjC (use framework) support
-            result = subprocess.run(
-                ["osascript", "-"],
-                input=script.encode("utf-8"),
-                capture_output=True,
-                timeout=30,
-            )
+            with mail_automation_lock():
+                result = subprocess.run(
+                    ["osascript", "-"],
+                    input=script.encode("utf-8"),
+                    capture_output=True,
+                    timeout=30,
+                )
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 return f"Error forwarding email: {stderr}"
@@ -1563,6 +1577,8 @@ tell application "Mail"
             return run_applescript(script)
     except subprocess.TimeoutExpired:
         return "Error: Forward script timed out"
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
     finally:
         if fwd_html_temp_path and os.path.exists(fwd_html_temp_path):
             os.unlink(fwd_html_temp_path)
@@ -1715,7 +1731,7 @@ def manage_drafts(
         '''
 
     elif action == "send":
-        if READ_ONLY:
+        if server.READ_ONLY:
             return "Error: Sending drafts is disabled in read-only mode."
         if not draft_subject:
             return "Error: 'draft_subject' is required for sending drafts"

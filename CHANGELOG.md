@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened the file-path guard for file-writing tools (#103, follow-up to #19).
+  The old denylist missed shell startup files, so a prompt-injected
+  `save_email_attachment(save_path="~/.zshrc")` could plant an attacker-supplied
+  attachment that ran on the next shell. `save_email_attachment`,
+  `export_emails` and `create_rich_email_draft`'s `output_path` (previously
+  unchecked) now refuse every dotfile and dot-folder directly in `$HOME`
+  (`~/.zshrc`, `~/.ssh`, `~/.gitconfig`, `~/.config`, `~/.netrc`, ...),
+  `.git/hooks`, `.git/config` and `.envrc` anywhere, autostart and persistence
+  locations (`~/Library/LaunchAgents`, `/Library/LaunchDaemons`,
+  `~/Library/Application Support`, `~/Library/Preferences`, ...) and `PATH`
+  folders (`~/bin`, `/usr/local/bin`, `/opt/homebrew/bin`). Everything else
+  stays writable, including paths outside `$HOME` such as the temp dir.
+- Attachment paths for `compose_email` and `reply_to_email` may now be any
+  readable file (previously `$HOME` only) except secrets: `~/.ssh`, `~/.gnupg`,
+  `~/.aws`, `~/.netrc`, git/cloud credentials, `.env` files,
+  `~/Library/Keychains` and browser profiles and cookie stores.
+- New opt-in restriction: `APPLE_MAIL_MCP_WRITE_DIRS` and
+  `APPLE_MAIL_MCP_ATTACH_DIRS` (colon-separated), or the repeatable
+  `--write-dir` / `--attach-dir` flags, confine writes or attachments to the
+  listed folders; the denylist still applies inside them.
+- All checks live in one shared module (`apple_mail_mcp/paths.py`) instead of
+  three copies, resolve `..` and symlinks before checking, and compare
+  case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
+
 ### Fixed
 - `reply_to_email` now restores the user's clipboard. The restore step sat
   after the script's `return`, so it never ran and every reply (send, draft

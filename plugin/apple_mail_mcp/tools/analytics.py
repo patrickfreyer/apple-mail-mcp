@@ -1,9 +1,9 @@
 """Analytics tools: attachments, statistics, exports, and dashboard."""
 
-import os
 from typing import Optional, List, Dict, Any
 
 from apple_mail_mcp.server import mcp
+from apple_mail_mcp.paths import validate_write_path
 from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
 from apple_mail_mcp.constants import SKIP_FOLDERS
 
@@ -411,7 +411,9 @@ def export_emails(
         scope: Export scope: "single_email" (requires subject_keyword) or "entire_mailbox"
         subject_keyword: Keyword to find email (required for single_email)
         mailbox: Mailbox to export from (default: "INBOX")
-        save_directory: Directory to save exports (default: "~/Desktop")
+        save_directory: Directory to save exports (default: "~/Desktop"). Protected
+            locations (dot-folders in ~, LaunchAgents, ~/Library/Application Support,
+            ...) are rejected.
         format: Export format: "txt", "html" (default: "txt")
         max_emails: Maximum number of emails to export for entire_mailbox (default: 1000, safety cap)
 
@@ -419,33 +421,10 @@ def export_emails(
         Confirmation message with export location
     """
 
-    # Expand home directory
-    save_dir = os.path.expanduser(save_directory)
-
-    # Path validation: resolve to absolute path and enforce safety constraints
-    resolved_path = os.path.realpath(save_dir)
-    home_dir = os.path.expanduser('~')
-
-    # Must be under the user's home directory
-    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
-        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
-
-    # Block sensitive directories
-    sensitive_dirs = [
-        os.path.join(home_dir, '.ssh'),
-        os.path.join(home_dir, '.gnupg'),
-        os.path.join(home_dir, '.config'),
-        os.path.join(home_dir, '.aws'),
-        os.path.join(home_dir, '.claude'),
-        os.path.join(home_dir, 'Library', 'LaunchAgents'),
-        os.path.join(home_dir, 'Library', 'LaunchDaemons'),
-        os.path.join(home_dir, 'Library', 'Keychains'),
-    ]
-    for sensitive_dir in sensitive_dirs:
-        if resolved_path.startswith(sensitive_dir + os.sep) or resolved_path == sensitive_dir:
-            return f"Error: Cannot export emails to sensitive directory: {sensitive_dir}"
-
-    save_dir = resolved_path
+    # Resolve the export directory and reject protected locations (#103)
+    save_dir, path_error = validate_write_path(save_directory)
+    if path_error:
+        return path_error
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
