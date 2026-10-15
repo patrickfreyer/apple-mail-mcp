@@ -200,6 +200,19 @@ class VerifyRecipientsTests(unittest.TestCase):
         "body\r\n"
     )
 
+    def test_cc_entry_without_an_address_is_reported_not_dropped(self):
+        """Seen on a real draft: "Name <>" was saved as `Cc: Name` and the
+        check passed because the empty address was silently dropped."""
+        source = (
+            "From: Me <me@example.com>\r\nTo: a@example.com\r\nCc: Prueba Copia\r\n"
+            "Subject: Re: t\r\nContent-Type: text/plain\r\n\r\nhola\r\n"
+        )
+        from apple_mail_mcp.tools.reply_verification import verify_recipients
+
+        verified, detail = verify_recipients(source, expected_cc="Prueba Copia <>")
+        self.assertFalse(verified)
+        self.assertIn("has no valid address", detail)
+
     def test_cc_display_names_and_case_are_normalized(self):
         from apple_mail_mcp.tools.reply_verification import verify_recipients
 

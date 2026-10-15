@@ -140,7 +140,14 @@ def verify_recipients(
     problems: List[str] = []
 
     if expected_cc:
-        requested = [addr for _, addr in getaddresses([expected_cc]) if addr]
+        parsed_cc = getaddresses([expected_cc])
+        # An entry that does not parse to an address (e.g. "Name <>") must be
+        # reported, not dropped: dropping it made the check pass while Mail
+        # saved a Cc with no address at all.
+        unparsed = [name or addr for name, addr in parsed_cc if "@" not in addr]
+        if unparsed:
+            problems.append(f"requested CC {unparsed} has no valid address")
+        requested = [addr for _, addr in parsed_cc if "@" in addr]
         saved_cc = {addr.lower() for addr in actual_cc}
         missing = [addr for addr in requested if addr.lower() not in saved_cc]
         if missing:
