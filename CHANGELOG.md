@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- The Claude Code plugin manifests (`plugin/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`) were stuck at 3.1.2, so `claude plugin
+  update` reported installs as current. They are now at 3.2.1 and
+  `scripts/check_versions.py` and `RELEASING.md` cover them (#127 by
+  @proscar87).
 - `move_email` no longer treats a negative `older_than_days` as a filter (it
   added no date condition, so the call moved everything), and `manage_trash`
   rejects an unrecognised `action` instead of falling through to
