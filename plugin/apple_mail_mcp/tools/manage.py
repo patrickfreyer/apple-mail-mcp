@@ -18,6 +18,54 @@ from apple_mail_mcp.core import (
 )
 
 
+# A `whose` clause is fast when it is selective, but one that matches most of
+# a very large mailbox stalls Mail past its AppleEvent timeout (#41). Measured
+# on a 75,190-message Gmail INBOX: `whose read status is false` took 2 s,
+# `whose date received < (30 days ago)` (about 74,000 matches) timed out
+# after 120 s and left Mail unresponsive. So when an age filter is involved,
+# messages are walked newest-first by index (message 1 is the newest), each
+# one is checked, and the walk stops at the cap of qualifying messages or
+# after AGE_SCAN_MAX_MESSAGES examined, saying so when it is the latter.
+AGE_SCAN_MAX_MESSAGES = 4000
+
+
+def _age_scan_loop(
+    mailbox_var: str,
+    per_message_condition: str,
+    action_block: str,
+    counter_var: str,
+    cap: int,
+) -> str:
+    """AppleScript for a bounded newest-first index walk over `mailbox_var`.
+
+    `action_block` runs for each message whose `per_message_condition` holds
+    and must increment `counter_var`; the walk stops when `counter_var`
+    reaches `cap` or after AGE_SCAN_MAX_MESSAGES messages were examined.
+    """
+    return f'''
+                set totalMessageCount to count of messages of {mailbox_var}
+                set scannedCount to 0
+                set scanLimited to false
+                repeat with msgIndex from 1 to totalMessageCount
+                    if {counter_var} >= {cap} then exit repeat
+                    set scannedCount to scannedCount + 1
+                    if scannedCount > {AGE_SCAN_MAX_MESSAGES} then
+                        set scanLimited to true
+                        exit repeat
+                    end if
+                    try
+                        set aMessage to message msgIndex of {mailbox_var}
+                        if {per_message_condition} then
+                            {action_block}
+                        end if
+                    end try
+                end repeat
+                if scanLimited then
+                    set outputText to outputText & "NOTE: scan_limited -- only the newest {AGE_SCAN_MAX_MESSAGES} messages were examined; older matches may remain. Narrow with sender or subject_keyword." & return & return
+                end if
+'''
+
+
 @mcp.tool()
 @inject_preferences
 def move_email(
@@ -499,11 +547,14 @@ def update_email_status(
             "to filter emails, or set apply_to_all=True to update all messages in the mailbox."
         )
 
-    # Pre-filter conditions (skip no-op updates)
+    # Pre-filter conditions (skip no-op updates). Each is kept in two forms:
+    # for a `whose` clause, and per message for the bounded age scan.
     if action == "mark_read":
         conditions = ["read status is false"]
+        per_message = ["read status of aMessage is false"]
     elif action == "mark_unread":
         conditions = ["read status is true"]
+        per_message = ["read status of aMessage is true"]
     elif action == "flag":
         if flag_index is not None:
             # Match unflagged messages AND already-flagged ones needing a
@@ -512,40 +563,47 @@ def update_email_status(
             conditions = [
                 f"(flag index is not {flag_index} or flagged status is false)"
             ]
+            per_message = [
+                f"(flag index of aMessage is not {flag_index} or flagged status of aMessage is false)"
+            ]
         else:
             conditions = ["flagged status is false"]
+            per_message = ["flagged status of aMessage is false"]
     else:  # unflag
         conditions = ["flagged status is true"]
+        per_message = ["flagged status of aMessage is true"]
 
     if subject_terms:
         conditions.append(contains_any_condition("subject", subject_terms))
+        per_message.append(contains_any_condition("subject of aMessage", subject_terms))
     if sender:
         conditions.append(f'sender contains "{escape_applescript(sender)}"')
-
-    # Date filter. It goes into the `whose` clause, not a per-message check
-    # after the max_updates cap: checking it after the cap meant that when
-    # the newest matches were too recent, older qualifying ones were never
-    # reached and nothing was updated.
-    date_setup = ""
-    date_check_start = ""
-    date_check_end = ""
-    if older_than_days and older_than_days > 0:
-        date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-        conditions.append("date received < cutoffDate")
+        per_message.append(f'sender of aMessage contains "{escape_applescript(sender)}"')
 
     search_condition = " and ".join(conditions)
 
-    script = f'''
-    tell application "Mail"
-        with timeout of 300 seconds
-            set outputText to "UPDATING EMAIL STATUS: {action_label}" & return & return
-            set updateCount to 0
-
-            try
-                set targetAccount to account "{safe_account}"
-                {build_mailbox_ref(mailbox, var_name="targetMailbox")}
-                {date_setup}
-
+    # With an age filter, the cap must count qualifying messages (checking
+    # the age after cutting the list to max_updates acted on nothing when the
+    # newest matches were too recent), and a `whose` on the date can match
+    # most of a large mailbox and stall Mail, so walk it by index instead.
+    has_age_filter = older_than_days is not None and older_than_days > 0
+    date_setup = ""
+    if has_age_filter:
+        date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
+        per_message.append("(date received of aMessage) < cutoffDate")
+        update_block = f'''set messageSubject to subject of aMessage
+                            set messageSender to sender of aMessage
+                            set messageDate to date received of aMessage
+                            {single_action_script}
+                            set updateCount to updateCount + 1
+                            set outputText to outputText & "- {action_label}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return'''
+        collection_script = _age_scan_loop(
+            "targetMailbox", " and ".join(per_message), update_block, "updateCount", max_updates
+        )
+    else:
+        collection_script = f'''
                 set matchingMessages to every message of targetMailbox whose {search_condition}
                 set matchingCount to count of matchingMessages
 
@@ -559,19 +617,30 @@ def update_email_status(
 
                 repeat with aMessage in targetMessages
                     try
-                        {date_check_start}
-                            {single_action_script}
-                            set messageSubject to subject of aMessage
-                            set messageSender to sender of aMessage
-                            set messageDate to date received of aMessage
+                        {single_action_script}
+                        set messageSubject to subject of aMessage
+                        set messageSender to sender of aMessage
+                        set messageDate to date received of aMessage
 
-                            set outputText to outputText & "- {action_label}: " & messageSubject & return
-                            set outputText to outputText & "   From: " & messageSender & return
-                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-                            set updateCount to updateCount + 1
-                        {date_check_end}
+                        set outputText to outputText & "- {action_label}: " & messageSubject & return
+                        set outputText to outputText & "   From: " & messageSender & return
+                        set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                        set updateCount to updateCount + 1
                     end try
                 end repeat
+'''
+
+    script = f'''
+    tell application "Mail"
+        with timeout of 300 seconds
+            set outputText to "UPDATING EMAIL STATUS: {action_label}" & return & return
+            set updateCount to 0
+
+            try
+                set targetAccount to account "{safe_account}"
+                {build_mailbox_ref(mailbox, var_name="targetMailbox")}
+                {date_setup}
+{collection_script}
 
                 set outputText to outputText & "========================================" & return
                 set outputText to outputText & "TOTAL UPDATED: " & updateCount & " email(s)" & return
@@ -792,19 +861,13 @@ def manage_trash(
 
         # Build search condition with escaped inputs
         conditions = []
+        per_message = []
         if subject_terms:
             conditions.append(contains_any_condition("subject", subject_terms))
+            per_message.append(contains_any_condition("subject of aMessage", subject_terms))
         if sender:
             conditions.append(f'sender contains "{escape_applescript(sender)}"')
-
-        # Date filter, in the `whose` clause so max_deletes caps qualifying
-        # messages rather than cutting the list before the age is checked.
-        date_setup = ""
-        date_check_start = ""
-        date_check_end = ""
-        if older_than_days and older_than_days > 0:
-            date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
-            conditions.append("date received < cutoffDate")
+            per_message.append(f'sender of aMessage contains "{escape_applescript(sender)}"')
 
         if conditions:
             matching_messages_script = f"set matchingMessages to every message of sourceMailbox whose {' and '.join(conditions)}"
@@ -812,6 +875,35 @@ def manage_trash(
             matching_messages_script = (
                 "set matchingMessages to every message of sourceMailbox"
             )
+
+        # With an age filter, collect up to max_deletes qualifying messages
+        # with a bounded newest-first index walk (see AGE_SCAN_MAX_MESSAGES),
+        # then act on them below. Collecting first matters here: moving a
+        # message out mid-walk would shift the indexes still to be visited.
+        date_setup = ""
+        if older_than_days is not None and older_than_days > 0:
+            date_setup = f"set cutoffDate to (current date) - ({older_than_days} * days)"
+            per_message.append("(date received of aMessage) < cutoffDate")
+            collect_block = """set end of targetMessages to aMessage
+                            set matchedCount to matchedCount + 1"""
+            collection_script = (
+                "set targetMessages to {}\n                    set matchedCount to 0"
+                + _age_scan_loop(
+                    "sourceMailbox", " and ".join(per_message), collect_block,
+                    "matchedCount", max_deletes,
+                )
+            )
+        else:
+            collection_script = f"""{matching_messages_script}
+                    set matchingCount to count of matchingMessages
+
+                    if matchingCount is 0 then
+                        set targetMessages to {{}}
+                    else if matchingCount > {max_deletes} then
+                        set targetMessages to items 1 thru {max_deletes} of matchingMessages
+                    else
+                        set targetMessages to matchingMessages
+                    end if"""
 
         if dry_run:
             mode_label = "DRY RUN - PREVIEW TRASH"
@@ -837,16 +929,7 @@ def manage_trash(
                     {trash_setup}
                     {date_setup}
 
-                    {matching_messages_script}
-                    set matchingCount to count of matchingMessages
-
-                    if matchingCount is 0 then
-                        set targetMessages to {{}}
-                    else if matchingCount > {max_deletes} then
-                        set targetMessages to items 1 thru {max_deletes} of matchingMessages
-                    else
-                        set targetMessages to matchingMessages
-                    end if
+                    {collection_script}
 
                     repeat with aMessage in targetMessages
                         try
@@ -854,14 +937,12 @@ def manage_trash(
                             set messageSender to sender of aMessage
                             set messageDate to date received of aMessage
 
-                            {date_check_start}
-                                {move_script}
-                                set deleteCount to deleteCount + 1
+                            {move_script}
+                            set deleteCount to deleteCount + 1
 
-                                set outputText to outputText & "{result_verb}: " & messageSubject & return
-                                set outputText to outputText & "   From: " & messageSender & return
-                                set outputText to outputText & "   Date: " & (messageDate as string) & return & return
-                            {date_check_end}
+                            set outputText to outputText & "{result_verb}: " & messageSubject & return
+                            set outputText to outputText & "   From: " & messageSender & return
+                            set outputText to outputText & "   Date: " & (messageDate as string) & return & return
                         end try
                     end repeat
 

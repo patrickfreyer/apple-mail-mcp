@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `update_email_status` and `manage_trash` cut the matches to `max_updates` /
+  `max_deletes` before checking `older_than_days`, so when the newest matches
+  were too recent nothing was acted on even though older ones qualified. The
+  age is now part of the `whose` clause. `list_inbox_emails(include_read=False)`
+  capped how many messages it looked at rather than how many it returned; it
+  now asks Mail for unread messages. `list_inbox_emails` in text output and
+  `get_mailbox_unread_counts(summary_only=True)` ignored `account`; they now
+  filter by it (#126 by @proscar87).
+
 ### Security
 - The write-path denylist now also checks the path as requested, not only its
   symlink target. A symlink inside a protected folder (e.g.

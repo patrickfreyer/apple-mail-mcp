@@ -81,54 +81,71 @@ class InvalidActionTests(unittest.TestCase):
 
 
 class AgeFilterBeforeCapTests(unittest.TestCase):
-    """The age check used to run per message after the list was cut to the
-    cap, so when the newest matches were too recent nothing was acted on even
-    though older qualifying messages existed. It now sits in the `whose`
-    clause, so the cap applies to qualifying messages only."""
+    """With older_than_days, the cap used to be applied before the age check,
+    so nothing was acted on when the newest matches were too recent. A
+    `whose` on the date is not the fix: on a 75k-message Gmail INBOX it timed
+    out after 120 s and left Mail unresponsive. Age-filtered calls walk the
+    mailbox newest-first by index, count only qualifying messages toward the
+    cap, and stop after AGE_SCAN_MAX_MESSAGES examined, saying so."""
 
-    def _whose_line(self, script):
-        return next(
-            line for line in script.splitlines()
-            if "set matchingMessages to every message of" in line
-        )
-
-    def test_update_status_filters_by_age_before_the_cap(self):
+    def _script(self, fn, **kwargs):
         with patch(
             "apple_mail_mcp.tools.manage.run_applescript", return_value=""
         ) as mock_run:
-            manage_tools.update_email_status(
-                account="Work", action="mark_read", older_than_days=30, max_updates=10
-            )
-        script = mock_run.call_args[0][0]
-        self.assertIn("date received < cutoffDate", self._whose_line(script))
-        self.assertNotIn("(date received of aMessage) < cutoffDate", script)
-        self.assertLess(
-            script.index("set cutoffDate to"), script.index("set matchingMessages to")
-        )
+            fn(account="Work", **kwargs)
+        return mock_run.call_args[0][0]
 
-    def test_move_to_trash_filters_by_age_before_the_cap(self):
-        with patch(
-            "apple_mail_mcp.tools.manage.run_applescript", return_value=""
-        ) as mock_run:
-            manage_tools.manage_trash(
-                account="Work", action="move_to_trash", subject_keyword="Invoice",
-                older_than_days=30, max_deletes=10, dry_run=False,
-            )
-        script = mock_run.call_args[0][0]
-        whose = self._whose_line(script)
-        self.assertIn("date received < cutoffDate", whose)
-        self.assertIn('subject contains "Invoice"', whose)
-        self.assertNotIn("(date received of aMessage) < cutoffDate", script)
-
-    def test_age_alone_still_uses_a_whose_clause_for_trash(self):
-        with patch(
-            "apple_mail_mcp.tools.manage.run_applescript", return_value=""
-        ) as mock_run:
-            manage_tools.manage_trash(
-                account="Work", action="move_to_trash", older_than_days=30,
-                max_deletes=10, dry_run=False,
-            )
-        script = mock_run.call_args[0][0]
+    def _assert_bounded_walk(self, script, counter, cap):
+        self.assertNotIn("whose date received", script)
+        self.assertIn("repeat with msgIndex from 1 to totalMessageCount", script)
+        self.assertIn(f"if {counter} >= {cap} then exit repeat", script)
         self.assertIn(
-            "every message of sourceMailbox whose date received < cutoffDate", script
+            f"if scannedCount > {manage_tools.AGE_SCAN_MAX_MESSAGES} then", script
         )
+        self.assertIn("NOTE: scan_limited", script)
+        self.assertIn("(date received of aMessage) < cutoffDate", script)
+        self.assertLess(script.index("set cutoffDate to"), script.index("repeat with msgIndex"))
+
+    def test_update_status_walks_by_index_and_caps_qualifying_messages(self):
+        script = self._script(
+            manage_tools.update_email_status,
+            action="mark_read", older_than_days=30, max_updates=10,
+        )
+        self._assert_bounded_walk(script, "updateCount", 10)
+        walk = script[script.index("repeat with msgIndex"):]
+        condition = walk.index("read status of aMessage is false")
+        action = walk.index("set read status of aMessage to true")
+        self.assertLess(condition, action)
+
+    def test_update_status_without_age_keeps_the_whose_path(self):
+        script = self._script(
+            manage_tools.update_email_status,
+            action="mark_read", sender="news@example.com", max_updates=10,
+        )
+        self.assertIn(
+            'every message of targetMailbox whose read status is false and sender contains "news@example.com"',
+            script,
+        )
+        self.assertNotIn("repeat with msgIndex", script)
+
+    def test_trash_collects_by_index_then_acts(self):
+        script = self._script(
+            manage_tools.manage_trash,
+            action="move_to_trash", subject_keyword="Invoice",
+            older_than_days=30, max_deletes=10, dry_run=False,
+        )
+        self._assert_bounded_walk(script, "matchedCount", 10)
+        self.assertIn('subject of aMessage contains "Invoice"', script)
+        # Moving inside the walk would shift the indexes still to be visited.
+        walk_end = script.index("end repeat", script.index("repeat with msgIndex"))
+        self.assertLess(walk_end, script.index("move aMessage to trashMailbox"))
+        self.assertIn("set end of targetMessages to aMessage", script)
+
+    def test_trash_with_age_alone_has_no_whole_mailbox_whose(self):
+        script = self._script(
+            manage_tools.manage_trash,
+            action="move_to_trash", older_than_days=30, apply_to_all=True,
+            max_deletes=5, dry_run=True,
+        )
+        self._assert_bounded_walk(script, "matchedCount", 5)
+        self.assertNotIn("set matchingMessages to every message of sourceMailbox", script)

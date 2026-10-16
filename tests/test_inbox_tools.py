@@ -159,6 +159,37 @@ class InboxFilterTests(unittest.TestCase):
         )
         self.assertIn("end try\n            end if\n        end repeat", script)
 
+    def test_list_inbox_text_with_account_and_unread_only(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails(account="Work", include_read=False, max_emails=5)
+        script = mock_run.call_args[0][0]
+        account_check = script.index('if accountName is "Work" then')
+        unread_list = script.index(
+            "set inboxMessages to every message of inboxMailbox whose read status is false"
+        )
+        cap = script.index("if 5 > 0 and currentIndex >= 5 then exit repeat")
+        self.assertLess(account_check, unread_list)
+        self.assertLess(unread_list, cap)
+
+    def test_unread_only_uses_whose_only_when_few_are_unread(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails(include_read=False, max_emails=5)
+        script = mock_run.call_args[0][0]
+        self.assertIn("set unreadTotal to unread count of inboxMailbox", script)
+        self.assertIn(
+            f"else if unreadTotal is less than or equal to {inbox_tools.UNREAD_WHOSE_MAX_MATCHES} then",
+            script,
+        )
+        self.assertIn(
+            f"set inboxMessages to messages 1 thru {inbox_tools.UNREAD_SCAN_MAX_MESSAGES} of inboxMailbox",
+            script,
+        )
+        self.assertIn("NOTE: scan_limited", script)
+
     def test_unread_summary_filters_account(self):
         with patch(
             "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
