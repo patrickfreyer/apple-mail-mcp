@@ -65,6 +65,21 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class InvalidActionTests(unittest.TestCase):
+    def test_an_unknown_action_is_rejected_before_any_script_runs(self):
+        # An unrecognised action used to fall through to the move_to_trash
+        # branch, so action="list" with dry_run=False moved matches to Trash.
+        with patch("apple_mail_mcp.tools.manage.run_applescript") as mock_run:
+            result = manage_tools.manage_trash(
+                account="Work",
+                action="list",
+                subject_keyword="Invoice",
+                dry_run=False,
+            )
+        mock_run.assert_not_called()
+        self.assertTrue(result.startswith("Error: Invalid action 'list'"))
+
+
 class AgeFilterBeforeCapTests(unittest.TestCase):
     """The age check used to run per message after the list was cut to the
     cap, so when the newest matches were too recent nothing was acted on even

@@ -123,6 +123,18 @@ class WriteDenylistTests(_FakeHomeTestCase):
         self.assertWriteRejected("~/Downloads/../.zshrc")
         self.assertWriteRejected("~/Documents/../Library/LaunchAgents/x.plist")
 
+    def test_symlink_inside_protected_location_is_rejected(self):
+        # The other direction: a link that lives in a protected folder but
+        # points outside it. Writing through ~/bin/tool replaces what the
+        # tool runs, yet only the resolved target used to be checked. This
+        # is the /opt/homebrew/bin/python3 case above, without depending on
+        # how the machine running the tests lays out Homebrew.
+        os.makedirs(self.h("bin"), exist_ok=True)
+        os.makedirs(self.h("Tools"), exist_ok=True)
+        open(self.h("Tools", "real"), "w").close()
+        os.symlink(self.h("Tools", "real"), self.h("bin", "tool"))
+        self.assertWriteRejected("~/bin/tool")
+
     def test_symlink_into_protected_location_is_rejected(self):
         os.symlink(self.h(".zshrc"), self.h("Downloads", "invoice.pdf"))
         self.assertWriteRejected("~/Downloads/invoice.pdf")

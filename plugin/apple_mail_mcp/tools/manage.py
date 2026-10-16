@@ -133,7 +133,10 @@ def move_email(
         return run_applescript(script, timeout=300)
 
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
-    if not subject_terms and not sender and not older_than_days:
+    # Only a positive age adds a date condition below, so only a positive age
+    # counts as a filter (same rule as update_email_status and manage_trash).
+    has_age_filter = older_than_days is not None and older_than_days > 0
+    if not subject_terms and not sender and not has_age_filter:
         return (
             "Error: At least one filter is required (subject_keyword, sender, "
             "older_than_days, or message_ids). This prevents accidentally moving everything."
@@ -631,6 +634,13 @@ def manage_trash(
     Returns:
         Confirmation message with details of deleted emails
     """
+
+    # Anything unrecognised used to fall through to the move_to_trash branch.
+    if action not in ("move_to_trash", "delete_permanent", "empty_trash"):
+        return (
+            f"Error: Invalid action '{action}'. "
+            "Use: move_to_trash, delete_permanent, empty_trash"
+        )
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)

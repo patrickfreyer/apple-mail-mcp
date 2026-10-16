@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- The write-path denylist now also checks the path as requested, not only its
+  symlink target. A symlink inside a protected folder (e.g.
+  `/opt/homebrew/bin/python3`) resolves outside it, so writing through it was
+  allowed (#125 by @proscar87, follow-up to #103).
 - Hardened the file-path guard for file-writing tools (#103, follow-up to #19).
   The old denylist missed shell startup files, so a prompt-injected
   `save_email_attachment(save_path="~/.zshrc")` could plant an attacker-supplied
@@ -33,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- The Claude Code plugin manifests (`plugin/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`) were stuck at 3.1.2, so `claude plugin
+  update` reported installs as current. They are now at 3.2.1 and
+  `scripts/check_versions.py` and `RELEASING.md` cover them (#127 by
+  @proscar87).
+- `move_email` no longer treats a negative `older_than_days` as a filter (it
+  added no date condition, so the call moved everything), and `manage_trash`
+  rejects an unrecognised `action` instead of falling through to
+  `move_to_trash` (#124 by @proscar87).
 - `reply_to_email` now restores the user's clipboard. The restore step sat
   after the script's `return`, so it never ran and every reply (send, draft
   or open) left the reply body on the clipboard. The error path now restores

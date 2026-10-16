@@ -39,6 +39,8 @@ publisher:
    - `server.json` (two places: top-level and `packages[0].version`)
    - `apple-mail-mcpb/manifest.json`
    - `plugin/apple_mail_mcp/__init__.py`
+   - `plugin/.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json` (the `./plugin` entry, not the file's own top-level version)
 
    Then confirm:
    ```bash
