@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   update` reported installs as current. They are now at 3.2.1 and
   `scripts/check_versions.py` and `RELEASING.md` cover them (#127 by
   @proscar87).
+- `move_email` no longer treats a negative `older_than_days` as a filter (it
+  added no date condition, so the call moved everything), and `manage_trash`
+  rejects an unrecognised `action` instead of falling through to
+  `move_to_trash` (#124 by @proscar87).
 - `reply_to_email` now restores the user's clipboard. The restore step sat
   after the script's `return`, so it never ran and every reply (send, draft
   or open) left the reply body on the clipboard. The error path now restores
