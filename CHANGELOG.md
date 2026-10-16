@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- The Claude Code plugin manifests (`plugin/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`) were stuck at 3.1.2, so `claude plugin
+  update` reported installs as current. They are now at 3.2.1 and
+  `scripts/check_versions.py` and `RELEASING.md` cover them (#127 by
+  @proscar87).
 - `reply_to_email` now restores the user's clipboard. The restore step sat
   after the script's `return`, so it never ran and every reply (send, draft
   or open) left the reply body on the clipboard. The error path now restores
