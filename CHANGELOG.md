@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- The write-path denylist now also checks the path as requested, not only its
+  symlink target. A symlink inside a protected folder (e.g.
+  `/opt/homebrew/bin/python3`) resolves outside it, so writing through it was
+  allowed (#125 by @proscar87, follow-up to #103).
 - Hardened the file-path guard for file-writing tools (#103, follow-up to #19).
   The old denylist missed shell startup files, so a prompt-injected
   `save_email_attachment(save_path="~/.zshrc")` could plant an attacker-supplied
