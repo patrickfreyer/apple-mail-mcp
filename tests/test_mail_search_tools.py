@@ -443,6 +443,47 @@ class SearchToolTests(unittest.TestCase):
             captured["script"],
         )
 
+    def test_search_emails_bounded_scan_stops_once_past_date_window(self):
+        """#133: the bounded scan is ordered by date, so a date_from window on
+        a newest-first scan (or date_to on an oldest-first one) must stop at
+        the first message outside it instead of walking the whole cap."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        cutoff_desc = "if (date received of aMessage) < fromDate then exit repeat"
+        cutoff_asc = "if (date received of aMessage) > toDate then exit repeat"
+
+        def run(**kwargs):
+            with patch(
+                "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+            ):
+                search_tools.search_emails(account="Work", limit=5, **kwargs)
+            return captured["script"]
+
+        script = run(sort="date_desc", date_from="2026-10-12")
+        self.assertIn(cutoff_desc, script)
+        self.assertNotIn(cutoff_asc, script)
+        # Inside the bounded loop, before the match is recorded.
+        self.assertLess(
+            script.index("repeat with msgIndex from"), script.index(cutoff_desc)
+        )
+        self.assertLess(
+            script.index(cutoff_desc),
+            script.index("set end of matchingMessages to aMessage"),
+        )
+
+        script = run(sort="date_asc", date_to="2026-10-12")
+        self.assertIn(cutoff_asc, script)
+        self.assertNotIn(cutoff_desc, script)
+
+        # No bound in the scan direction: nothing may be cut off early.
+        self.assertNotIn(cutoff_desc, run(sort="date_desc", date_to="2026-10-12"))
+        self.assertNotIn(cutoff_asc, run(sort="date_asc", date_from="2026-10-12"))
+        self.assertNotIn(cutoff_desc, run(sort="date_desc"))
+
     def test_search_emails_scan_cap_is_shared_across_mailboxes(self):
         """mailbox="All" must not get a fresh cap per large mailbox: the
         counter is set once per call and never reset inside the loop."""

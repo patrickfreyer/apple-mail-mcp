@@ -384,6 +384,16 @@ def _search_mail_records(
     # (offsetRemaining + collectLimit). If the cap is hit first,
     # anyMailboxScanTruncated is set so the caller is told the result may be
     # incomplete instead of silently returning less than the whole picture.
+    # The scan is ordered by date received, so once it has walked past the
+    # requested window nothing further can match: stop instead of reading the
+    # rest of the cap one Apple event at a time (#133).
+    if sort == "date_desc" and date_from and not use_body_search:
+        scan_cutoff = "if (date received of aMessage) < fromDate then exit repeat"
+    elif sort == "date_asc" and date_to and not use_body_search:
+        scan_cutoff = "if (date received of aMessage) > toDate then exit repeat"
+    else:
+        scan_cutoff = ""
+
     bounded_scan_script = f'''
                             set totalMessageCount to count of messages of currentMailbox
                             if totalMessageCount > {WHOSE_CLAUSE_SAFE_LIMIT} then
@@ -397,6 +407,7 @@ def _search_mail_records(
                                     end if
                                     try
                                         set aMessage to message msgIndex of currentMailbox
+                                        {scan_cutoff}
                                         if {per_message_condition_expr} then
                                             set end of matchingMessages to aMessage
                                             if (count of matchingMessages) >= scanTarget then exit repeat
