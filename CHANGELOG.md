@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- `search_emails` on a mailbox over the whose-clause limit now stops its
+  bounded index scan at the first message outside a `date_from` window
+  (newest-first) or `date_to` window (oldest-first), instead of reading the
+  full 4000-message cap. A one-week search of a 6,000-message mailbox no
+  longer holds the automation lock for minutes (#133 by
+  @joel-alturaeducation, related to #87 and #132).
 - The Claude Code plugin manifests (`plugin/.claude-plugin/plugin.json`,
   `.claude-plugin/marketplace.json`) were stuck at 3.1.2, so `claude plugin
   update` reported installs as current. They are now at 3.2.1 and
