@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `list_inbox_emails` in text output and `get_mailbox_unread_counts(summary_only=True)`
   ignored `account` and returned every account; they now filter by it
-  (#126 by @proscar87).
+  (#135 by @proscar87).
 - `search_emails` on a mailbox over the whose-clause limit now stops its
   bounded index scan at the first message outside a `date_from` window
   (newest-first) or `date_to` window (oldest-first), instead of reading the
