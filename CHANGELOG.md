@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `list_email_attachments` and `save_email_attachment` accept `message_id` (the id `search_emails` returns) and `mailbox`, looking the message up directly instead of by subject, so recurring subjects can't pick the wrong month (#128 by @proscar87).
+
 ### Security
 - The write-path denylist now also checks the path as requested, not only its
   symlink target. A symlink inside a protected folder (e.g.
