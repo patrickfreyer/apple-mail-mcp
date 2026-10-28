@@ -245,17 +245,19 @@ def move_email(
 @inject_preferences
 def save_email_attachment(
     account: str,
-    subject_keyword: str,
-    attachment_name: str,
-    save_path: str,
+    subject_keyword: str = "",
+    attachment_name: str = "",
+    save_path: str = "",
     mailbox: str = "INBOX",
+    message_id: Optional[str] = None,
 ) -> str:
     """
     Save a specific attachment from an email to disk.
 
     Args:
         account: Account name (e.g., "Gmail", "Work", "Personal")
-        subject_keyword: Keyword to search for in email subjects
+        subject_keyword: Keyword to search for in email subjects (ignored with message_id)
+        message_id: Numeric internal Mail id returned by search_emails
         attachment_name: Name of the attachment to save
         save_path: Full path where to save the attachment. Protected locations
             (shell startup and dotfiles in ~, .git/hooks, LaunchAgents,
@@ -267,11 +269,21 @@ def save_email_attachment(
         Confirmation message with save location
     """
 
+    if not attachment_name or not save_path:
+        return "Error: attachment_name and save_path are required"
+
     # Resolve the destination and reject protected locations (#103).
     # Resolving also expands ~, which POSIX file in AppleScript does not.
     expanded_path, path_error = validate_write_path(save_path)
     if path_error:
         return path_error
+
+    if message_id is not None:
+        message_id = str(message_id).strip()
+        if not message_id or not message_id.isascii() or not message_id.isdigit():
+            return "Error: message_id must contain digits only"
+    elif not subject_keyword:
+        return "Error: subject_keyword or message_id is required"
 
     # Escape for AppleScript
     escaped_account = escape_applescript(account)
@@ -323,6 +335,56 @@ def save_email_attachment(
             if not foundAttachment then
                 set outputText to "⚠ Attachment not found" & return
                 set outputText to outputText & "Email keyword: {escaped_keyword}" & return
+                set outputText to outputText & "Attachment name: {escaped_attachment}" & return
+                set outputText to outputText & "Searched mailbox: {escaped_mailbox}" & return
+            end if
+
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+
+        return outputText
+    end tell
+    '''
+
+    if message_id is not None:
+        script = f'''
+    tell application "Mail"
+        set outputText to ""
+
+        try
+            set targetAccount to account "{escaped_account}"
+            {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="targetMailbox")}
+            set targetMessage to «class mssg» id {message_id} of targetMailbox
+            set messageSubject to subject of targetMessage
+        on error
+            return "Error: message {message_id} not found in mailbox {escaped_mailbox} of account {escaped_account}"
+        end try
+
+        try
+            set foundAttachment to false
+            set msgAttachments to mail attachments of targetMessage
+
+            repeat with anAttachment in msgAttachments
+                set attachmentFileName to name of anAttachment
+
+                if attachmentFileName contains "{escaped_attachment}" then
+                    -- Save the attachment
+                    save anAttachment in POSIX file "{escaped_path}"
+
+                    set outputText to "✓ Attachment saved successfully!" & return & return
+                    set outputText to outputText & "Email: " & messageSubject & return
+                    set outputText to outputText & "Attachment: " & attachmentFileName & return
+                    set outputText to outputText & "Saved to: {escaped_path}" & return
+
+                    set foundAttachment to true
+                    exit repeat
+                end if
+            end repeat
+
+            if not foundAttachment then
+                set outputText to "⚠ Attachment not found" & return
+                set outputText to outputText & "Email keyword: " & messageSubject & return
                 set outputText to outputText & "Attachment name: {escaped_attachment}" & return
                 set outputText to outputText & "Searched mailbox: {escaped_mailbox}" & return
             end if

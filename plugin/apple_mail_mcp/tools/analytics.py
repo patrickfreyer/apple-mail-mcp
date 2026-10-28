@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.paths import validate_write_path
-from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script
+from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script, build_mailbox_ref
 from apple_mail_mcp.constants import SKIP_FOLDERS
 
 
@@ -12,8 +12,10 @@ from apple_mail_mcp.constants import SKIP_FOLDERS
 @inject_preferences
 def list_email_attachments(
     account: str,
-    subject_keyword: str,
-    max_results: int = 1
+    subject_keyword: str = "",
+    max_results: int = 1,
+    message_id: Optional[str] = None,
+    mailbox: str = "INBOX"
 ) -> str:
     """
     List attachments for emails matching a subject keyword.
@@ -22,10 +24,70 @@ def list_email_attachments(
         account: Account name (e.g., "Gmail", "Work", "Personal")
         subject_keyword: Keyword to search for in email subjects
         max_results: Maximum number of matching emails to check (default: 1)
+        message_id: Numeric internal Mail id; overrides subject_keyword
+        mailbox: Mailbox for id lookup (default: "INBOX"); nested names use "/"
 
     Returns:
         List of attachments with their names and sizes
     """
+
+    if message_id is not None:
+        message_id = str(message_id).strip()
+        if not message_id or not message_id.isascii() or not message_id.isdigit():
+            return "Error: message_id must contain digits only"
+        escaped_account = escape_applescript(account)
+        escaped_mailbox = escape_applescript(mailbox)
+        script = f'''
+        tell application "Mail"
+            try
+                set targetAccount to account "{escaped_account}"
+                {build_mailbox_ref(mailbox, account_var="targetAccount")}
+                set targetMessage to «class mssg» id {message_id} of targetMailbox
+                set messageSubject to subject of targetMessage
+            on error
+                return "Error: message {message_id} not found in mailbox {escaped_mailbox} of account {escaped_account}"
+            end try
+            try
+                set outputText to "ATTACHMENTS FOR: " & messageSubject & return & return
+                set outputText to outputText & "✉ " & messageSubject & return
+                set outputText to outputText & "   From: " & sender of targetMessage & return
+                set outputText to outputText & "   Date: " & (date received of targetMessage as string) & return & return
+                set msgAttachments to mail attachments of targetMessage
+                set attachmentCount to count of msgAttachments
+                if attachmentCount > 0 then
+                    set outputText to outputText & "   Attachments (" & attachmentCount & "):" & return
+                    repeat with anAttachment in msgAttachments
+                        set attachmentName to ""
+                        try
+                            set attachmentName to name of anAttachment
+                        end try
+                        set attachmentSize to ""
+                        try
+                            set attachmentSize to file size of anAttachment
+                        end try
+                        try
+                            set sizeInKB to (attachmentSize / 1024) as integer
+                            set outputText to outputText & "   📎 " & attachmentName & " (" & sizeInKB & " KB)" & return
+                        on error
+                            set outputText to outputText & "   📎 " & attachmentName & return
+                        end try
+                    end repeat
+                else
+                    set outputText to outputText & "   No attachments" & return
+                end if
+                set outputText to outputText & return
+                set outputText to outputText & "========================================" & return
+                set outputText to outputText & "FOUND: 1 matching email(s)" & return
+                set outputText to outputText & "========================================" & return
+                return outputText
+            on error errMsg
+                return "Error: " & errMsg
+            end try
+        end tell
+        '''
+        return run_applescript(script)
+    if not subject_keyword:
+        return "Error: subject_keyword or message_id is required"
 
     # Escape for AppleScript
     escaped_keyword = escape_applescript(subject_keyword)
