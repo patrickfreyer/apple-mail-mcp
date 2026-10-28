@@ -50,9 +50,11 @@ def test_subject_script_snapshot():
     with patch.object(manage_tools, "run_applescript", return_value="OK") as run:
         manage_tools.save_email_attachment("Work", "Invoice", "invoice.pdf",
                                           "/tmp/invoice.pdf", "Archive")
-    assert run.call_args.args[0] == (
+    # /tmp resolves to /private/tmp on macOS but not on Linux CI.
+    expected = (
         Path(__file__).parent / "fixtures/save_attachments_subject.applescript"
-    ).read_text()
+    ).read_text().replace("{SAVE_PATH}", os.path.realpath("/tmp/invoice.pdf"))
+    assert run.call_args.args[0] == expected
 
 
 def test_save_by_id():

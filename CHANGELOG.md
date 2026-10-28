@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `list_email_attachments` and `save_email_attachment` accept `message_id` (the id `search_emails` returns) and `mailbox`, looking the message up directly instead of by subject, so recurring subjects can't pick the wrong month (#128 by @proscar87).
+- `read_email(account, message_id, mailbox)` returns one message as headers, plain-text body and attachment list, looked up directly by the id `search_emails` returns, with the body capped at `max_chars` and the cut stated (#128 by @proscar87).
 
 ### Security
 - The write-path denylist now also checks the path as requested, not only its
@@ -40,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- `list_inbox_emails` in text output and `get_mailbox_unread_counts(summary_only=True)`
+  ignored `account` and returned every account; they now filter by it
+  (#135 by @proscar87).
 - `search_emails` on a mailbox over the whose-clause limit now stops its
   bounded index scan at the first message outside a `date_from` window
   (newest-first) or `date_to` window (oldest-first), instead of reading the

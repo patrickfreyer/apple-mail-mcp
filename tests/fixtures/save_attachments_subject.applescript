@@ -29,12 +29,12 @@
 
                             if attachmentFileName contains "invoice.pdf" then
                                 -- Save the attachment
-                                save anAttachment in POSIX file "/private/tmp/invoice.pdf"
+                                save anAttachment in POSIX file "{SAVE_PATH}"
 
                                 set outputText to "✓ Attachment saved successfully!" & return & return
                                 set outputText to outputText & "Email: " & messageSubject & return
                                 set outputText to outputText & "Attachment: " & attachmentFileName & return
-                                set outputText to outputText & "Saved to: /private/tmp/invoice.pdf" & return
+                                set outputText to outputText & "Saved to: {SAVE_PATH}" & return
 
                                 set foundAttachment to true
                                 exit repeat

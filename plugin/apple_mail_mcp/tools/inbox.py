@@ -74,6 +74,10 @@ def list_inbox_emails(
     if output_format == "json":
         return _list_inbox_emails_json(account, max_emails, include_read, include_content)
 
+    escaped_account = escape_applescript(account) if account else None
+    account_filter = f'if accountName is "{escaped_account}" then' if account else ""
+    account_filter_end = "end if" if account else ""
+
     script = f"""
     tell application "Mail"
         set outputText to "INBOX EMAILS - ALL ACCOUNTS" & return & return
@@ -82,6 +86,7 @@ def list_inbox_emails(
 
         repeat with anAccount in allAccounts
             set accountName to name of anAccount
+            {account_filter}
 
             try
                 {inbox_mailbox_script("inboxMailbox", "anAccount")}
@@ -143,6 +148,7 @@ def list_inbox_emails(
                 set outputText to outputText & "⚠ Error accessing inbox for account " & accountName & return
                 set outputText to outputText & "   " & errMsg & return & return
             end try
+            {account_filter_end}
         end repeat
 
         set outputText to outputText & "========================================" & return
@@ -238,6 +244,16 @@ def get_mailbox_unread_counts(
     """
     escaped_account = escape_applescript(account) if account else None
 
+    account_filter = (
+        f'''
+            if accountName is not "{escaped_account}" then
+                set shouldIncludeAccount to false
+            end if
+    '''
+        if account
+        else ""
+    )
+
     # Fast path: summary_only returns just per-account inbox unread totals
     if summary_only:
         script = f"""
@@ -247,14 +263,18 @@ def get_mailbox_unread_counts(
 
             repeat with anAccount in allAccounts
                 set accountName to name of anAccount
+                set shouldIncludeAccount to true
+                {account_filter}
 
-                try
-                    {inbox_mailbox_script("inboxMailbox", "anAccount")}
-                    set unreadCount to unread count of inboxMailbox
-                    set end of resultList to accountName & ":" & unreadCount
-                on error
-                    set end of resultList to accountName & ":ERROR"
-                end try
+                if shouldIncludeAccount then
+                    try
+                        {inbox_mailbox_script("inboxMailbox", "anAccount")}
+                        set unreadCount to unread count of inboxMailbox
+                        set end of resultList to accountName & ":" & unreadCount
+                    on error
+                        set end of resultList to accountName & ":ERROR"
+                    end try
+                end if
             end repeat
 
             set AppleScript's text item delimiters to linefeed
@@ -275,16 +295,6 @@ def get_mailbox_unread_counts(
             else:
                 counts[acct_name] = -1
         return counts
-
-    account_filter = (
-        f'''
-            if accountName is not "{escaped_account}" then
-                set shouldIncludeAccount to false
-            end if
-    '''
-        if account
-        else ""
-    )
 
     script = f"""
     tell application "Mail"
