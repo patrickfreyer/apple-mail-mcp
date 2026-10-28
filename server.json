@@ -6,12 +6,12 @@
     "url": "https://github.com/patrickfreyer/apple-mail-mcp",
     "source": "github"
   },
-  "version": "3.2.1",
+  "version": "3.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-apple-mail",
-      "version": "3.2.1",
+      "version": "3.3.0",
       "transport": {
         "type": "stdio"
       }
