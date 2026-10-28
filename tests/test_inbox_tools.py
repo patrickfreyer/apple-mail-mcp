@@ -152,5 +152,48 @@ class AccountNameWithPipeTests(unittest.TestCase):
         )
 
 
+class InboxAccountFilterTests(unittest.TestCase):
+    def test_list_inbox_text_filters_account(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails(account="Work")
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][0]
+        self.assertIn('if accountName is "Work" then', script)
+        self.assertLess(
+            script.index('if accountName is "Work" then'),
+            script.index("set inboxMessages to every message of inboxMailbox"),
+        )
+        self.assertIn("end try\n            end if\n        end repeat", script)
+
+    def test_list_inbox_text_without_account_has_no_filter(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.list_inbox_emails()
+        script = mock_run.call_args[0][0]
+        self.assertNotIn("if accountName is", script)
+
+    def test_unread_summary_filters_account(self):
+        with patch(
+            "apple_mail_mcp.tools.inbox.run_applescript", return_value=""
+        ) as mock_run:
+            inbox_tools.get_mailbox_unread_counts(account="Work", summary_only=True)
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][0]
+        self.assertIn('if accountName is not "Work" then', script)
+        self.assertIn("set shouldIncludeAccount to true", script)
+        self.assertIn("set shouldIncludeAccount to false", script)
+        self.assertLess(
+            script.index('if accountName is not "Work" then'),
+            script.index("if shouldIncludeAccount then"),
+        )
+        self.assertLess(
+            script.index("if shouldIncludeAccount then"),
+            script.index("set unreadCount to unread count of inboxMailbox"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
