@@ -426,7 +426,7 @@ def _search_mail_records(
         skip_script = """
                         set skipFolders to {"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}
                         repeat with skipFolder in skipFolders
-                            if mailboxName is skipFolder then
+                            if mailboxName is (contents of skipFolder) then
                                 set shouldSkip to true
                                 exit repeat
                             end if
