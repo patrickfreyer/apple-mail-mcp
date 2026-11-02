@@ -1258,7 +1258,7 @@ def compose_email(
     else:  # draft
         header_text = "SAVING EMAIL AS DRAFT"
         visible = "false"
-        send_command = "close window 1 saving yes"
+        send_command = "close newMessage saving yes"
         success_text = "✓ Email saved as draft!"
 
     script = f'''
@@ -1596,62 +1596,53 @@ def manage_drafts(
     bcc: Optional[str] = None,
     draft_subject: Optional[str] = None,
     from_address: Optional[str] = None,
+    message_id: Optional[str] = None,
+    internet_message_id: Optional[str] = None,
+    body_html: Optional[str] = None,
+    output_format: str = "text",
+    max_chars: int = 20000,
 ) -> str:
+    """List, read, update, edit, review, send, or delete saved drafts by exact ID.
+
+    Start with action="list", output_format="json" to obtain numeric
+    message_id values. Use one for subsequent operations. internet_message_id
+    is an alternative RFC Message-ID selector. draft_subject is a legacy
+    substring fallback and must identify exactly one draft.
+
+    action="read" returns recipients, attachment names and capped body without
+    opening Mail's UI. "update" changes only supplied fields; empty cc/bcc
+    clears them. "edit" opens a verified replacement in a genuine composer.
+    Mail cannot mutate stored drafts, so both rebuild the message, verify its
+    saved body/recipients/attachment bytes, then retire the original to Trash.
+    Unsupported MIME or reply-header preservation fails without removing the
+    original. from_address changes are not supported during a rebuild.
+
+    "open" opens a read-only message viewer. It does not promise an editor.
+    "send" requires explicit user authorization and honors read-only mode;
+    it reports request acceptance, not verified delivery. "verify_sent" takes
+    an internet_message_id, checks Sent, and reports any remaining Draft IDs
+    without deleting them. Never resend merely because a draft remains.
+
+    action="create" is the legacy plain-text creation path and requires
+    subject, to, and body. Prefer compose_email for creating new messages.
+    output_format is text or json for existing-draft operations. max_chars
+    caps read's body. Omitted fields preserve the saved values during updates.
     """
-    Manage draft emails - list, create, send, open, or delete drafts.
-
-    Args:
-        account: Account name (e.g., "Gmail", "Work")
-        action: Action to perform: "list", "create", "send", "open", "delete". Use "open" to open a draft in a visible compose window for review before sending.
-        subject: Email subject (required for create)
-        to: Recipient email(s) for create (comma-separated)
-        body: Email body (required for create)
-        cc: Optional CC recipients for create
-        bcc: Optional BCC recipients for create
-        draft_subject: Subject keyword to find draft (required for send/open/delete)
-        from_address: Optional sender address for new drafts (action="create"). Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
-
-    Returns:
-        Formatted output based on action
-    """
-
     body = _strip_cdata_wrappers(body)
-
-    # Escape account for all paths
+    if action != "create":
+        from apple_mail_mcp.tools.drafts import manage_existing_drafts
+        return manage_existing_drafts(
+            account, action, message_id=message_id,
+            internet_message_id=internet_message_id, draft_subject=draft_subject,
+            subject=subject, to=to, body=body, cc=cc, bcc=bcc,
+            from_address=from_address, body_html=_strip_cdata_wrappers(body_html),
+            output_format=output_format, max_chars=max_chars,
+        )
     safe_account = escape_applescript(account)
 
-    if action == "list":
-        script = f'''
-        tell application "Mail"
-            set outputText to "DRAFT EMAILS - {safe_account}" & return & return
-
-            try
-                set targetAccount to account "{safe_account}"
-                set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set draftCount to count of draftMessages
-
-                set outputText to outputText & "Found " & draftCount & " draft(s)" & return & return
-
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-                        set draftDate to date sent of aDraft
-
-                        set outputText to outputText & "✉ " & draftSubject & return
-                        set outputText to outputText & "   Created: " & (draftDate as string) & return & return
-                    end try
-                end repeat
-
-            on error errMsg
-                return "Error: " & errMsg
-            end try
-
-            return outputText
-        end tell
-        '''
-
-    elif action == "create":
+    if action == "create":
+        if body_html is not None:
+            return 'Error: legacy draft creation is plain text; use compose_email(body_html=..., mode="draft")'
         if not subject or not to or not body:
             return "Error: 'subject', 'to', and 'body' are required for creating drafts"
 
@@ -1715,8 +1706,8 @@ def manage_drafts(
                     {bcc_script}
                 end tell
 
-                -- Save to drafts (don't send)
-                -- The draft is automatically saved to Drafts folder
+                -- Save only the outgoing object created by this operation.
+                close newDraft saving yes
 
                 set outputText to outputText & "✓ Draft created successfully!" & return & return
                 set outputText to outputText & "Subject: {escaped_subject}" & return
@@ -1730,161 +1721,4 @@ def manage_drafts(
         end tell
         '''
 
-    elif action == "send":
-        if server.READ_ONLY:
-            return "Error: Sending drafts is disabled in read-only mode."
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for sending drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
-
-        script = f'''
-        tell application "Mail"
-            set outputText to "SENDING DRAFT" & return & return
-
-            try
-                set targetAccount to account "{safe_account}"
-                set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
-                    set draftSubject to subject of foundDraft
-
-                    -- Send the draft
-                    send foundDraft
-
-                    set outputText to outputText & "✓ Draft sent successfully!" & return
-                    set outputText to outputText & "Subject: " & draftSubject & return
-
-                else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
-                end if
-
-            on error errMsg
-                return "Error: " & errMsg
-            end try
-
-            return outputText
-        end tell
-        '''
-
-    elif action == "open":
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for opening drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
-
-        script = f'''
-        tell application "Mail"
-            set outputText to "OPENING DRAFT FOR REVIEW" & return & return
-
-            try
-                set targetAccount to account "{safe_account}"
-                set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
-                    set draftSubject to subject of foundDraft
-
-                    -- Open the draft in a visible compose window
-                    set draftWindow to open foundDraft
-                    activate
-
-                    set outputText to outputText & "✓ Draft opened in Mail for review!" & return
-                    set outputText to outputText & "Subject: " & draftSubject & return
-                    set outputText to outputText & return & "Edit and send when ready." & return
-
-                else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
-                end if
-
-            on error errMsg
-                return "Error: " & errMsg
-            end try
-
-            return outputText
-        end tell
-        '''
-
-    elif action == "delete":
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for deleting drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
-
-        script = f'''
-        tell application "Mail"
-            set outputText to "DELETING DRAFT" & return & return
-
-            try
-                set targetAccount to account "{safe_account}"
-                set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
-
-                if foundDraft is not missing value then
-                    set draftSubject to subject of foundDraft
-
-                    -- Delete the draft
-                    delete foundDraft
-
-                    set outputText to outputText & "✓ Draft deleted successfully!" & return
-                    set outputText to outputText & "Subject: " & draftSubject & return
-
-                else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
-                end if
-
-            on error errMsg
-                return "Error: " & errMsg
-            end try
-
-            return outputText
-        end tell
-        '''
-
-    else:
-        return (
-            f"Error: Invalid action '{action}'. Use: list, create, send, open, delete"
-        )
-
-    result = run_applescript(script)
-    return result
+    return run_applescript(script)

@@ -134,7 +134,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `compose_email` | Send new emails (plain text or HTML body) |
 | `reply_to_email` | Reply or reply-all with optional HTML body |
 | `forward_email` | Forward with optional message, CC/BCC |
-| `manage_drafts` | Create, list, send, and delete drafts |
+| `manage_drafts` | List/read drafts by exact ID, verify updates, open editable replacements, request sending, verify Sent copies, or delete one draft |
 | `create_rich_email_draft` | Build a rich HTML `.eml` draft, open it in Mail, and optionally save it to Drafts |
 
 ### Attachments
@@ -158,6 +158,25 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `inbox_dashboard` | Interactive UI dashboard (requires mcp-ui-server) |
 
 ## Configuration
+
+### Reviewing and editing saved drafts
+
+List drafts with IDs, then read the chosen draft without opening Mail's UI:
+
+```python
+manage_drafts(account="Work", action="list", output_format="json")
+manage_drafts(account="Work", action="read", message_id="123")
+manage_drafts(account="Work", action="update", message_id="123",
+              body="Updated request details.", output_format="json")
+```
+
+`message_id` is Mail's numeric ID. An exact RFC `internet_message_id` is an alternative. The legacy `draft_subject` substring must identify exactly one message; ambiguous selections fail instead of sending or deleting the first match.
+
+Mail exposes stored drafts as read-only messages. An update therefore saves a replacement, reads it back to verify recipients, body, and attachment bytes, then retires the unchanged original to Trash. Omitted fields are preserved; empty `cc` or `bcc` clears that group. Use the **replacement's new ID** for later operations. An unverified replacement leaves the original intact and reports the replacement ID for inspection.
+
+`action="open"` opens a message viewer. `action="edit"` instead opens a genuine outgoing composer after rebuilding and verifying the draft. Inline images, signed/encrypted content, reply headers, unsupported document styling, and unavailable attachments are refused when they cannot be preserved safely. Edit a threaded draft in Mail rather than silently converting it into an unthreaded message.
+
+Sending still requires the user's authorization. `action="send"` reports Mail's acceptance, not confirmed delivery. After sending, use `action="verify_sent"` with the returned Internet Message-ID to inspect the Sent copy and list any remaining draft IDs. Leftover drafts are not automatically deleted, and their presence is not a reason to resend.
 
 ### Read-Only Mode
 
