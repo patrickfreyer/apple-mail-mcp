@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-28
+
 ### Added
 - `list_email_attachments` and `save_email_attachment` accept `message_id` (the id `search_emails` returns) and `mailbox`, looking the message up directly instead of by subject, so recurring subjects can't pick the wrong month (#128 by @proscar87).
 - `read_email(account, message_id, mailbox)` returns one message as headers, plain-text body and attachment list, looked up directly by the id `search_emails` returns, with the body capped at `max_chars` and the cut stated (#128 by @proscar87).
