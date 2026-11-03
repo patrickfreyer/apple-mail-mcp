@@ -2,6 +2,7 @@
 
 from typing import Optional, List
 
+from apple_mail_mcp.annotations import local_write, syncs_with_server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.paths import validate_write_path
 from apple_mail_mcp.core import (
@@ -18,7 +19,7 @@ from apple_mail_mcp.core import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Move Email"))
 @inject_preferences
 def move_email(
     account: str,
@@ -241,7 +242,7 @@ def move_email(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Save Email Attachment", destructive=True))
 @inject_preferences
 def save_email_attachment(
     account: str,
@@ -401,7 +402,7 @@ def save_email_attachment(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Update Email Status", idempotent=True))
 @inject_preferences
 def update_email_status(
     account: str,
@@ -650,7 +651,7 @@ def update_email_status(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Manage Trash", destructive=True))
 @inject_preferences
 def manage_trash(
     account: str,
@@ -948,7 +949,7 @@ import re
 _INVALID_MAILBOX_CHARS = re.compile(r"[\\\"<>|?*:\x00-\x1f]")
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Create Mailbox", idempotent=True))
 @inject_preferences
 def create_mailbox(
     account: str,
@@ -1047,7 +1048,7 @@ def create_mailbox(
 
 
 
-@mcp.tool()
+@mcp.tool(annotations=syncs_with_server("Synchronize Account"))
 @inject_preferences
 def synchronize_account(account: Optional[str] = None) -> str:
     """
