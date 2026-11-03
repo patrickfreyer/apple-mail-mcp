@@ -39,7 +39,8 @@ publisher:
    - `server.json` (two places: top-level and `packages[0].version`)
    - `apple-mail-mcpb/manifest.json`
    - `plugin/apple_mail_mcp/__init__.py`
-   - `plugin/.claude-plugin/plugin.json`
+   - `plugin/.claude-plugin/plugin.json` (two places: `version` and the `uvx mcp-apple-mail==<version>` pin in `mcpServers`)
+   - `plugin/README.md` (the pinned `uvx` command under "What it runs")
    - `.claude-plugin/marketplace.json` (the `./plugin` entry, not the file's own top-level version)
 
    Then confirm:

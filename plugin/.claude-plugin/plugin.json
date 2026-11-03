@@ -1,15 +1,19 @@
 {
   "name": "apple-mail",
-  "description": "Natural language interface for Apple Mail — search, compose, triage, organize, and analyze email with 24 MCP tools and an expert email management skill",
-  "version": "3.3.0",
+  "description": "Natural language interface for Apple Mail on macOS: search, read, compose, triage, organize, and analyze email with 28 MCP tools and an expert email management skill",
+  "version": "3.4.0",
   "author": {
     "name": "Patrick Freyer",
     "email": "freyer.patrick@bcg.com"
   },
+  "homepage": "https://github.com/patrickfreyer/apple-mail-mcp",
+  "repository": "https://github.com/patrickfreyer/apple-mail-mcp",
+  "license": "MIT",
+  "keywords": ["email", "apple-mail", "macos", "mcp", "productivity"],
   "mcpServers": {
     "apple-mail": {
-      "command": "/bin/bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/start_mcp.sh"]
+      "command": "uvx",
+      "args": ["mcp-apple-mail==3.4.0"]
     }
   }
 }
