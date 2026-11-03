@@ -56,6 +56,21 @@ def get_versions(repo_root: Path) -> dict[str, str]:
     )
     versions["plugin/.claude-plugin/plugin.json"] = plugin_manifest["version"]
 
+    # 5b. The plugin launches a pinned `uvx mcp-apple-mail==X`. If the pin
+    #     lags, the plugin advertises a new version but runs old server code.
+    args = plugin_manifest["mcpServers"]["apple-mail"]["args"]
+    pin = next((a for a in args if a.startswith("mcp-apple-mail==")), None)
+    if pin is None:
+        raise ValueError("plugin.json must launch a pinned mcp-apple-mail==<version>")
+    versions["plugin/.claude-plugin/plugin.json#uvx-pin"] = pin.split("==", 1)[1]
+
+    # 5c. plugin/README.md documents the same pinned command.
+    readme_text = (repo_root / "plugin" / "README.md").read_text()
+    match = re.search(r"mcp-apple-mail==([\w.]+)", readme_text)
+    if not match:
+        raise ValueError("plugin/README.md must show the pinned uvx command")
+    versions["plugin/README.md#uvx-pin"] = match.group(1)
+
     # 6. .claude-plugin/marketplace.json — the plugin's entry (the file's own
     #    top-level "version" is the marketplace's, not the plugin's).
     marketplace = json.loads(

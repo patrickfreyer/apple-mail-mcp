@@ -9,6 +9,7 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+from apple_mail_mcp.annotations import local_write, sends_mail
 from apple_mail_mcp import server
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.paths import validate_read_path, validate_write_path
@@ -261,7 +262,7 @@ _SAVE_AS_DRAFT_UNSUPPORTED_NOTE = (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Create Rich Email Draft", destructive=True))
 @inject_preferences
 def create_rich_email_draft(
     account: str,
@@ -671,7 +672,7 @@ def _verify_saved_reply_body(
     return "\n".join([status] + lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=sends_mail("Reply to Email"))
 @inject_preferences
 def reply_to_email(
     account: str,
@@ -1116,7 +1117,7 @@ tell application "Mail"
             os.unlink(html_temp_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=sends_mail("Compose Email"))
 @inject_preferences
 def compose_email(
     account: str,
@@ -1322,7 +1323,7 @@ def compose_email(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=sends_mail("Forward Email"))
 @inject_preferences
 def forward_email(
     account: str,
@@ -1584,7 +1585,7 @@ tell application "Mail"
             os.unlink(fwd_html_temp_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=sends_mail("Manage Drafts"))
 @inject_preferences
 def manage_drafts(
     account: str,

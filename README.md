@@ -22,7 +22,7 @@ An MCP server that gives AI assistants full access to Apple Mail -- read, search
 
 ## Quick Install
 
-**Prerequisites:** macOS with Apple Mail configured, Python 3.10+
+**Prerequisites:** macOS with Apple Mail configured, Python 3.10+, and [uv](https://docs.astral.sh/uv/) (the plugin and uvx installs launch the server with `uvx`)
 
 ### Claude Code Plugin (Recommended)
 
@@ -106,7 +106,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 </details>
 
-## Tools (23)
+## Tools (28)
 
 ### Reading & Search
 | Tool | Description |
@@ -115,9 +115,11 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `list_inbox_emails` | List emails with account/read-status filtering and optional content preview |
 | `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
+| `list_account_addresses` | Email addresses configured for each account |
 | `search_emails` | Unified search — subject, sender, body text, dates, attachments, flag status/color, cross-account |
 | `read_email` | Read one message by numeric id — headers, capped plain-text body and attachment metadata (text or JSON) |
 | `get_email_thread` | Conversation thread view |
+| `get_email_source` | Raw RFC 822 source of one message (headers, MIME parts) |
 
 ### Organization
 | Tool | Description |
@@ -127,6 +129,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `move_email` | Move/archive emails with filters (subject, sender, date, read status, dry-run) |
 | `update_email_status` | Mark read/unread, flag/unflag (optional flag color) — by filters or message IDs |
 | `manage_trash` | Soft delete, permanent delete, empty trash (with dry-run) |
+| `synchronize_account` | Ask Mail.app to check the server for new mail now |
 
 ### Composition
 | Tool | Description |
@@ -265,7 +268,7 @@ cp -r plugin/skills/email-management ~/.claude/skills/email-management
 ## Requirements
 
 - macOS with Apple Mail configured
-- Python 3.7+
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/) for the plugin / uvx installs
 - `fastmcp` (+ optional `mcp-ui-server` for dashboard)
 - Claude Desktop or any MCP-compatible client
 - Mail.app permissions: Automation + Mail Data Access (grant in **System Settings > Privacy & Security > Automation**)
@@ -290,9 +293,9 @@ apple-mail-mcp/
 │   ├── .claude-plugin/
 │   │   └── plugin.json        # Plugin manifest
 │   ├── skills/                # Email Management Expert skill (also invocable as /email-management)
-│   ├── apple_mail_mcp/        # Python MCP server package (24 tools)
+│   ├── apple_mail_mcp/        # Python MCP server package (28 tools)
 │   ├── apple_mail_mcp.py      # Entry point
-│   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)
+│   ├── start_mcp.sh           # Startup wrapper for the .mcpb bundle and local clones (auto-creates venv)
 │   └── requirements.txt
 ├── apple-mail-mcpb/           # MCPB build files (Claude Desktop)
 ├── LICENSE
@@ -320,6 +323,10 @@ Follow these steps when cutting a new release to keep all version strings in syn
 8. Build and publish to PyPI: `python -m build && twine upload dist/*` (requires PyPI credentials).
 
 > The test suite also enforces version consistency (`tests/test_version_consistency.py`), so any CI run on a branch with mismatched versions will fail fast.
+
+## Privacy Policy
+
+The server runs entirely on your Mac, makes no network requests of its own and collects nothing. It reads Mail.app data only when a tool asks, returns it to your MCP client, and sends email only when you ask a sending tool to. Installing through the plugin downloads the pinned `mcp-apple-mail` package from PyPI with `uvx`. Full policy: [PRIVACY.md](PRIVACY.md).
 
 ## License
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-02
+
+Prepares the plugin for the Claude plugin directory.
+
+### Added
+- Every tool now carries MCP safety annotations (`title`, `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`), so clients can tell
+  reads, local writes and sending apart and ask before irreversible actions.
+  `tests/test_tool_annotations.py` enforces this for new tools.
+- `PRIVACY.md` and a Privacy Policy section in the README.
+- `plugin/README.md` and `plugin/LICENSE`, so the plugin folder stands on its own.
+
+### Changed
+- The Claude Code plugin now launches a pinned `uvx mcp-apple-mail==3.4.0`
+  instead of a shell script that built a venv and ran `pip install` on first
+  start. Requires [uv](https://docs.astral.sh/uv/). `scripts/check_versions.py`
+  checks the pin matches the release.
+- The `.mcpb` manifest moves from `dxt_version` 0.1 to `manifest_version` 0.3,
+  declares macOS-only compatibility and the privacy policy, and lists the
+  actual 28 tools (the old list named tools that no longer exist).
+- Corrected tool counts in the plugin, marketplace and README (28).
+
 ## [3.3.0] - 2026-10-28
 
 ### Added

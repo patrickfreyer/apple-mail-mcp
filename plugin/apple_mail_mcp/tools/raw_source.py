@@ -18,6 +18,7 @@ faithful archival.
 
 from typing import Optional
 
+from apple_mail_mcp.annotations import read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     build_mailbox_ref,
@@ -80,7 +81,7 @@ def _headers_only(source: str) -> str:
     return source[: sep_pos + 2]
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Email Source"))
 def get_email_source(
     account: str,
     subject_keyword: Optional[str] = None,

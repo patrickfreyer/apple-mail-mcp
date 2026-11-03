@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import quote
 
+from apple_mail_mcp.annotations import read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.constants import FLAG_COLOR_NAMES
 from apple_mail_mcp.core import (
@@ -751,7 +752,7 @@ def _search_mail_records(
     return _parse_search_records(result), scan_limited
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Search Emails"))
 @inject_preferences
 def search_emails(
     account: Optional[str] = None,
@@ -1058,7 +1059,7 @@ def _format_thread_record(record: Dict[str, Any]) -> List[str]:
     return lines
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Email Thread"))
 @inject_preferences
 def get_email_thread(
     account: str, subject_keyword: str, mailbox: str = "INBOX", max_messages: int = 50
