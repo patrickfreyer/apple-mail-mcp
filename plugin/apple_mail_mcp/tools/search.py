@@ -10,6 +10,7 @@ from urllib.parse import quote
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.constants import FLAG_COLOR_NAMES
 from apple_mail_mcp.core import (
+    build_mailbox_ref,
     contains_any_condition,
     inject_preferences,
     escape_applescript,
@@ -426,24 +427,15 @@ def _search_mail_records(
         skip_script = """
                         set skipFolders to {"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}
                         repeat with skipFolder in skipFolders
-                            if mailboxName is skipFolder then
+                            if mailboxName is (contents of skipFolder) then
                                 set shouldSkip to true
                                 exit repeat
                             end if
                         end repeat
         """
     else:
-        escaped_mailbox = escape_applescript(mailbox)
         mailbox_script = f'''
-                try
-                    set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
-                on error
-                    if "{escaped_mailbox}" is "INBOX" then
-                        set searchMailbox to mailbox "Inbox" of targetAccount
-                    else
-                        error "Mailbox not found: {escaped_mailbox}"
-                    end if
-                end try
+                {build_mailbox_ref(mailbox, var_name="searchMailbox")}
                 set searchMailboxes to {{searchMailbox}}
         '''
         skip_script = ""
@@ -885,20 +877,14 @@ def _collect_thread_candidates(
     row_separator = "<<<AMMCPROW-" + os.urandom(8).hex() + ">>>"
     safe_account = escape_applescript(account)
     safe_keyword = escape_applescript(cleaned_keyword)
-    safe_mailbox = escape_applescript(mailbox)
 
     if mailbox == "All":
         mailbox_setup = "set searchMailboxes to every mailbox of targetAccount"
     else:
-        mailbox_setup = f'''try
-                set searchMailboxes to {{mailbox "{safe_mailbox}" of targetAccount}}
-            on error
-                if "{safe_mailbox}" is "INBOX" then
-                    set searchMailboxes to {{mailbox "Inbox" of targetAccount}}
-                else
-                    error "Mailbox not found: {safe_mailbox}"
-                end if
-            end try'''
+        mailbox_setup = f'''
+                {build_mailbox_ref(mailbox, var_name="searchMailbox")}
+                set searchMailboxes to {{searchMailbox}}
+        '''
 
     script = f'''
     tell application "Mail"

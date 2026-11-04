@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
+- `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
+
 ## [3.3.0] - 2026-10-28
 
 ### Added
