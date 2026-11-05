@@ -106,7 +106,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 </details>
 
-## Tools (22)
+## Tools (23)
 
 ### Reading & Search
 | Tool | Description |
@@ -116,6 +116,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `get_mailbox_unread_counts` | Unread counts per mailbox or per-account summary |
 | `list_accounts` | List all configured Mail accounts |
 | `search_emails` | Unified search — subject, sender, body text, dates, attachments, flag status/color, cross-account |
+| `read_email` | Read one message by numeric id — headers, capped plain-text body and attachment metadata (text or JSON) |
 | `get_email_thread` | Conversation thread view |
 
 ### Organization

@@ -1,6 +1,6 @@
 """Apple Mail MCP - Modular package."""
 
-__version__ = "3.2.1"
+__version__ = "3.3.0"
 
 from apple_mail_mcp.server import mcp
 
@@ -20,3 +20,4 @@ from apple_mail_mcp.tools import manage  # noqa: F401  (5 tools)
 from apple_mail_mcp.tools import analytics  # noqa: F401  (4 tools)
 from apple_mail_mcp.tools import smart_inbox  # noqa: F401  (3 tools)
 from apple_mail_mcp.tools import raw_source  # noqa: F401  (1 tool)
+from apple_mail_mcp.tools import read  # noqa: F401  (1 tool)

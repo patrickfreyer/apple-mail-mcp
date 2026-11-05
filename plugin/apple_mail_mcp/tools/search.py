@@ -10,6 +10,7 @@ from urllib.parse import quote
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.constants import FLAG_COLOR_NAMES
 from apple_mail_mcp.core import (
+    build_mailbox_ref,
     contains_any_condition,
     inject_preferences,
     escape_applescript,
@@ -384,6 +385,16 @@ def _search_mail_records(
     # (offsetRemaining + collectLimit). If the cap is hit first,
     # anyMailboxScanTruncated is set so the caller is told the result may be
     # incomplete instead of silently returning less than the whole picture.
+    # The scan is ordered by date received, so once it has walked past the
+    # requested window nothing further can match: stop instead of reading the
+    # rest of the cap one Apple event at a time (#133).
+    if sort == "date_desc" and date_from and not use_body_search:
+        scan_cutoff = "if (date received of aMessage) < fromDate then exit repeat"
+    elif sort == "date_asc" and date_to and not use_body_search:
+        scan_cutoff = "if (date received of aMessage) > toDate then exit repeat"
+    else:
+        scan_cutoff = ""
+
     bounded_scan_script = f'''
                             set totalMessageCount to count of messages of currentMailbox
                             if totalMessageCount > {WHOSE_CLAUSE_SAFE_LIMIT} then
@@ -397,6 +408,7 @@ def _search_mail_records(
                                     end if
                                     try
                                         set aMessage to message msgIndex of currentMailbox
+                                        {scan_cutoff}
                                         if {per_message_condition_expr} then
                                             set end of matchingMessages to aMessage
                                             if (count of matchingMessages) >= scanTarget then exit repeat
@@ -415,24 +427,15 @@ def _search_mail_records(
         skip_script = """
                         set skipFolders to {"Trash", "Junk", "Junk Email", "Deleted Items", "Sent", "Sent Items", "Sent Messages", "Drafts", "Spam", "Deleted Messages"}
                         repeat with skipFolder in skipFolders
-                            if mailboxName is skipFolder then
+                            if mailboxName is (contents of skipFolder) then
                                 set shouldSkip to true
                                 exit repeat
                             end if
                         end repeat
         """
     else:
-        escaped_mailbox = escape_applescript(mailbox)
         mailbox_script = f'''
-                try
-                    set searchMailbox to mailbox "{escaped_mailbox}" of targetAccount
-                on error
-                    if "{escaped_mailbox}" is "INBOX" then
-                        set searchMailbox to mailbox "Inbox" of targetAccount
-                    else
-                        error "Mailbox not found: {escaped_mailbox}"
-                    end if
-                end try
+                {build_mailbox_ref(mailbox, var_name="searchMailbox")}
                 set searchMailboxes to {{searchMailbox}}
         '''
         skip_script = ""
@@ -874,20 +877,14 @@ def _collect_thread_candidates(
     row_separator = "<<<AMMCPROW-" + os.urandom(8).hex() + ">>>"
     safe_account = escape_applescript(account)
     safe_keyword = escape_applescript(cleaned_keyword)
-    safe_mailbox = escape_applescript(mailbox)
 
     if mailbox == "All":
         mailbox_setup = "set searchMailboxes to every mailbox of targetAccount"
     else:
-        mailbox_setup = f'''try
-                set searchMailboxes to {{mailbox "{safe_mailbox}" of targetAccount}}
-            on error
-                if "{safe_mailbox}" is "INBOX" then
-                    set searchMailboxes to {{mailbox "Inbox" of targetAccount}}
-                else
-                    error "Mailbox not found: {safe_mailbox}"
-                end if
-            end try'''
+        mailbox_setup = f'''
+                {build_mailbox_ref(mailbox, var_name="searchMailbox")}
+                set searchMailboxes to {{searchMailbox}}
+        '''
 
     script = f'''
     tell application "Mail"

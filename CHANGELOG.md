@@ -8,14 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
+- `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
 - `update_email_status` and `manage_trash` cut the matches to `max_updates` /
   `max_deletes` before checking `older_than_days`, so when the newest matches
-  were too recent nothing was acted on even though older ones qualified. The
-  age is now part of the `whose` clause. `list_inbox_emails(include_read=False)`
-  capped how many messages it looked at rather than how many it returned; it
-  now asks Mail for unread messages. `list_inbox_emails` in text output and
-  `get_mailbox_unread_counts(summary_only=True)` ignored `account`; they now
-  filter by it (#126 by @proscar87).
+  were too recent nothing was acted on even though older ones qualified. With
+  `older_than_days` they now walk the mailbox newest-first, check every
+  condition per message and count only matches, stopping after 4000 examined
+  and saying `scan_limited`. `list_inbox_emails(include_read=False)` capped how
+  many messages it looked at rather than how many it returned; it now asks Mail
+  for unread messages (above 1000 unread it examines the newest 4000 and says
+  so) (#126 by @proscar87).
+
+## [3.3.0] - 2026-10-28
+
+### Added
+- `list_email_attachments` and `save_email_attachment` accept `message_id` (the id `search_emails` returns) and `mailbox`, looking the message up directly instead of by subject, so recurring subjects can't pick the wrong month (#128 by @proscar87).
+- `read_email(account, message_id, mailbox)` returns one message as headers, plain-text body and attachment list, looked up directly by the id `search_emails` returns, with the body capped at `max_chars` and the cut stated (#128 by @proscar87).
 
 ### Security
 - The write-path denylist now also checks the path as requested, not only its
@@ -47,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitively to match APFS (`~/.ZSHRC` is `~/.zshrc`).
 
 ### Fixed
+- `list_inbox_emails` in text output and `get_mailbox_unread_counts(summary_only=True)`
+  ignored `account` and returned every account; they now filter by it
+  (#135 by @proscar87).
+- `search_emails` on a mailbox over the whose-clause limit now stops its
+  bounded index scan at the first message outside a `date_from` window
+  (newest-first) or `date_to` window (oldest-first), instead of reading the
+  full 4000-message cap. A one-week search of a 6,000-message mailbox no
+  longer holds the automation lock for minutes (#133 by
+  @joel-alturaeducation, related to #87 and #132).
 - The Claude Code plugin manifests (`plugin/.claude-plugin/plugin.json`,
   `.claude-plugin/marketplace.json`) were stuck at 3.1.2, so `claude plugin
   update` reported installs as current. They are now at 3.2.1 and
