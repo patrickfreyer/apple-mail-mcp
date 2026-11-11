@@ -35,6 +35,29 @@ claude plugin install apple-mail@apple-mail-mcp
 
 Then restart Claude Code.
 
+### Codex (CLI, Desktop, and IDE Extension)
+
+With `uv` installed (`uvx` available on your PATH), register the local STDIO server:
+
+```bash
+codex mcp add apple-mail -- uvx mcp-apple-mail
+codex mcp list
+```
+
+Alternatively, add this table to `~/.codex/config.toml` instead of using the CLI:
+
+```toml
+[mcp_servers.apple-mail]
+command = "uvx"
+args = ["mcp-apple-mail"]
+```
+
+The CLI, desktop app, and IDE extension share this configuration. Restart your client or start a new CLI session after adding the server. In the CLI, use `/mcp` to check the connection, then ask it to list your Apple Mail accounts.
+
+If the desktop app cannot find `uvx`, run `command -v uvx` in your terminal and use that absolute path as the TOML `command` value. Grant the macOS Automation permission to control Mail when prompted; see [Troubleshooting](#troubleshooting).
+
+This registers the MCP server. To install the optional Email Management Expert skill too, use the [npx skills method](#other-install-methods) below. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp) for more configuration options.
+
 ### Other Install Methods
 
 <details>
