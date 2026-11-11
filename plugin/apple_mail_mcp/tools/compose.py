@@ -21,7 +21,6 @@ from apple_mail_mcp.core import (
     inject_preferences,
     escape_applescript,
     run_applescript,
-    inbox_mailbox_script,
     build_mailbox_ref,
     mail_automation_lock,
     MAIL_AUTOMATION_BUSY_ERROR,
@@ -685,6 +684,7 @@ def reply_to_email(
     attachments: Optional[str] = None,
     body_html: Optional[str] = None,
     from_address: Optional[str] = None,
+    mailbox: str = "INBOX",
 ) -> str:
     """
     Reply to an email matching a subject keyword.
@@ -701,6 +701,7 @@ def reply_to_email(
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the reply is pasted as HTML. The plain 'reply_body' field is still required as fallback text.
         from_address: Optional sender address to use for this reply. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        mailbox: Mailbox to look for the message in (default: "INBOX", which also matches localized inbox names). Use "/" for nested folders, e.g. "Projects/2026/Private".
 
     Returns:
         Confirmation message with details of the reply sent, saved draft, or opened draft
@@ -941,7 +942,7 @@ tell application "Mail"
         {read_body_script}
 
         set targetAccount to account "{safe_account}"
-        {inbox_mailbox_script("inboxMailbox", "targetAccount")}
+        {build_mailbox_ref(mailbox, account_var="targetAccount", var_name="inboxMailbox")}
         set inboxMessages to every message of inboxMailbox
         set foundMessage to missing value
 
@@ -1041,7 +1042,7 @@ tell application "Mail"
 
     script += f"""
             else
-                set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "No email found matching: {safe_subject_keyword} (searched mailbox: {escape_applescript(mailbox)})" & return
             end if
 
             -- Clean up temp files
