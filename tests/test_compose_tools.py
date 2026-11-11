@@ -520,6 +520,61 @@ class ReplyToEmailSenderOverrideTests(unittest.TestCase):
         self.assertTrue(result.startswith("Error: 'from_address'"))
 
 
+class ReplyToEmailMailboxTests(unittest.TestCase):
+    """#89: reply_to_email can find messages outside INBOX."""
+
+    def _render(self, **overrides):
+        kwargs = dict(
+            account="Work",
+            subject_keyword="Committer vote",
+            reply_body="+1",
+            mode="send",
+        )
+        kwargs.update(overrides)
+        with (
+            patch(
+                "apple_mail_mcp.tools.compose.subprocess.run",
+                return_value=_make_subprocess_result(),
+            ) as mock_run,
+            patch("apple_mail_mcp.tools.compose.run_applescript"),
+        ):
+            compose_tools.reply_to_email(**kwargs)
+        return mock_run.call_args.kwargs["input"].decode("utf-8")
+
+    def test_default_still_resolves_localized_inbox(self):
+        script = self._render()
+        self.assertIn('"Posteingang"', script)
+        self.assertIn("set inboxMessages to every message of inboxMailbox", script)
+
+    def test_nested_mailbox_is_resolved_from_the_account(self):
+        script = self._render(mailbox="ASF/Projects/Magpie/Private")
+        self.assertIn(
+            'set inboxMailbox to mailbox "Private" of mailbox "Magpie" of '
+            'mailbox "Projects" of mailbox "ASF" of targetAccount',
+            script,
+        )
+        # The localized-inbox fallback must not override an explicit folder.
+        self.assertNotIn('"Posteingang"', script)
+        self.assertLess(
+            script.index('mailbox "Private" of mailbox "Magpie"'),
+            script.index("set inboxMessages to every message of inboxMailbox"),
+        )
+
+    def test_mailbox_name_is_escaped(self):
+        script = self._render(mailbox='Odd "name"')
+        self.assertIn('mailbox "Odd \\"name\\"" of targetAccount', script)
+
+    def test_not_found_message_names_the_mailbox(self):
+        script = self._render(mailbox="Archive")
+        self.assertIn("(searched mailbox: Archive)", script)
+
+    def test_mailbox_is_an_optional_tool_argument(self):
+        import inspect
+
+        param = inspect.signature(compose_tools.reply_to_email).parameters["mailbox"]
+        self.assertEqual(param.default, "INBOX")
+
+
 class ForwardEmailSenderOverrideTests(unittest.TestCase):
     def test_default_emits_single_alias_fallback_for_forward_message(self):
         captured = []
