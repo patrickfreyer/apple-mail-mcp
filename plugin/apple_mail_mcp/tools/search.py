@@ -57,6 +57,11 @@ BOUNDED_SCAN_MAX_MESSAGES = 4000
 # budget per mailbox.
 BOUNDED_BODY_SCAN_MAX_MESSAGES = 50
 
+# Upper bound for the caller-supplied ``max_body_reads`` override. Past a few
+# hundred uncached bodies a call outlives the AppleScript timeout anyway, so a
+# larger value only trades a scan_limited result for a hard failure.
+MAX_BODY_READS_LIMIT = 500
+
 
 MONTH_NAMES = [
     "January",
@@ -192,7 +197,8 @@ def _format_search_records_text(
             "⚠ NOTE: a very large mailbox was only partially scanned "
             "to avoid hanging Mail.app — results may be incomplete. "
             "Narrow with date_from/date_to, sender, or a smaller mailbox "
-            "for full coverage."
+            "for full coverage (for body_text searches, max_body_reads "
+            "can also be raised)."
         )
 
     return "\n".join(lines)
@@ -249,6 +255,7 @@ def _search_mail_records(
     limit: int = 100,
     sort: str = "date_desc",
     body_text: Optional[str] = None,
+    max_body_reads: int = BOUNDED_BODY_SCAN_MAX_MESSAGES,
 ) -> Tuple[List[Dict[str, Any]], bool]:
     """Return structured search records from Apple Mail, plus a scan_limited flag.
 
@@ -524,7 +531,7 @@ def _search_mail_records(
 
         body_read_block = f'''
                                         set bodyReads to bodyReads + 1
-                                        if bodyReads > {BOUNDED_BODY_SCAN_MAX_MESSAGES} then
+                                        if bodyReads > {max_body_reads} then
                                             set anyMailboxScanTruncated to true
                                             set stopScan to true
                                         else
@@ -807,6 +814,7 @@ def search_emails(
     offset: int = 0,
     limit: Optional[int] = None,
     sort: str = "date_desc",
+    max_body_reads: Optional[int] = None,
 ) -> str:
     """
     Unified search tool with JSON output, pagination, and real date filtering.
@@ -837,6 +845,13 @@ def search_emails(
         offset: Number of matching results to skip before returning data
         limit: Maximum number of results to return per page
         sort: Result sort order: "date_desc" or "date_asc"
+        max_body_reads: Only used with body_text. Maximum number of message
+            bodies read per call (default 50, max 500). Cheap filters (sender,
+            subject, dates, read/flag status) are applied first, so this caps
+            only the messages that pass them. If a result comes back with
+            scan_limited=true, either narrow the filters or retry with a
+            higher value; uncached bodies can take up to ~1 s each, so very
+            high values risk the call timing out.
 
     Returns:
         Formatted list of matching emails or JSON payload with stable message metadata
@@ -846,6 +861,13 @@ def search_emails(
 
     if limit is None:
         limit = max_results if max_results is not None else 100
+
+    if max_body_reads is None:
+        max_body_reads = BOUNDED_BODY_SCAN_MAX_MESSAGES
+    elif not 1 <= max_body_reads <= MAX_BODY_READS_LIMIT:
+        return (
+            f"Error: max_body_reads must be between 1 and {MAX_BODY_READS_LIMIT}"
+        )
 
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
 
@@ -867,6 +889,7 @@ def search_emails(
             limit=limit,
             sort=sort,
             body_text=body_text,
+            max_body_reads=max_body_reads,
         )
         return _build_search_response(
             records,

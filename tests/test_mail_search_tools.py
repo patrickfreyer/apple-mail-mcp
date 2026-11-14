@@ -604,6 +604,35 @@ class SearchToolTests(unittest.TestCase):
         self.assertNotIn("candidateMessages", script)
         self.assertNotIn("set lowerSender to my lowercase(messageSender)", script)
 
+    def test_search_emails_max_body_reads_default_and_override(self):
+        scripts = []
+
+        def fake_run(script, timeout=120):
+            scripts.append(script)
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", body_text="invoice")
+            search_tools.search_emails(
+                account="Work", body_text="invoice", max_body_reads=200
+            )
+        self.assertIn(
+            f"if bodyReads > {search_tools.BOUNDED_BODY_SCAN_MAX_MESSAGES} then",
+            scripts[0],
+        )
+        self.assertIn("if bodyReads > 200 then", scripts[1])
+
+    def test_search_emails_max_body_reads_rejects_out_of_range(self):
+        with patch("apple_mail_mcp.tools.search.run_applescript") as run:
+            for bad in (0, -1, search_tools.MAX_BODY_READS_LIMIT + 1):
+                result = search_tools.search_emails(
+                    account="Work", body_text="invoice", max_body_reads=bad
+                )
+                self.assertTrue(result.startswith("Error: max_body_reads"), result)
+            run.assert_not_called()
+
     def test_search_emails_reports_scan_limited_instead_of_silent_empty(self):
         """When Mail signals that a large-mailbox scan hit its safety cap
         before finishing, search_emails must surface that honestly instead
