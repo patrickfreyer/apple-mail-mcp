@@ -564,6 +564,46 @@ class SearchToolTests(unittest.TestCase):
         body_read = script.index("set msgContent to content of aMessage")
         self.assertLess(gate, body_read)
 
+    def test_search_emails_body_search_prefilters_with_whose(self):
+        """With cheap filters, body search narrows candidates with one
+        `whose` Apple event (mailboxes under the limit) and only body-reads
+        those, instead of walking every message by index."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(
+                account="Work", body_text="order", sender="doordash", limit=5
+            )
+        script = captured["script"]
+        self.assertIn(
+            'set candidateMessages to every message of currentMailbox whose sender contains "doordash"',
+            script,
+        )
+        self.assertIn("set aMessage to item candIndex of candidateMessages", script)
+
+    def test_search_emails_pure_body_search_skips_metadata_reads(self):
+        """With no cheap filters there is nothing to prefilter, so the scan
+        reads only content (capped), not subject/sender of every message."""
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return ""
+
+        with patch(
+            "apple_mail_mcp.tools.search.run_applescript", side_effect=fake_run
+        ):
+            search_tools.search_emails(account="Work", body_text="invoice", limit=5)
+        script = captured["script"]
+        self.assertNotIn("candidateMessages", script)
+        self.assertNotIn("set lowerSender to my lowercase(messageSender)", script)
+
     def test_search_emails_reports_scan_limited_instead_of_silent_empty(self):
         """When Mail signals that a large-mailbox scan hit its safety cap
         before finishing, search_emails must surface that honestly instead

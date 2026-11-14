@@ -285,39 +285,40 @@ def _search_mail_records(
     # When body_text is provided, we must iterate per-message (can't use whose clause)
     use_body_search = body_text is not None
 
-    # Build whose-clause filter conditions (only used when NOT doing body search)
+    # Build whose-clause filter conditions. For body search they prefilter the
+    # candidates whose bodies get read (mailboxes under WHOSE_CLAUSE_SAFE_LIMIT).
     filter_conditions = []
-    if not use_body_search:
-        if subject_terms:
-            filter_conditions.append(contains_any_condition("subject", subject_terms))
-        if sender:
-            filter_conditions.append(f'sender contains "{escaped_sender}"')
-        if has_attachments is not None:
-            if has_attachments:
-                filter_conditions.append("(count of mail attachments) > 0")
-            else:
-                filter_conditions.append("(count of mail attachments) = 0")
-        if flag_index is not None:
-            # flag index survives unflagging; require the active-flag boolean
-            # so residual indexes on unflagged messages don't match.
-            filter_conditions.append(
-                f"(flagged status is true and flag index is {flag_index})"
-            )
-        elif flagged is not None:
-            filter_conditions.append(
-                f"flagged status is {'true' if flagged else 'false'}"
-            )
-        if read_status == "read":
-            filter_conditions.append("read status is true")
-        elif read_status == "unread":
-            filter_conditions.append("read status is false")
-        if date_from:
-            filter_conditions.append("date received >= fromDate")
-        if date_to:
-            filter_conditions.append("date received <= toDate")
+    if subject_terms:
+        filter_conditions.append(contains_any_condition("subject", subject_terms))
+    if sender:
+        filter_conditions.append(f'sender contains "{escaped_sender}"')
+    if has_attachments is not None:
+        if has_attachments:
+            filter_conditions.append("(count of mail attachments) > 0")
+        else:
+            filter_conditions.append("(count of mail attachments) = 0")
+    if flag_index is not None:
+        # flag index survives unflagging; require the active-flag boolean
+        # so residual indexes on unflagged messages don't match.
+        filter_conditions.append(
+            f"(flagged status is true and flag index is {flag_index})"
+        )
+    elif flagged is not None:
+        filter_conditions.append(
+            f"flagged status is {'true' if flagged else 'false'}"
+        )
+    if read_status == "read":
+        filter_conditions.append("read status is true")
+    elif read_status == "unread":
+        filter_conditions.append("read status is false")
+    if date_from:
+        filter_conditions.append("date received >= fromDate")
+    if date_to:
+        filter_conditions.append("date received <= toDate")
 
+    whose_expr = " and ".join(filter_conditions)
     if filter_conditions:
-        matching_messages_script = f"set matchingMessages to every message of currentMailbox whose {' and '.join(filter_conditions)}"
+        matching_messages_script = f"set matchingMessages to every message of currentMailbox whose {whose_expr}"
     else:
         matching_messages_script = (
             "set matchingMessages to every message of currentMailbox"
@@ -509,28 +510,19 @@ def _search_mail_records(
         else:
             body_cutoff = ""
 
-        body_search_loop = f'''
-                            set matchingMessages to {{}}
-                            set totalMessageCount to count of messages of currentMailbox
-                            set scanTarget to offsetRemaining + collectLimit
-                            repeat with msgIndex from {scan_from} to {scan_to} by {scan_step}
-                                set scannedTotal to scannedTotal + 1
-                                if scannedTotal > {BOUNDED_SCAN_MAX_MESSAGES} then
-                                    set anyMailboxScanTruncated to true
-                                    exit repeat
-                                end if
-                                set stopScan to false
-                                try
-                                    set aMessage to message msgIndex of currentMailbox
-                                    set messageDate to date received of aMessage
-                                    {body_cutoff}
+        has_metadata_filter = bool(per_msg_conditions)
+        if has_metadata_filter:
+            metadata_reads = f'''
                                     set messageSubject to subject of aMessage
                                     set messageSender to sender of aMessage
                                     set messageRead to read status of aMessage
                                     {flag_read_script}
                                     set lowerSubject to my lowercase(messageSubject)
-                                    set lowerSender to my lowercase(messageSender)
-                                    if {metadata_condition} then
+                                    set lowerSender to my lowercase(messageSender)'''
+        else:
+            metadata_reads = ""
+
+        body_read_block = f'''
                                         set bodyReads to bodyReads + 1
                                         if bodyReads > {BOUNDED_BODY_SCAN_MAX_MESSAGES} then
                                             set anyMailboxScanTruncated to true
@@ -545,12 +537,63 @@ def _search_mail_records(
                                                 set end of matchingMessages to aMessage
                                                 if (count of matchingMessages) >= scanTarget then set stopScan to true
                                             end if
-                                        end if
+                                        end if'''
+
+        index_scan = f'''
+                            repeat with msgIndex from {scan_from} to {scan_to} by {scan_step}
+                                set scannedTotal to scannedTotal + 1
+                                if scannedTotal > {BOUNDED_SCAN_MAX_MESSAGES} then
+                                    set anyMailboxScanTruncated to true
+                                    exit repeat
+                                end if
+                                set stopScan to false
+                                try
+                                    set aMessage to message msgIndex of currentMailbox
+                                    set messageDate to date received of aMessage
+                                    {body_cutoff}
+                                    {metadata_reads}
+                                    if {metadata_condition} then
+                                        {body_read_block}
                                     end if
                                 end try
                                 if stopScan then exit repeat
-                            end repeat
-        '''
+                            end repeat'''
+
+        if filter_conditions:
+            # Mail evaluates the cheap filters in one Apple event; only the
+            # survivors are visited (newest-first) and body-read. Walking a
+            # few thousand messages by index costs several Apple events each
+            # and overran the client timeout even with no body reads.
+            if sort == "date_desc":
+                cand_from, cand_to, cand_step = "1", "candidateCount", "1"
+            else:
+                cand_from, cand_to, cand_step = "candidateCount", "1", "-1"
+            body_search_loop = f'''
+                            set matchingMessages to {{}}
+                            set totalMessageCount to count of messages of currentMailbox
+                            set scanTarget to offsetRemaining + collectLimit
+                            if totalMessageCount > {WHOSE_CLAUSE_SAFE_LIMIT} then
+                                {index_scan}
+                            else
+                                set candidateMessages to every message of currentMailbox whose {whose_expr}
+                                set candidateCount to count of candidateMessages
+                                repeat with candIndex from {cand_from} to {cand_to} by {cand_step}
+                                    set stopScan to false
+                                    try
+                                        set aMessage to item candIndex of candidateMessages
+                                        {body_read_block}
+                                    end try
+                                    if stopScan then exit repeat
+                                end repeat
+                            end if
+            '''
+        else:
+            body_search_loop = f'''
+                            set matchingMessages to {{}}
+                            set totalMessageCount to count of messages of currentMailbox
+                            set scanTarget to offsetRemaining + collectLimit
+                            {index_scan}
+            '''
     else:
         body_search_loop = ""
 
