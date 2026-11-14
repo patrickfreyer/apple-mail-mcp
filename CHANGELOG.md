@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size.
-
 ### Added
 - `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code.
 - `reply_to_email` takes an optional `mailbox` (default `"INBOX"`), so you can reply to a message that a filter delivered to, or that was moved into, another folder. Nested paths use `/`, e.g. `"ASF/Projects/Magpie/Private"`. If nothing matches, the error names the mailbox that was searched (#89, reported by @rbowen).
@@ -18,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: the email-management skill and README now say `create_rich_email_draft` exports an unsent `.eml` preview that Mail opens in a read-only viewer, and point to `compose_email(body_html=..., mode="draft")` for a sendable HTML draft. The draft workflow reads the saved draft back before sending, sends only when the user authorizes it, and treats a leftover draft as no proof of a failed send (#144 by @YassineElbouchaibi).
 
 ### Fixed
+- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size.
 - `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
 - `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
 
