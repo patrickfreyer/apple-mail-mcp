@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found`.
 - `reply_to_email` takes an optional `mailbox` (default `"INBOX"`), so you can reply to a message that a filter delivered to, or that was moved into, another folder. Nested paths use `/`, e.g. `"ASF/Projects/Magpie/Private"`. If nothing matches, the error names the mailbox that was searched (#89, reported by @rbowen).
 
 ### Changed

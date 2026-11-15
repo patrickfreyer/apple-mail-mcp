@@ -664,9 +664,15 @@ def manage_trash(
     apply_to_all: bool = False,
     older_than_days: Optional[int] = None,
     dry_run: bool = True,
+    message_ids: Optional[List[str]] = None,
 ) -> str:
     """
     Manage trash operations - delete emails or empty trash.
+
+    Pass message_ids with action="move_to_trash" to trash specific messages
+    by exact id (other filters are ignored). Each id is looked up on its own
+    and its id is re-read right before the move, so a message is only
+    trashed when it really is the one asked for.
 
     When dry_run=True (default) and action is "move_to_trash", previews what
     would be deleted without acting. Set dry_run=False to actually move to trash.
@@ -690,6 +696,9 @@ def manage_trash(
         apply_to_all: Must be True to allow operations without subject_keyword or sender filter
         older_than_days: Optional age filter - only affect emails older than N days
         dry_run: If True (default), preview what would be affected without acting
+        message_ids: Optional list of exact Mail message ids (move_to_trash only).
+            When set, subject/sender/age filters and apply_to_all are ignored,
+            and the number of ids must not exceed max_deletes.
 
     Returns:
         Confirmation message with details of deleted emails
@@ -706,6 +715,21 @@ def manage_trash(
     safe_account = escape_applescript(account)
     safe_mailbox = escape_applescript(mailbox)
     subject_terms = normalize_search_terms(subject_keyword, subject_keywords)
+
+    if message_ids is not None:
+        if action != "move_to_trash":
+            return "Error: 'message_ids' is only supported with action='move_to_trash'"
+        normalized_ids = normalize_message_ids(message_ids)
+        if not normalized_ids:
+            return "Error: 'message_ids' must contain one or more numeric Mail ids"
+        if len(normalized_ids) > max_deletes:
+            return (
+                f"Error: {len(normalized_ids)} message id(s) exceed max_deletes={max_deletes}. "
+                "Raise max_deletes to the number of ids to proceed."
+            )
+        return run_applescript(
+            _trash_by_ids_script(account, mailbox, normalized_ids, dry_run), timeout=300
+        )
 
     if action == "empty_trash":
         if not confirm_empty:
@@ -940,6 +964,107 @@ def manage_trash(
 
     result = run_applescript(script, timeout=300)
     return result
+
+
+def _trash_by_ids_script(
+    account: str, mailbox: str, message_ids: List[str], dry_run: bool
+) -> str:
+    """AppleScript that trashes (or previews) messages by exact id.
+
+    Each id is resolved on its own with a direct lookup
+    (`«class mssg» id N of mailbox`), inside the loop, rather than with
+    `whose` over the mailbox or from a list captured up front: `whose` is slow
+    on large mailboxes, and captured references can go stale as messages
+    leave it. The resolved message's id is re-read right before the move and
+    must equal the requested id, and after a real run every id is looked up
+    again so the output says which ones are still in the source mailbox.
+    """
+    safe_account = escape_applescript(account)
+    id_list = "{" + ", ".join(message_ids) + "}"
+    if dry_run:
+        mode_label = "DRY RUN - PREVIEW TRASH BY IDS"
+        result_verb = "Would trash"
+        move_line = ""
+        trash_setup = ""
+    else:
+        mode_label = "MOVING EMAILS TO TRASH BY IDS"
+        result_verb = "Moved to trash"
+        move_line = "move aMessage to trashMailbox"
+        trash_setup = 'set trashMailbox to mailbox "Trash" of targetAccount'
+
+    verify_block = "" if dry_run else """
+                    set stillPresent to {}
+                    repeat with rawId in targetIds
+                        set targetId to rawId as integer
+                        try
+                            set presentId to id of («class mssg» id targetId of sourceMailbox)
+                            set end of stillPresent to targetId
+                        end try
+                    end repeat
+                    repeat with targetId in stillPresent
+                        set outputText to outputText & "Still in mailbox: " & targetId & return
+                    end repeat
+                    set outputText to outputText & "STILL PRESENT: " & (count of stillPresent) & return"""
+
+    return f'''
+        tell application "Mail"
+            with timeout of 300 seconds
+                set outputText to "{mode_label}" & return & return
+                set matchCount to 0
+                set targetIds to {id_list}
+
+                try
+                    set targetAccount to account "{safe_account}"
+                    {build_mailbox_ref(mailbox, var_name="sourceMailbox")}
+                    {trash_setup}
+
+                    repeat with rawId in targetIds
+                        set targetId to rawId as integer
+                        set aMessage to missing value
+                        try
+                            set aMessage to «class mssg» id targetId of sourceMailbox
+                            set resolvedId to id of aMessage
+                        on error
+                            set aMessage to missing value
+                        end try
+                        try
+                            if aMessage is not missing value then
+                                if resolvedId is targetId then
+                                    set messageSubject to subject of aMessage
+                                    set messageSender to sender of aMessage
+                                    set messageDate to date received of aMessage
+
+                                    {move_line}
+                                    set matchCount to matchCount + 1
+
+                                    set outputText to outputText & "{result_verb}: " & messageSubject & return
+                                    set outputText to outputText & "   Id: " & targetId & return
+                                    set outputText to outputText & "   From: " & messageSender & return
+                                    set outputText to outputText & "   Date: " & (messageDate as string) & return & return
+                                else
+                                    set outputText to outputText & "Id mismatch, skipped: " & targetId & return
+                                end if
+                            else
+                                set outputText to outputText & "Not found: " & targetId & return
+                            end if
+                        on error errMsg
+                            set outputText to outputText & "Error on " & targetId & ": " & errMsg & return
+                        end try
+                    end repeat
+
+                    set outputText to outputText & "========================================" & return
+                    set outputText to outputText & "REQUESTED: " & (count of targetIds) & " id(s), MATCHED: " & matchCount & return
+                    {verify_block}
+                    set outputText to outputText & "========================================" & return
+
+                on error errMsg
+                    return "Error: " & errMsg
+                end try
+
+                return outputText
+            end timeout
+        end tell
+        '''
 
 
 import re
