@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.4.0] - 2026-11-02
+## [3.4.0] - 2026-11-17
 
 Prepares the plugin for the Claude plugin directory.
 
@@ -18,6 +18,7 @@ Prepares the plugin for the Claude plugin directory.
   `tests/test_tool_annotations.py` enforces this for new tools.
 - `PRIVACY.md` and a Privacy Policy section in the README.
 - `plugin/README.md` and `plugin/LICENSE`, so the plugin folder stands on its own.
+- `reply_to_email` takes an optional `mailbox` (default `"INBOX"`), so you can reply to a message that a filter delivered to, or that was moved into, another folder. Nested paths use `/`, e.g. `"ASF/Projects/Magpie/Private"`. If nothing matches, the error names the mailbox that was searched (#89, reported by @rbowen).
 
 ### Changed
 - The Claude Code plugin now launches a pinned `uvx mcp-apple-mail==3.4.0`
@@ -28,6 +29,11 @@ Prepares the plugin for the Claude plugin directory.
   declares macOS-only compatibility and the privacy policy, and lists the
   actual 28 tools (the old list named tools that no longer exist).
 - Corrected tool counts in the plugin, marketplace and README (28).
+- Docs: the email-management skill and README now say `create_rich_email_draft` exports an unsent `.eml` preview that Mail opens in a read-only viewer, and point to `compose_email(body_html=..., mode="draft")` for a sendable HTML draft. The draft workflow reads the saved draft back before sending, sends only when the user authorizes it, and treats a leftover draft as no proof of a failed send (#144 by @YassineElbouchaibi).
+
+### Fixed
+- `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
+- `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
 
 ## [3.3.0] - 2026-10-28
 
