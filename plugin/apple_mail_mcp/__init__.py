@@ -1,6 +1,6 @@
 """Apple Mail MCP - Modular package."""
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 from apple_mail_mcp.server import mcp
 

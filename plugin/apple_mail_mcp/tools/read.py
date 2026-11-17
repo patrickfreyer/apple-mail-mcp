@@ -3,6 +3,7 @@
 import json
 import re
 
+from apple_mail_mcp.annotations import read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     build_mailbox_ref, escape_applescript, inject_preferences, run_applescript,
@@ -47,7 +48,7 @@ def _size(value: str):
     return int(value) if value.isdigit() else None
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Read Email"))
 @inject_preferences
 def read_email(
     account: str, message_id: str, mailbox: str = "INBOX",
