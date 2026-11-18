@@ -78,3 +78,80 @@ class InvalidActionTests(unittest.TestCase):
             )
         mock_run.assert_not_called()
         self.assertTrue(result.startswith("Error: Invalid action 'list'"))
+
+
+class MoveToTrashByIdsTests(unittest.TestCase):
+    def test_dry_run_previews_without_moving(self):
+        script = _script_for(action="move_to_trash", message_ids=["12", "34"])
+        self.assertIn("DRY RUN - PREVIEW TRASH BY IDS", script)
+        self.assertIn("set targetIds to {12, 34}", script)
+        self.assertIn("Would trash: ", script)
+        self.assertNotIn("move aMessage to trashMailbox", script)
+        self.assertNotIn("STILL PRESENT", script)
+
+    def test_real_run_moves_and_verifies(self):
+        script = _script_for(
+            action="move_to_trash", message_ids=["12"], dry_run=False
+        )
+        self.assertIn("move aMessage to trashMailbox", script)
+        self.assertIn("STILL PRESENT: ", script)
+
+    def test_each_id_is_resolved_inside_the_loop_and_rechecked(self):
+        # A list captured up front can go stale as messages leave the mailbox,
+        # so each id is looked up on its own and its id re-read before moving.
+        script = _script_for(
+            action="move_to_trash", message_ids=["12"], dry_run=False
+        )
+        loop = script.index("repeat with rawId in targetIds")
+        self.assertGreater(
+            script.index("«class mssg» id targetId of sourceMailbox"), loop
+        )
+        self.assertLess(
+            script.index("if resolvedId is targetId then"),
+            script.index("move aMessage to trashMailbox"),
+        )
+
+    def test_uses_direct_id_lookup_not_whose(self):
+        # `whose` over a whole mailbox is slow on large mailboxes (#41).
+        script = _script_for(
+            action="move_to_trash", message_ids=["12"], dry_run=False
+        )
+        self.assertNotIn("whose", script)
+
+    def test_other_filters_are_ignored(self):
+        script = _script_for(
+            action="move_to_trash",
+            message_ids=["12"],
+            sender="someone",
+            subject_keyword="hello",
+        )
+        self.assertNotIn("someone", script)
+        self.assertNotIn("hello", script)
+
+    def test_ids_are_normalized(self):
+        script = _script_for(
+            action="move_to_trash", message_ids=[" 12 ", "12", 34, "abc"]
+        )
+        self.assertIn("set targetIds to {12, 34}", script)
+
+    def _error(self, **kwargs):
+        with patch("apple_mail_mcp.tools.manage.run_applescript") as mock_run:
+            result = manage_tools.manage_trash(account="Work", **kwargs)
+        mock_run.assert_not_called()
+        return result
+
+    def test_rejects_empty_or_non_numeric_ids(self):
+        self.assertIn("must contain", self._error(action="move_to_trash", message_ids=[]))
+        self.assertIn("must contain", self._error(action="move_to_trash", message_ids=["x"]))
+
+    def test_rejects_more_ids_than_max_deletes(self):
+        result = self._error(
+            action="move_to_trash", message_ids=[str(i) for i in range(6)]
+        )
+        self.assertIn("exceed max_deletes=5", result)
+
+    def test_only_for_move_to_trash(self):
+        result = self._error(
+            action="delete_permanent", message_ids=["12"], dry_run=False
+        )
+        self.assertIn("only supported with action='move_to_trash'", result)

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found` (#150 by @PodioSpaz).
+
 ## [3.4.0] - 2026-11-17
 
 Prepares the plugin for the Claude plugin directory.
