@@ -2,13 +2,14 @@
 
 from typing import Optional, List, Dict, Any
 
+from apple_mail_mcp.annotations import local_write, read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.paths import validate_write_path
 from apple_mail_mcp.core import inject_preferences, escape_applescript, run_applescript, inbox_mailbox_script, build_mailbox_ref
 from apple_mail_mcp.constants import SKIP_FOLDERS
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("List Email Attachments"))
 @inject_preferences
 def list_email_attachments(
     account: str,
@@ -161,7 +162,7 @@ def list_email_attachments(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Email Statistics"))
 @inject_preferences
 def get_statistics(
     account: str,
@@ -454,7 +455,7 @@ def get_statistics(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=local_write("Export Emails", destructive=True))
 @inject_preferences
 def export_emails(
     account: str,
@@ -783,7 +784,7 @@ def _get_recent_emails_structured(
     return emails[:max_total]
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Inbox Dashboard"))
 @inject_preferences
 def inbox_dashboard() -> Any:
     """
