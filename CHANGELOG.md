@@ -8,14 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code.
+- `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code (#149 by @brian-maloney).
+
+### Fixed
+- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size (#149 by @brian-maloney).
+
+## [3.4.0] - 2026-11-17
+
+Prepares the plugin for the Claude plugin directory.
+
+### Added
+- Every tool now carries MCP safety annotations (`title`, `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`), so clients can tell
+  reads, local writes and sending apart and ask before irreversible actions.
+  `tests/test_tool_annotations.py` enforces this for new tools.
+- `PRIVACY.md` and a Privacy Policy section in the README.
+- `plugin/README.md` and `plugin/LICENSE`, so the plugin folder stands on its own.
 - `reply_to_email` takes an optional `mailbox` (default `"INBOX"`), so you can reply to a message that a filter delivered to, or that was moved into, another folder. Nested paths use `/`, e.g. `"ASF/Projects/Magpie/Private"`. If nothing matches, the error names the mailbox that was searched (#89, reported by @rbowen).
 
 ### Changed
+- The Claude Code plugin now launches a pinned `uvx mcp-apple-mail==3.4.0`
+  instead of a shell script that built a venv and ran `pip install` on first
+  start. Requires [uv](https://docs.astral.sh/uv/). `scripts/check_versions.py`
+  checks the pin matches the release.
+- The `.mcpb` manifest moves from `dxt_version` 0.1 to `manifest_version` 0.3,
+  declares macOS-only compatibility and the privacy policy, and lists the
+  actual 28 tools (the old list named tools that no longer exist).
+- Corrected tool counts in the plugin, marketplace and README (28).
 - Docs: the email-management skill and README now say `create_rich_email_draft` exports an unsent `.eml` preview that Mail opens in a read-only viewer, and point to `compose_email(body_html=..., mode="draft")` for a sendable HTML draft. The draft workflow reads the saved draft back before sending, sends only when the user authorizes it, and treats a leftover draft as no proof of a failed send (#144 by @YassineElbouchaibi).
 
 ### Fixed
-- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size.
 - `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
 - `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
 

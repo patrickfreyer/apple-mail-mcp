@@ -4,6 +4,7 @@ import json
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
+from apple_mail_mcp.annotations import read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     inject_preferences,
@@ -45,7 +46,7 @@ def _parse_pipe_delimited_emails(raw: str) -> List[Dict[str, Any]]:
     return emails
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("List Inbox Emails"))
 @inject_preferences
 def list_inbox_emails(
     account: Optional[str] = None,
@@ -219,7 +220,7 @@ def _list_inbox_emails_json(
     return json.dumps(emails, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Mailbox Unread Counts"))
 @inject_preferences
 def get_mailbox_unread_counts(
     account: Optional[str] = None,
@@ -360,7 +361,7 @@ def get_mailbox_unread_counts(
     return counts
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("List Mail Accounts"))
 @inject_preferences
 def list_accounts() -> List[str]:
     """
@@ -395,7 +396,7 @@ def list_accounts() -> List[str]:
     return [line.strip() for line in result.splitlines() if line.strip()]
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("List Account Addresses"))
 @inject_preferences
 def list_account_addresses() -> Dict[str, List[str]]:
     """
@@ -453,7 +454,7 @@ def list_account_addresses() -> Dict[str, List[str]]:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("List Mailboxes"))
 @inject_preferences
 def list_mailboxes(account: Optional[str] = None, include_counts: bool = True) -> str:
     """
@@ -548,7 +549,7 @@ def list_mailboxes(account: Optional[str] = None, include_counts: bool = True) -
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Inbox Overview"))
 @inject_preferences
 def get_inbox_overview() -> str:
     """

@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from apple_mail_mcp.annotations import read_only
 from apple_mail_mcp.server import mcp
 from apple_mail_mcp.core import (
     inject_preferences,
@@ -109,7 +110,7 @@ def _newsletter_filter_condition(sender_var: str = "lowerSender") -> str:
     return f"({platform_checks} or {keyword_checks})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Find Emails Awaiting Reply"))
 @inject_preferences
 def get_awaiting_reply(
     account: str,
@@ -310,7 +311,7 @@ def get_awaiting_reply(
     return run_applescript(script)
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Find Emails Needing Response"))
 @inject_preferences
 def get_needs_response(
     account: str,
@@ -502,7 +503,7 @@ def get_needs_response(
     return run_applescript(script)
 
 
-@mcp.tool()
+@mcp.tool(annotations=read_only("Get Top Senders"))
 @inject_preferences
 def get_top_senders(
     account: str,

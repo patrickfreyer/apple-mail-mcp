@@ -21,7 +21,9 @@ def _make_subprocess_result(returncode=0, stdout=b"", stderr=b""):
 class ComposeToolTests(unittest.TestCase):
     def test_create_rich_email_draft_writes_multipart_eml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "weekly-update.eml"
+            # resolve(): on macOS the temp dir is under /var -> /private/var,
+            # and the path guard opens the resolved path.
+            output_path = Path(tmpdir).resolve() / "weekly-update.eml"
 
             with (
                 patch(
