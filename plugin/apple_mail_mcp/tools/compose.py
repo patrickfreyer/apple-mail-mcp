@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import re
+import shutil
 from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
@@ -620,6 +621,86 @@ def _validate_attachment_paths(attachments: str) -> Tuple[List[str], Optional[st
     return resolved_paths, None
 
 
+def _normalize_message_id(message_id) -> Tuple[Optional[str], Optional[str]]:
+    """Return (digits, error) for an optional numeric Mail message id."""
+    if message_id is None:
+        return None, None
+    message_id = str(message_id).strip()
+    if not message_id or not message_id.isascii() or not message_id.isdigit():
+        return None, "Error: message_id must contain digits only"
+    return message_id, None
+
+
+def _find_message_script(
+    message_id: Optional[str],
+    subject_keyword: str,
+    mailbox_var: str,
+    found_var: str = "foundMessage",
+) -> str:
+    """AppleScript that sets ``found_var`` (or leaves it missing value).
+
+    With a message_id the message is looked up directly, so a recurring
+    subject can't pick the wrong message. Otherwise the first message whose
+    subject contains the keyword wins.
+    """
+    if message_id:
+        return f"""
+        set {found_var} to missing value
+        try
+            set {found_var} to «class mssg» id {message_id} of {mailbox_var}
+            -- The reference resolves lazily; reading id makes a miss fail here.
+            get id of {found_var}
+        on error
+            set {found_var} to missing value
+        end try"""
+    return f"""
+        set {found_var} to missing value
+        repeat with aMessage in (every message of {mailbox_var})
+            try
+                if subject of aMessage contains "{escape_applescript(subject_keyword)}" then
+                    set {found_var} to aMessage
+                    exit repeat
+                end if
+            end try
+        end repeat"""
+
+
+# Snapshot the ids in Mail's Drafts mailbox (all accounts) before a hidden
+# draft is created, so the saved copy can be told apart from existing drafts.
+_DRAFT_SNAPSHOT_SCRIPT = """
+            set priorDraftIDs to id of every message of drafts mailbox"""
+
+
+def _save_hidden_draft_script(message_var: str) -> str:
+    """Save a hidden (visible:false) outgoing message and find its draft id.
+
+    ``save`` writes the message to Drafts without opening a window. The new
+    draft is the one id that wasn't in the snapshot and has this subject;
+    if none turns up, ``savedDraftID`` says so instead of giving an id. Needs
+    _DRAFT_SNAPSHOT_SCRIPT to have run before the message was made.
+    """
+    return f"""
+            set savedDraftSubject to subject of {message_var}
+            save {message_var}
+            set savedDraftID to ""
+            repeat 40 times
+                delay 0.25
+                set currentDraftIDs to id of every message of drafts mailbox
+                repeat with candidateRef in currentDraftIDs
+                    set candidateID to contents of candidateRef
+                    if priorDraftIDs does not contain candidateID then
+                        if subject of («class mssg» id candidateID of drafts mailbox) is savedDraftSubject then
+                            set savedDraftID to candidateID as string
+                            exit repeat
+                        end if
+                    end if
+                end repeat
+                if savedDraftID is not "" then exit repeat
+            end repeat
+            if savedDraftID is "" then set savedDraftID to "unknown (saved, but not yet listed in Drafts)"
+"""
+
+
 def _verify_saved_reply_body(
     account: str,
     message_id: Optional[str],
@@ -1143,7 +1224,7 @@ def compose_email(
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         attachments: Optional file paths to attach, comma-separated for multiple (e.g., "/path/to/file1.png,/path/to/file2.pdf")
-        mode: Delivery mode — "send" (send immediately, default), "draft" (save silently to Drafts), or "open" (open compose window for review before sending)
+        mode: Delivery mode — "send" (send immediately, default), "draft" (save to Drafts without opening a window; the result gives the draft's id for manage_drafts), or "open" (open compose window for review before sending). With body_html, "draft" still uses a compose window, because the HTML body is pasted in.
         body_html: Optional HTML body for rich formatting (bold, headings, links, colors). When provided, the email is sent as HTML. The plain 'body' field is still required as fallback text.
         from_address: Optional sender address to use for this message. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
 
@@ -1247,6 +1328,8 @@ def compose_email(
     )
 
     # Determine behavior per mode
+    snapshot_script = ""
+    draft_id_line = ""
     if mode == "send":
         header_text = "COMPOSING EMAIL"
         visible = "false"
@@ -1258,10 +1341,14 @@ def compose_email(
         send_command = "activate"
         success_text = "✓ Email opened in Mail for review. Edit and send when ready."
     else:  # draft
+        # The message stays hidden and `save` files it in Drafts, so no
+        # window opens and none of the user's windows is touched.
         header_text = "SAVING EMAIL AS DRAFT"
         visible = "false"
-        send_command = "close window 1 saving yes"
+        snapshot_script = _DRAFT_SNAPSHOT_SCRIPT
+        send_command = _save_hidden_draft_script("newMessage")
         success_text = "✓ Email saved as draft!"
+        draft_id_line = 'set outputText to outputText & "Draft id: " & savedDraftID & return'
 
     script = f'''
     tell application "Mail"
@@ -1269,6 +1356,7 @@ def compose_email(
 
         try
             set targetAccount to account "{safe_account}"
+            {snapshot_script}
 
             -- Create new outgoing message
             set newMessage to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:{visible}}}
@@ -1291,6 +1379,7 @@ def compose_email(
             {send_command}
 
             set outputText to outputText & "{success_text}" & return
+            {draft_id_line}
             set outputText to outputText & "To: {safe_to}" & return
             set outputText to outputText & "Subject: {escaped_subject}" & return
     '''
@@ -1324,45 +1413,167 @@ def compose_email(
     return result
 
 
+def _forward_as_hidden_draft(
+    account: str,
+    to: str,
+    subject_keyword: str,
+    message: Optional[str],
+    mailbox: str,
+    cc: Optional[str],
+    bcc: Optional[str],
+    sender_override: Optional[str],
+    message_id: Optional[str],
+) -> str:
+    """forward_email(mode="draft"): save a forward without opening a window.
+
+    Mail's ``forward`` command opens a compose window even ``without opening
+    window``, so the draft is a new hidden message instead: the original's
+    plain-text content under a forwarded-message header, plus a copy of
+    each original attachment (saved to a temp folder, then attached).
+    """
+    recipients_script = ""
+    for kind, value in (("to", to), ("cc", cc), ("bcc", bcc)):
+        for addr in _split_addresses(value or ""):
+            recipients_script += (
+                f"make new {kind} recipient at end of {kind} recipients "
+                f'with properties {{address:"{escape_applescript(addr)}"}}\n'
+            )
+    note = f"{message.rstrip()}\n\n" if message else ""
+    target_desc = f"id {message_id}" if message_id else escape_applescript(subject_keyword)
+    sender_script = _compose_sender_script(
+        "forwardMessage", "targetAccount", sender_override
+    )
+    attachment_dir = tempfile.mkdtemp(prefix="mail_fwd_")
+
+    script = f'''
+tell application "Mail"
+    set outputText to "SAVING FORWARD AS DRAFT" & return & return
+    try
+        set targetAccount to account "{escape_applescript(account)}"
+        {build_mailbox_ref(mailbox, account_var="targetAccount")}
+        {_find_message_script(message_id, subject_keyword, "targetMailbox")}
+
+        if foundMessage is missing value then
+            set outputText to outputText & "⚠ No email found matching: {target_desc}" & return
+        else
+            set messageSubject to subject of foundMessage
+            set originalTo to ""
+            repeat with aRecipient in (to recipients of foundMessage)
+                if originalTo is not "" then set originalTo to originalTo & ", "
+                set originalTo to originalTo & (address of aRecipient)
+            end repeat
+            set forwardSubject to messageSubject
+            if forwardSubject does not start with "Fwd:" and forwardSubject does not start with "Fw:" then
+                set forwardSubject to "Fwd: " & forwardSubject
+            end if
+            set forwardBody to "{escape_applescript(note)}Begin forwarded message:" & linefeed & linefeed ¬
+                & "From: " & (sender of foundMessage) & linefeed ¬
+                & "Subject: " & messageSubject & linefeed ¬
+                & "Date: " & ((date received of foundMessage) as string) & linefeed ¬
+                & "To: " & originalTo & linefeed & linefeed ¬
+                & (content of foundMessage)
+            {_DRAFT_SNAPSHOT_SCRIPT}
+
+            set forwardMessage to make new outgoing message with properties {{subject:forwardSubject, content:forwardBody, visible:false}}
+            {sender_script}
+            tell forwardMessage
+                {recipients_script}
+            end tell
+
+            -- Copy each original attachment (own folder, so equal names can't clash)
+            set attachmentCount to 0
+            repeat with anAttachment in (mail attachments of foundMessage)
+                set attachmentCount to attachmentCount + 1
+                set attachmentFolder to "{escape_applescript(attachment_dir)}/" & attachmentCount
+                do shell script "mkdir -p " & quoted form of attachmentFolder
+                set attachmentPath to attachmentFolder & "/" & (name of anAttachment)
+                save anAttachment in (POSIX file attachmentPath)
+                tell forwardMessage
+                    make new attachment with properties {{file name:(POSIX file attachmentPath)}} at after the last paragraph
+                end tell
+                delay 1
+            end repeat
+            {_save_hidden_draft_script("forwardMessage")}
+
+            set outputText to outputText & "Forward saved as draft (not sent)." & return
+            set outputText to outputText & "Draft id: " & savedDraftID & return
+            set outputText to outputText & "To: {escape_applescript(to)}" & return
+            set outputText to outputText & "Subject: " & forwardSubject & return
+            set outputText to outputText & "Original attachments copied: " & attachmentCount & return
+        end if
+    on error errMsg
+        return "Error: " & errMsg
+    end try
+    return outputText
+end tell
+'''
+    try:
+        return run_applescript(script)
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
+    finally:
+        shutil.rmtree(attachment_dir, ignore_errors=True)
+
+
 @mcp.tool(annotations=sends_mail("Forward Email"))
 @inject_preferences
 def forward_email(
     account: str,
-    subject_keyword: str,
     to: str,
+    subject_keyword: str = "",
     message: Optional[str] = None,
     mailbox: str = "INBOX",
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     from_address: Optional[str] = None,
+    mode: str = "send",
+    message_id: Optional[str] = None,
 ) -> str:
     """
     Forward an email to one or more recipients.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        subject_keyword: Keyword to search for in email subjects
         to: Recipient email address(es), comma-separated for multiple
+        subject_keyword: Keyword to search for in email subjects (ignored with message_id)
         message: Optional message to add before forwarded content
         mailbox: Mailbox to search in (default: "INBOX")
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        mode: "send" (default), "open" (Mail's own forward in a compose window, left for review, not sent), or "draft" (saved to Drafts without opening a window). A draft is rebuilt from the original: its plain-text body under a "Begin forwarded message:" header, with copies of the original attachments. It has no HTML formatting.
+        message_id: Numeric internal Mail id returned by search_emails; overrides subject_keyword
 
     Returns:
         Confirmation message with details of forwarded email
     """
 
-    # forward_email is removed from the tool list under --read-only; this
-    # guard keeps it safe even if that removal ever fails.
-    if server.READ_ONLY:
-        return "Error: Forwarding is disabled in read-only mode."
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Forwarding is disabled in read-only mode. "
+            'Use mode="draft" to save the forward, or mode="open" to review it in Mail.'
+        )
+
+    message_id, id_error = _normalize_message_id(message_id)
+    if id_error:
+        return id_error
+    if not message_id and not subject_keyword:
+        return "Error: subject_keyword or message_id is required"
 
     message = _strip_cdata_wrappers(message)
 
     sender_override, sender_error = _validate_from_address(account, from_address)
     if sender_error:
         return sender_error
+
+    if mode == "draft":
+        return _forward_as_hidden_draft(
+            account, to, subject_keyword, message, mailbox, cc, bcc,
+            sender_override, message_id,
+        )
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -1464,6 +1675,14 @@ def forward_email(
                 end if
             end try"""
 
+    if mode == "send":
+        finish_script = "send forwardMessage"
+        success_text = "Email forwarded successfully."
+    else:  # open: leave Mail's compose window up for review
+        finish_script = "set visible of forwardMessage to true\n            activate"
+        success_text = "Forward opened in Mail for review. Edit and send when ready."
+    target_desc = f"id {message_id}" if message_id else safe_subject_keyword
+
     use_frameworks = ""
     if message:
         use_frameworks = """use framework "Foundation"
@@ -1471,9 +1690,10 @@ use framework "AppKit"
 use scripting additions
 """
 
+    header_text = "FORWARDING EMAIL" if mode == "send" else "OPENING FORWARD FOR REVIEW"
     script = f'''{use_frameworks}
 tell application "Mail"
-    set outputText to "FORWARDING EMAIL" & return & return
+    set outputText to "{header_text}" & return & return
 
     try
         set targetAccount to account "{safe_account}"
@@ -1488,20 +1708,7 @@ tell application "Mail"
             end if
         end try
 
-        set mailboxMessages to every message of targetMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in mailboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
+        {_find_message_script(message_id, subject_keyword, "targetMailbox")}
 
         if foundMessage is not missing value then
             set messageSubject to subject of foundMessage
@@ -1523,13 +1730,12 @@ tell application "Mail"
             -- Add optional message via HTML clipboard paste (preserves forwarded content)
             {fwd_html_paste_script}
 
-            -- Send the forward
-            send forwardMessage
+            {finish_script}
 
             -- Clean up temp files
             {fwd_html_cleanup_script}
 
-            set outputText to outputText & "Email forwarded successfully." & return
+            set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: {safe_to}" & return
             set outputText to outputText & "Subject: " & messageSubject & return
     '''
@@ -1546,7 +1752,7 @@ tell application "Mail"
 
     script += f"""
             else
-                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "⚠ No email found matching: {target_desc}" & return
             end if
 
         on error errMsg
@@ -1598,6 +1804,7 @@ def manage_drafts(
     bcc: Optional[str] = None,
     draft_subject: Optional[str] = None,
     from_address: Optional[str] = None,
+    draft_id: Optional[str] = None,
 ) -> str:
     """
     Manage draft emails - list, create, send, open, or delete drafts.
@@ -1610,8 +1817,9 @@ def manage_drafts(
         body: Email body (required for create)
         cc: Optional CC recipients for create
         bcc: Optional BCC recipients for create
-        draft_subject: Subject keyword to find draft (required for send/open/delete)
+        draft_subject: Subject keyword to find draft (send/open/delete need this or draft_id)
         from_address: Optional sender address for new drafts (action="create"). Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        draft_id: Numeric Mail id of the draft, as shown by action="list" or returned when a draft is saved. Overrides draft_subject for send/open/delete.
 
     Returns:
         Formatted output based on action
@@ -1621,6 +1829,15 @@ def manage_drafts(
 
     # Escape account for all paths
     safe_account = escape_applescript(account)
+
+    draft_id, id_error = _normalize_message_id(draft_id)
+    if id_error:
+        return id_error.replace("message_id", "draft_id")
+    # send/open/delete find their draft by id when given, else by subject.
+    find_draft_script = _find_message_script(
+        draft_id, draft_subject or "", "draftsMailbox", found_var="foundDraft"
+    )
+    draft_target = f"id {draft_id}" if draft_id else escape_applescript(draft_subject or "")
 
     if action == "list":
         script = f'''
@@ -1641,6 +1858,7 @@ def manage_drafts(
                         set draftDate to date sent of aDraft
 
                         set outputText to outputText & "✉ " & draftSubject & return
+                        set outputText to outputText & "   ID: " & (id of aDraft) & return
                         set outputText to outputText & "   Created: " & (draftDate as string) & return & return
                     end try
                 end repeat
@@ -1704,6 +1922,7 @@ def manage_drafts(
 
             try
                 set targetAccount to account "{safe_account}"
+                {_DRAFT_SNAPSHOT_SCRIPT}
 
                 -- Create new outgoing message (draft)
                 set newDraft to make new outgoing message with properties {{subject:"{escaped_subject}", content:"{escaped_body}", visible:false}}
@@ -1717,10 +1936,11 @@ def manage_drafts(
                     {bcc_script}
                 end tell
 
-                -- Save to drafts (don't send)
-                -- The draft is automatically saved to Drafts folder
+                -- Save to Drafts (don't send). The message stays hidden.
+                {_save_hidden_draft_script("newDraft")}
 
                 set outputText to outputText & "✓ Draft created successfully!" & return & return
+                set outputText to outputText & "Draft id: " & savedDraftID & return
                 set outputText to outputText & "Subject: {escaped_subject}" & return
                 set outputText to outputText & "To: {safe_to}" & return
 
@@ -1735,10 +1955,8 @@ def manage_drafts(
     elif action == "send":
         if server.READ_ONLY:
             return "Error: Sending drafts is disabled in read-only mode."
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for sending drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
+        if not draft_subject and not draft_id:
+            return "Error: 'draft_subject' or 'draft_id' is required for sending drafts"
 
         script = f'''
         tell application "Mail"
@@ -1747,20 +1965,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {find_draft_script}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1772,7 +1977,7 @@ def manage_drafts(
                     set outputText to outputText & "Subject: " & draftSubject & return
 
                 else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
+                    set outputText to outputText & "⚠ No draft found matching: {draft_target}" & return
                 end if
 
             on error errMsg
@@ -1784,10 +1989,8 @@ def manage_drafts(
         '''
 
     elif action == "open":
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for opening drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
+        if not draft_subject and not draft_id:
+            return "Error: 'draft_subject' or 'draft_id' is required for opening drafts"
 
         script = f'''
         tell application "Mail"
@@ -1796,20 +1999,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {find_draft_script}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1823,7 +2013,7 @@ def manage_drafts(
                     set outputText to outputText & return & "Edit and send when ready." & return
 
                 else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
+                    set outputText to outputText & "⚠ No draft found matching: {draft_target}" & return
                 end if
 
             on error errMsg
@@ -1835,10 +2025,8 @@ def manage_drafts(
         '''
 
     elif action == "delete":
-        if not draft_subject:
-            return "Error: 'draft_subject' is required for deleting drafts"
-
-        safe_draft_subject = escape_applescript(draft_subject)
+        if not draft_subject and not draft_id:
+            return "Error: 'draft_subject' or 'draft_id' is required for deleting drafts"
 
         script = f'''
         tell application "Mail"
@@ -1847,20 +2035,7 @@ def manage_drafts(
             try
                 set targetAccount to account "{safe_account}"
                 set draftsMailbox to mailbox "Drafts" of targetAccount
-                set draftMessages to every message of draftsMailbox
-                set foundDraft to missing value
-
-                -- Find the draft
-                repeat with aDraft in draftMessages
-                    try
-                        set draftSubject to subject of aDraft
-
-                        if draftSubject contains "{safe_draft_subject}" then
-                            set foundDraft to aDraft
-                            exit repeat
-                        end if
-                    end try
-                end repeat
+                {find_draft_script}
 
                 if foundDraft is not missing value then
                     set draftSubject to subject of foundDraft
@@ -1872,7 +2047,7 @@ def manage_drafts(
                     set outputText to outputText & "Subject: " & draftSubject & return
 
                 else
-                    set outputText to outputText & "⚠ No draft found matching: {safe_draft_subject}" & return
+                    set outputText to outputText & "⚠ No draft found matching: {draft_target}" & return
                 end if
 
             on error errMsg
