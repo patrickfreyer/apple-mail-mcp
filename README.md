@@ -80,6 +80,11 @@ Restart Claude Desktop and grant Mail.app permissions when prompted.
 | `forward_email` | Forward with optional message, CC/BCC |
 | `manage_drafts` | Create, list, send, and delete drafts |
 | `create_rich_email_draft` | Build a rich HTML `.eml` draft, open it in Mail, and optionally save it to Drafts |
+| `create_reply_draft` | Save a reply (quoted original, reply-all, attachments) as a draft by message id, without opening a window |
+| `create_forward_draft` | Save a forward as a draft by message id, keeping the original attachments |
+| `create_draft` | Save a new message with attachments as a draft, without opening a window |
+| `open_draft` | Show a saved draft in a compose window for review |
+| `list_drafts` / `delete_draft` | List drafts with their ids; delete one draft by id |
 
 ### Attachments
 | Tool | Description |
