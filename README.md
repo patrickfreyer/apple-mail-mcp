@@ -137,7 +137,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 | `compose_email` | Send new emails (plain text or HTML body) |
 | `reply_to_email` | Reply or reply-all with optional HTML body |
 | `forward_email` | Forward with optional message, CC/BCC |
-| `manage_drafts` | Create, list, send, and delete drafts |
+| `manage_drafts` | Create, list, open, send, and delete drafts, by subject or draft id |
 | `create_rich_email_draft` | Export an unsent HTML `.eml` preview; Mail opens it in a read-only viewer. Use `compose_email(mode="draft")` for a sendable draft |
 
 ### Attachments
