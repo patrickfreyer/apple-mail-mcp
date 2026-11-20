@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import re
+import shutil
 from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
@@ -1412,45 +1413,167 @@ def compose_email(
     return result
 
 
+def _forward_as_hidden_draft(
+    account: str,
+    to: str,
+    subject_keyword: str,
+    message: Optional[str],
+    mailbox: str,
+    cc: Optional[str],
+    bcc: Optional[str],
+    sender_override: Optional[str],
+    message_id: Optional[str],
+) -> str:
+    """forward_email(mode="draft"): save a forward without opening a window.
+
+    Mail's ``forward`` command opens a compose window even ``without opening
+    window``, so the draft is a new hidden message instead: the original's
+    plain-text content under a forwarded-message header, plus a copy of
+    each original attachment (saved to a temp folder, then attached).
+    """
+    recipients_script = ""
+    for kind, value in (("to", to), ("cc", cc), ("bcc", bcc)):
+        for addr in _split_addresses(value or ""):
+            recipients_script += (
+                f"make new {kind} recipient at end of {kind} recipients "
+                f'with properties {{address:"{escape_applescript(addr)}"}}\n'
+            )
+    note = f"{message.rstrip()}\n\n" if message else ""
+    target_desc = f"id {message_id}" if message_id else escape_applescript(subject_keyword)
+    sender_script = _compose_sender_script(
+        "forwardMessage", "targetAccount", sender_override
+    )
+    attachment_dir = tempfile.mkdtemp(prefix="mail_fwd_")
+
+    script = f'''
+tell application "Mail"
+    set outputText to "SAVING FORWARD AS DRAFT" & return & return
+    try
+        set targetAccount to account "{escape_applescript(account)}"
+        {build_mailbox_ref(mailbox, account_var="targetAccount")}
+        {_find_message_script(message_id, subject_keyword, "targetMailbox")}
+
+        if foundMessage is missing value then
+            set outputText to outputText & "⚠ No email found matching: {target_desc}" & return
+        else
+            set messageSubject to subject of foundMessage
+            set originalTo to ""
+            repeat with aRecipient in (to recipients of foundMessage)
+                if originalTo is not "" then set originalTo to originalTo & ", "
+                set originalTo to originalTo & (address of aRecipient)
+            end repeat
+            set forwardSubject to messageSubject
+            if forwardSubject does not start with "Fwd:" and forwardSubject does not start with "Fw:" then
+                set forwardSubject to "Fwd: " & forwardSubject
+            end if
+            set forwardBody to "{escape_applescript(note)}Begin forwarded message:" & linefeed & linefeed ¬
+                & "From: " & (sender of foundMessage) & linefeed ¬
+                & "Subject: " & messageSubject & linefeed ¬
+                & "Date: " & ((date received of foundMessage) as string) & linefeed ¬
+                & "To: " & originalTo & linefeed & linefeed ¬
+                & (content of foundMessage)
+            {_DRAFT_SNAPSHOT_SCRIPT}
+
+            set forwardMessage to make new outgoing message with properties {{subject:forwardSubject, content:forwardBody, visible:false}}
+            {sender_script}
+            tell forwardMessage
+                {recipients_script}
+            end tell
+
+            -- Copy each original attachment (own folder, so equal names can't clash)
+            set attachmentCount to 0
+            repeat with anAttachment in (mail attachments of foundMessage)
+                set attachmentCount to attachmentCount + 1
+                set attachmentFolder to "{escape_applescript(attachment_dir)}/" & attachmentCount
+                do shell script "mkdir -p " & quoted form of attachmentFolder
+                set attachmentPath to attachmentFolder & "/" & (name of anAttachment)
+                save anAttachment in (POSIX file attachmentPath)
+                tell forwardMessage
+                    make new attachment with properties {{file name:(POSIX file attachmentPath)}} at after the last paragraph
+                end tell
+                delay 1
+            end repeat
+            {_save_hidden_draft_script("forwardMessage")}
+
+            set outputText to outputText & "Forward saved as draft (not sent)." & return
+            set outputText to outputText & "Draft id: " & savedDraftID & return
+            set outputText to outputText & "To: {escape_applescript(to)}" & return
+            set outputText to outputText & "Subject: " & forwardSubject & return
+            set outputText to outputText & "Original attachments copied: " & attachmentCount & return
+        end if
+    on error errMsg
+        return "Error: " & errMsg
+    end try
+    return outputText
+end tell
+'''
+    try:
+        return run_applescript(script)
+    except TimeoutError:
+        return MAIL_AUTOMATION_BUSY_ERROR
+    finally:
+        shutil.rmtree(attachment_dir, ignore_errors=True)
+
+
 @mcp.tool(annotations=sends_mail("Forward Email"))
 @inject_preferences
 def forward_email(
     account: str,
-    subject_keyword: str,
     to: str,
+    subject_keyword: str = "",
     message: Optional[str] = None,
     mailbox: str = "INBOX",
     cc: Optional[str] = None,
     bcc: Optional[str] = None,
     from_address: Optional[str] = None,
+    mode: str = "send",
+    message_id: Optional[str] = None,
 ) -> str:
     """
     Forward an email to one or more recipients.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        subject_keyword: Keyword to search for in email subjects
         to: Recipient email address(es), comma-separated for multiple
+        subject_keyword: Keyword to search for in email subjects (ignored with message_id)
         message: Optional message to add before forwarded content
         mailbox: Mailbox to search in (default: "INBOX")
         cc: Optional CC recipients, comma-separated for multiple
         bcc: Optional BCC recipients, comma-separated for multiple
         from_address: Optional sender address to use when forwarding. Must be one of the account's configured email addresses. When omitted, Mail uses the account's default "Send new messages from" setting.
+        mode: "send" (default), "open" (Mail's own forward in a compose window, left for review, not sent), or "draft" (saved to Drafts without opening a window). A draft is rebuilt from the original: its plain-text body under a "Begin forwarded message:" header, with copies of the original attachments. It has no HTML formatting.
+        message_id: Numeric internal Mail id returned by search_emails; overrides subject_keyword
 
     Returns:
         Confirmation message with details of forwarded email
     """
 
-    # forward_email is removed from the tool list under --read-only; this
-    # guard keeps it safe even if that removal ever fails.
-    if server.READ_ONLY:
-        return "Error: Forwarding is disabled in read-only mode."
+    if mode not in ("send", "draft", "open"):
+        return f"Error: Invalid mode '{mode}'. Use: send, draft, open"
+
+    if server.READ_ONLY and mode == "send":
+        return (
+            "Error: Forwarding is disabled in read-only mode. "
+            'Use mode="draft" to save the forward, or mode="open" to review it in Mail.'
+        )
+
+    message_id, id_error = _normalize_message_id(message_id)
+    if id_error:
+        return id_error
+    if not message_id and not subject_keyword:
+        return "Error: subject_keyword or message_id is required"
 
     message = _strip_cdata_wrappers(message)
 
     sender_override, sender_error = _validate_from_address(account, from_address)
     if sender_error:
         return sender_error
+
+    if mode == "draft":
+        return _forward_as_hidden_draft(
+            account, to, subject_keyword, message, mailbox, cc, bcc,
+            sender_override, message_id,
+        )
 
     # Escape all user inputs for AppleScript
     safe_account = escape_applescript(account)
@@ -1552,6 +1675,14 @@ def forward_email(
                 end if
             end try"""
 
+    if mode == "send":
+        finish_script = "send forwardMessage"
+        success_text = "Email forwarded successfully."
+    else:  # open: leave Mail's compose window up for review
+        finish_script = "set visible of forwardMessage to true\n            activate"
+        success_text = "Forward opened in Mail for review. Edit and send when ready."
+    target_desc = f"id {message_id}" if message_id else safe_subject_keyword
+
     use_frameworks = ""
     if message:
         use_frameworks = """use framework "Foundation"
@@ -1559,9 +1690,10 @@ use framework "AppKit"
 use scripting additions
 """
 
+    header_text = "FORWARDING EMAIL" if mode == "send" else "OPENING FORWARD FOR REVIEW"
     script = f'''{use_frameworks}
 tell application "Mail"
-    set outputText to "FORWARDING EMAIL" & return & return
+    set outputText to "{header_text}" & return & return
 
     try
         set targetAccount to account "{safe_account}"
@@ -1576,20 +1708,7 @@ tell application "Mail"
             end if
         end try
 
-        set mailboxMessages to every message of targetMailbox
-        set foundMessage to missing value
-
-        -- Find the first matching message
-        repeat with aMessage in mailboxMessages
-            try
-                set messageSubject to subject of aMessage
-
-                if messageSubject contains "{safe_subject_keyword}" then
-                    set foundMessage to aMessage
-                    exit repeat
-                end if
-            end try
-        end repeat
+        {_find_message_script(message_id, subject_keyword, "targetMailbox")}
 
         if foundMessage is not missing value then
             set messageSubject to subject of foundMessage
@@ -1611,13 +1730,12 @@ tell application "Mail"
             -- Add optional message via HTML clipboard paste (preserves forwarded content)
             {fwd_html_paste_script}
 
-            -- Send the forward
-            send forwardMessage
+            {finish_script}
 
             -- Clean up temp files
             {fwd_html_cleanup_script}
 
-            set outputText to outputText & "Email forwarded successfully." & return
+            set outputText to outputText & "{success_text}" & return
             set outputText to outputText & "To: {safe_to}" & return
             set outputText to outputText & "Subject: " & messageSubject & return
     '''
@@ -1634,7 +1752,7 @@ tell application "Mail"
 
     script += f"""
             else
-                set outputText to outputText & "⚠ No email found matching: {safe_subject_keyword}" & return
+                set outputText to outputText & "⚠ No email found matching: {target_desc}" & return
             end if
 
         on error errMsg

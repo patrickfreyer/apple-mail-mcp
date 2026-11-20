@@ -10,7 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code (#149 by @brian-maloney).
 - `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found` (#150 by @PodioSpaz).
+- `forward_email` takes `mode` (`"send"`, the default, `"draft"` or `"open"`) and `message_id`. `mode="draft"` saves the forward to Drafts without opening a window and keeps the original's attachments: Mail's `forward` command always opens a compose window, so the draft is a new hidden message holding the original's plain-text content under a "Begin forwarded message:" header, with a copy of each attachment. It carries no HTML formatting; `mode="open"` gives Mail's own forward, left open for review and not sent.
 - `manage_drafts` takes `draft_id`, so `open`, `send` and `delete` can target one draft by its Mail id instead of the first subject match. `action="list"` shows each draft's id.
+
+### Changed
+- `forward_email` stays registered under `--read-only`, like `compose_email` and `reply_to_email`, and refuses only `mode="send"`. Its `to` parameter now comes second and `subject_keyword` is optional, as it is ignored with `message_id`.
 
 ### Fixed
 - `compose_email(mode="draft")` (plain text) and `manage_drafts(action="create")` now save the hidden message with `save` and report the new draft's id. The draft mode used to run `close window 1 saving yes`, but the message has no window, so that acted on whichever Mail window was in front; `create` had no save step and left it to Mail autosaving. Neither opens a window now. With `body_html`, `compose_email` still needs a compose window to paste the HTML in.

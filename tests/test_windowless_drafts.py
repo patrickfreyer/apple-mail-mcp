@@ -1,4 +1,4 @@
-"""Drafts saved without a window, and drafts addressed by id."""
+"""Drafts saved without a window, forward modes, and drafts addressed by id."""
 
 import os
 import re
@@ -147,6 +147,91 @@ class ManageDraftsByIdTests(WindowlessDraftMixin, unittest.TestCase):
                 )
                 self.assertEqual(scripts, [])
                 self.assertIn("'draft_subject' or 'draft_id' is required", result)
+
+
+class ForwardDraftTests(WindowlessDraftMixin, unittest.TestCase):
+    def _forward(self, **overrides):
+        kwargs = dict(
+            account="Work",
+            to="a@example.com, b@example.com",
+            message_id="42",
+            mode="draft",
+        )
+        kwargs.update(overrides)
+        return _capture(lambda: compose_tools.forward_email(**kwargs))
+
+    def test_draft_is_saved_without_a_window(self):
+        _, scripts = self._forward(message="FYI", cc="c@example.com")
+        self.assertEqual(len(scripts), 1)
+        script = scripts[0]
+        self.assertWindowless(script)
+        self.assertSavesAndLocates(script, "forwardMessage")
+        self.assertNotIn("forward foundMessage", script)
+        self.assertIn("«class mssg» id 42 of targetMailbox", script)
+        self.assertIn('{address:"b@example.com"}', script)
+        self.assertIn("make new cc recipient", script)
+        self.assertIn('"FYI\\n\\nBegin forwarded message:"', script)
+
+    def test_draft_copies_original_attachments_then_removes_the_copies(self):
+        _, scripts = self._forward()
+        script = scripts[0]
+        self.assertIn("repeat with anAttachment in (mail attachments of foundMessage)", script)
+        self.assertIn("save anAttachment in (POSIX file attachmentPath)", script)
+        self.assertIn("make new attachment with properties {file name:(POSIX file attachmentPath)}", script)
+        folder = re.search(r'set attachmentFolder to "([^"]+)/"', script).group(1)
+        self.assertFalse(os.path.exists(folder))
+
+    def test_draft_by_subject_keyword(self):
+        _, scripts = self._forward(message_id=None, subject_keyword="Invoice")
+        self.assertIn('contains "Invoice"', scripts[0])
+
+    def test_open_mode_does_not_send(self):
+        _, scripts = self._forward(mode="open")
+        script = scripts[-1]
+        self.assertIn("forward foundMessage with opening window", script)
+        self.assertNotIn("send forwardMessage", script)
+        self.assertIn("«class mssg» id 42 of targetMailbox", script)
+
+    def test_send_mode_still_sends(self):
+        _, scripts = self._forward(mode="send", message_id=None, subject_keyword="x")
+        self.assertIn("send forwardMessage", scripts[-1])
+
+    def test_rejects_bad_mode_and_id(self):
+        for overrides, expected in (
+            ({"mode": "later"}, "Error: Invalid mode 'later'. Use: send, draft, open"),
+            ({"message_id": "4x"}, "Error: message_id must contain digits only"),
+            (
+                {"message_id": None},
+                "Error: subject_keyword or message_id is required",
+            ),
+        ):
+            with self.subTest(overrides=overrides):
+                result, scripts = self._forward(**overrides)
+                self.assertEqual(scripts, [])
+                self.assertEqual(result, expected)
+
+
+class ForwardReadOnlyTests(unittest.TestCase):
+    def setUp(self):
+        self._previous = compose_tools.server.READ_ONLY
+        compose_tools.server.READ_ONLY = True
+
+    def tearDown(self):
+        compose_tools.server.READ_ONLY = self._previous
+
+    def test_draft_and_open_stay_available(self):
+        for mode in ("draft", "open"):
+            with self.subTest(mode=mode):
+                result, scripts = _capture(
+                    lambda mode=mode: compose_tools.forward_email(
+                        account="Work",
+                        to="a@example.com",
+                        message_id="42",
+                        mode=mode,
+                    )
+                )
+                self.assertEqual(result, "OK")
+                self.assertNotIn("send forwardMessage", scripts[-1])
 
 
 if __name__ == "__main__":

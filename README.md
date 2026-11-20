@@ -136,7 +136,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 |------|-------------|
 | `compose_email` | Send new emails (plain text or HTML body) |
 | `reply_to_email` | Reply or reply-all with optional HTML body |
-| `forward_email` | Forward with optional message, CC/BCC |
+| `forward_email` | Forward with optional message, CC/BCC; `mode="draft"` saves it without a window, keeping the original attachments |
 | `manage_drafts` | Create, list, open, send, and delete drafts, by subject or draft id |
 | `create_rich_email_draft` | Export an unsent HTML `.eml` preview; Mail opens it in a read-only viewer. Use `compose_email(mode="draft")` for a sendable draft |
 
@@ -164,7 +164,7 @@ claude mcp add apple-mail -- /bin/bash $(pwd)/start_mcp.sh
 
 ### Read-Only Mode
 
-Pass `--read-only` to block delivery. Nothing leaves the machine: `compose_email` and `reply_to_email` refuse `mode="send"`, `manage_drafts` refuses `action="send"`, and `forward_email` is removed entirely because it has no non-sending mode.
+Pass `--read-only` to block delivery. Nothing leaves the machine: `compose_email`, `reply_to_email` and `forward_email` refuse `mode="send"`, and `manage_drafts` refuses `action="send"`.
 
 The composing tools stay registered so that `mode="draft"` and `mode="open"` keep working. Those never deliver anything, and they are the only place in the compose surface that supports `attachments` — `manage_drafts` and `create_rich_email_draft` cannot attach files.
 
