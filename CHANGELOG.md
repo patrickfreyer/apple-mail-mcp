@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code (#149 by @brian-maloney).
 - `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found` (#150 by @PodioSpaz).
 
+### Changed
+- Docs: README setup instructions for Codex (CLI, desktop app and IDE extension) via `codex mcp add` or `~/.codex/config.toml` (#142 by @YassineElbouchaibi).
+
 ### Fixed
 - `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size (#149 by @brian-maloney).
 
