@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `forward_email` stays registered under `--read-only`, like `compose_email` and `reply_to_email`, and refuses only `mode="send"`. Its `to` parameter now comes second and `subject_keyword` is optional, as it is ignored with `message_id` (#154 by @planttltd).
 
+### Changed
+- Docs: README setup instructions for Codex (CLI, desktop app and IDE extension) via `codex mcp add` or `~/.codex/config.toml` (#142 by @YassineElbouchaibi).
+
 ### Fixed
 - `compose_email(mode="draft")` (plain text) and `manage_drafts(action="create")` now save the hidden message with `save` and report the new draft's id. The draft mode used to run `close window 1 saving yes`, but the message has no window, so that acted on whichever Mail window was in front; `create` had no save step and left it to Mail autosaving. Neither opens a window now. With `body_html`, `compose_email` still needs a compose window to paste the HTML in (#154 by @planttltd).
 - `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size (#149 by @brian-maloney).
