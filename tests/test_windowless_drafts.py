@@ -181,6 +181,20 @@ class ForwardDraftTests(WindowlessDraftMixin, unittest.TestCase):
         folder = re.search(r'set attachmentFolder to "([^"]+)/"', script).group(1)
         self.assertFalse(os.path.exists(folder))
 
+    def test_draft_keeps_attachment_names_inside_the_temp_folder(self):
+        # Attachment names come from the incoming mail; a "/" in one must not
+        # let `save` write outside the per-attachment temp folder.
+        _, scripts = self._forward()
+        script = scripts[0]
+        sanitize = script.index('set AppleScript\'s text item delimiters to "/"')
+        replace = script.index('set AppleScript\'s text item delimiters to "_"')
+        path = script.index('set attachmentPath to attachmentFolder & "/" & attachmentName')
+        save = script.index("save anAttachment in (POSIX file attachmentPath)")
+        self.assertLess(sanitize, replace)
+        self.assertLess(replace, path)
+        self.assertLess(path, save)
+        self.assertIn('attachmentName is ".." then set attachmentName to "attachment"', script)
+
     def test_draft_by_subject_keyword(self):
         _, scripts = self._forward(message_id=None, subject_keyword="Invoice")
         self.assertIn('contains "Invoice"', scripts[0])

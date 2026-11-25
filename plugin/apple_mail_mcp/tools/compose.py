@@ -1486,7 +1486,16 @@ tell application "Mail"
                 set attachmentCount to attachmentCount + 1
                 set attachmentFolder to "{escape_applescript(attachment_dir)}/" & attachmentCount
                 do shell script "mkdir -p " & quoted form of attachmentFolder
-                set attachmentPath to attachmentFolder & "/" & (name of anAttachment)
+                -- The name comes from the incoming mail: keep it inside the
+                -- temp folder ("/" would reach other directories).
+                set attachmentName to (name of anAttachment) as string
+                set AppleScript's text item delimiters to "/"
+                set attachmentNameParts to text items of attachmentName
+                set AppleScript's text item delimiters to "_"
+                set attachmentName to attachmentNameParts as string
+                set AppleScript's text item delimiters to ""
+                if attachmentName is "" or attachmentName is "." or attachmentName is ".." then set attachmentName to "attachment"
+                set attachmentPath to attachmentFolder & "/" & attachmentName
                 save anAttachment in (POSIX file attachmentPath)
                 tell forwardMessage
                     make new attachment with properties {{file name:(POSIX file attachmentPath)}} at after the last paragraph
