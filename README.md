@@ -56,7 +56,7 @@ The CLI, desktop app, and IDE extension share this configuration. Restart your c
 
 If the desktop app cannot find `uvx`, run `command -v uvx` in your terminal and use that absolute path as the TOML `command` value. Grant the macOS Automation permission to control Mail when prompted; see [Troubleshooting](#troubleshooting).
 
-This registers the MCP server. To install the optional Email Management Expert skill too, use the [npx skills method](#other-install-methods) below. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp) for more configuration options.
+This registers the MCP server. To install the optional Email Management Expert skill too, use the [npx skills method](#other-install-methods) below. See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp) for more configuration options.
 
 ### Other Install Methods
 
