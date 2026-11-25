@@ -248,9 +248,6 @@ class ForwardReadOnlyTests(unittest.TestCase):
                 self.assertNotIn("send forwardMessage", scripts[-1])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class VerifiedSaveTests(unittest.TestCase):
     """A hidden draft is only reported as saved once it is found in Drafts."""
@@ -292,7 +289,9 @@ class VerifiedSaveTests(unittest.TestCase):
         for name, (script, success) in self._scripts().items():
             with self.subTest(name):
                 self.assertEqual(script.count(success), 1)
-                not_found = script.index('if savedDraftID is "" then')
+                unreadable = script.index("if not draftSnapshotOK then")
+                not_found = script.index('else if savedDraftID is "" then')
+                self.assertLess(unreadable, not_found)
                 ambiguous = script.index('else if savedDraftID is "ambiguous" then')
                 claimed = script.index(success)
                 self.assertLess(not_found, ambiguous)
@@ -306,7 +305,7 @@ class VerifiedSaveTests(unittest.TestCase):
         # that exists, and a retry would create a duplicate.
         script = compose_tools._save_hidden_draft_script("m")
         after_save = script[script.index("save m"):]
-        lookup = after_save.index("subject of («class mssg» id candidateID of drafts mailbox)")
+        lookup = after_save.index("set candidateDraft to «class mssg» id candidateID of drafts mailbox")
         self.assertIn("try", after_save[:lookup].rsplit("repeat with candidateRef", 1)[1])
         listing = after_save.index("set currentDraftIDs to id of every message of drafts mailbox")
         self.assertTrue(after_save[:listing].rstrip().endswith("try"))
@@ -315,6 +314,8 @@ class VerifiedSaveTests(unittest.TestCase):
         script = compose_tools._save_hidden_draft_script("m")
         self.assertIn("if (count of newDraftIDs) is greater than 1 then", script)
         self.assertIn('set savedDraftID to "ambiguous"', script)
+        # Sync copies sharing a Message-ID count once.
+        self.assertIn("newDraftMessageIDs does not contain candidateMessageID", script)
 
     def test_forward_skips_attachments_it_cannot_copy(self):
         script, _ = self._scripts()["forward"]
@@ -327,3 +328,6 @@ class VerifiedSaveTests(unittest.TestCase):
         self.assertLess(
             script.index("set end of skippedAttachments"), script.index("save forwardMessage")
         )
+
+if __name__ == "__main__":
+    unittest.main()

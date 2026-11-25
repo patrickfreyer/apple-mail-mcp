@@ -685,8 +685,8 @@ def _save_hidden_draft_script(message_var: str) -> str:
     ``save`` writes the message to Drafts without opening a window. The new
     draft is the one id that wasn't in the snapshot and has this subject.
     ``savedDraftID`` stays "" when none turns up (or the snapshot failed);
-    when more than one new draft matches (e.g. Gmail sync copies) it is set
-    to "ambiguous". Lookups after ``save`` never raise, so a caller can't
+    when new drafts with more than one distinct Message-ID match it is set
+    to "ambiguous" (Gmail sync copies of one draft share a Message-ID). Lookups after ``save`` never raise, so a caller can't
     report an error for a draft that was saved (and retry into a duplicate).
     Needs _DRAFT_SNAPSHOT_SCRIPT to have run before the message was made;
     print the outcome with _draft_saved_lines.
@@ -699,6 +699,7 @@ def _save_hidden_draft_script(message_var: str) -> str:
                 repeat 40 times
                     delay 0.25
                     set newDraftIDs to {{}}
+                    set newDraftMessageIDs to {{}}
                     try
                         set currentDraftIDs to id of every message of drafts mailbox
                     on error
@@ -708,8 +709,19 @@ def _save_hidden_draft_script(message_var: str) -> str:
                         set candidateID to contents of candidateRef
                         if priorDraftIDs does not contain candidateID then
                             try
-                                if subject of («class mssg» id candidateID of drafts mailbox) is savedDraftSubject then
-                                    set end of newDraftIDs to candidateID
+                                set candidateDraft to «class mssg» id candidateID of drafts mailbox
+                                if subject of candidateDraft is savedDraftSubject then
+                                    -- Gmail can keep several sync copies of one draft;
+                                    -- they share a Message-ID, so count those once.
+                                    set candidateMessageID to ""
+                                    try
+                                        set candidateMessageID to message id of candidateDraft
+                                    end try
+                                    if candidateMessageID is missing value then set candidateMessageID to ""
+                                    if candidateMessageID is "" or newDraftMessageIDs does not contain candidateMessageID then
+                                        set end of newDraftIDs to candidateID
+                                        if candidateMessageID is not "" then set end of newDraftMessageIDs to candidateMessageID
+                                    end if
                                 end if
                             end try
                         end if
@@ -734,7 +746,9 @@ def _draft_saved_lines(success_text: str) -> str:
     Drafts; otherwise says the save was issued but not verified.
     """
     return f"""
-            if savedDraftID is "" then
+            if not draftSnapshotOK then
+                set outputText to outputText & "⚠ Save was issued, but Drafts could not be read to confirm it (not verified). Check Drafts before retrying." & return
+            else if savedDraftID is "" then
                 set outputText to outputText & "⚠ Save was issued, but the new draft did not show up in Drafts within 10 s (not verified). Check Drafts before retrying." & return
             else if savedDraftID is "ambiguous" then
                 set outputText to outputText & "⚠ Saved, but more than one new draft with this subject appeared in Drafts, so its id is not certain. Check Drafts before retrying." & return
