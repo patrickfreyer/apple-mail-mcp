@@ -7,23 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code (#149 by @brian-maloney).
-- `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found` (#150 by @PodioSpaz).
-- `forward_email` takes `mode` (`"send"`, the default, `"draft"` or `"open"`) and `message_id`. `mode="draft"` saves the forward to Drafts without opening a window and keeps the original's attachments: Mail's `forward` command always opens a compose window, so the draft is a new hidden message holding the original's plain-text content under a "Begin forwarded message:" header, with a copy of each attachment. It carries no HTML formatting; `mode="open"` gives Mail's own forward, left open for review and not sent (#154 by @planttltd).
-- `manage_drafts` takes `draft_id`, so `open`, `send` and `delete` can target one draft by its Mail id instead of the first subject match. `action="list"` shows each draft's id (#154 by @planttltd).
+## [3.4.0] - 2026-11-25
 
-### Changed
-- `forward_email` stays registered under `--read-only`, like `compose_email` and `reply_to_email`, and refuses only `mode="send"`. Its `to` parameter now comes second and `subject_keyword` is optional, as it is ignored with `message_id` (#154 by @planttltd).
-- Docs: README setup instructions for Codex (CLI, desktop app and IDE extension) via `codex mcp add` or `~/.codex/config.toml` (#142 by @YassineElbouchaibi).
-
-### Fixed
-- `compose_email(mode="draft")` (plain text) and `manage_drafts(action="create")` now save the hidden message with `save` and report the new draft's id. The draft mode used to run `close window 1 saving yes`, but the message has no window, so that acted on whichever Mail window was in front; `create` had no save step and left it to Mail autosaving. Neither opens a window now, and both claim success only once the new draft is found in Drafts; otherwise they say the save is not verified, so an agent checks Drafts before retrying. With `body_html`, `compose_email` still needs a compose window to paste the HTML in (#154 by @planttltd).
-- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size (#149 by @brian-maloney).
-
-## [3.4.0] - 2026-11-17
-
-Prepares the plugin for the Claude plugin directory.
+Prepares the plugin for the Claude plugin directory. Also includes windowless, id-addressed drafts, forward draft/open modes, faster bounded `body_text` search, trash by message id and Codex setup docs.
 
 ### Added
 - Every tool now carries MCP safety annotations (`title`, `readOnlyHint`,
@@ -33,6 +19,10 @@ Prepares the plugin for the Claude plugin directory.
 - `PRIVACY.md` and a Privacy Policy section in the README.
 - `plugin/README.md` and `plugin/LICENSE`, so the plugin folder stands on its own.
 - `reply_to_email` takes an optional `mailbox` (default `"INBOX"`), so you can reply to a message that a filter delivered to, or that was moved into, another folder. Nested paths use `/`, e.g. `"ASF/Projects/Magpie/Private"`. If nothing matches, the error names the mailbox that was searched (#89, reported by @rbowen).
+- `search_emails` takes an optional `max_body_reads` (default 50, max 500) for `body_text` searches, so an agent that gets `scan_limited: true` can retry with a larger budget instead of the cap being fixed in code (#149 by @brian-maloney).
+- `manage_trash(action="move_to_trash")` takes optional `message_ids`, matching `move_email`, so callers that already know which messages to trash (from `search_emails`) don't have to narrow subject/sender filters until a preview happens to match. Each id is looked up directly (`«class mssg» id N of mailbox`, no `whose` scan) and its id is re-read right before the move; a real run then checks every id again and reports any still in the mailbox (`STILL PRESENT`). The number of ids can't exceed `max_deletes`, and ids that aren't in the mailbox are listed as `Not found` (#150 by @PodioSpaz).
+- `forward_email` takes `mode` (`"send"`, the default, `"draft"` or `"open"`) and `message_id`. `mode="draft"` saves the forward to Drafts without opening a window and keeps the original's attachments: Mail's `forward` command always opens a compose window, so the draft is a new hidden message holding the original's plain-text content under a "Begin forwarded message:" header, with a copy of each attachment. It carries no HTML formatting; `mode="open"` gives Mail's own forward, left open for review and not sent (#154 by @planttltd).
+- `manage_drafts` takes `draft_id`, so `open`, `send` and `delete` can target one draft by its Mail id instead of the first subject match. `action="list"` shows each draft's id (#154 by @planttltd).
 
 ### Changed
 - The Claude Code plugin now launches a pinned `uvx mcp-apple-mail==3.4.0`
@@ -44,10 +34,14 @@ Prepares the plugin for the Claude plugin directory.
   actual 28 tools (the old list named tools that no longer exist).
 - Corrected tool counts in the plugin, marketplace and README (28).
 - Docs: the email-management skill and README now say `create_rich_email_draft` exports an unsent `.eml` preview that Mail opens in a read-only viewer, and point to `compose_email(body_html=..., mode="draft")` for a sendable HTML draft. The draft workflow reads the saved draft back before sending, sends only when the user authorizes it, and treats a leftover draft as no proof of a failed send (#144 by @YassineElbouchaibi).
+- `forward_email` stays registered under `--read-only`, like `compose_email` and `reply_to_email`, and refuses only `mode="send"`. Its `to` parameter now comes second and `subject_keyword` is optional, as it is ignored with `message_id` (#154 by @planttltd).
+- Docs: README setup instructions for Codex (CLI, desktop app and IDE extension) via `codex mcp add` or `~/.codex/config.toml` (#142 by @YassineElbouchaibi).
 
 ### Fixed
 - `search_emails(mailbox="All")` now skips the system folders (Trash, Junk, Sent, Drafts, ...) correctly: the exclusion list compared a repeat reference instead of its value, so nothing was ever skipped (#141 by @YassineElbouchaibi).
 - `search_emails` and `get_email_thread` resolve a specific mailbox through the shared helper, so localized inbox names (e.g. "Boîte de réception", "Posteingang") and nested paths like `Archives/2026` work (#140 by @YassineElbouchaibi).
+- `compose_email(mode="draft")` (plain text) and `manage_drafts(action="create")` now save the hidden message with `save` and report the new draft's id. The draft mode used to run `close window 1 saving yes`, but the message has no window, so that acted on whichever Mail window was in front; `create` had no save step and left it to Mail autosaving. Neither opens a window now, and both claim success only once the new draft is found in Drafts; otherwise they say the save is not verified, so an agent checks Drafts before retrying. With `body_html`, `compose_email` still needs a compose window to paste the HTML in (#154 by @planttltd).
+- `search_emails(body_text=...)` on mailboxes under 5,000 messages read the body of every message before checking any filter and ignored `limit`, so even a two-day `date_from` search of a ~2,000-message inbox overran the client's tool timeout. Body search now applies the date window and cheap filters first (narrowing with one `whose` query where the mailbox allows), reads bodies newest-first, stops once the page is filled, and caps body reads for every mailbox size (#149 by @brian-maloney).
 
 ## [3.3.0] - 2026-10-28
 
