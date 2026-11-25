@@ -15,8 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `forward_email` stays registered under `--read-only`, like `compose_email` and `reply_to_email`, and refuses only `mode="send"`. Its `to` parameter now comes second and `subject_keyword` is optional, as it is ignored with `message_id` (#154 by @planttltd).
-
-### Changed
 - Docs: README setup instructions for Codex (CLI, desktop app and IDE extension) via `codex mcp add` or `~/.codex/config.toml` (#142 by @YassineElbouchaibi).
 
 ### Fixed
