@@ -82,7 +82,9 @@ def main():
 
     from apple_mail_mcp import mcp  # noqa: E402
 
-    # Tools without a non-sending mode are removed entirely under --read-only.
+    # Tools without a non-sending mode would be removed entirely under
+    # --read-only. None remain; the list stays so a future send-only tool
+    # can't slip through unguarded.
     # compose_email, reply_to_email and forward_email stay registered because
     # their "draft" and "open" modes never deliver anything; they refuse
     # mode="send" themselves. Removing them would also take away attachment

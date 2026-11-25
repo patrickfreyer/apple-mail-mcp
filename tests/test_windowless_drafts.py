@@ -250,3 +250,80 @@ class ForwardReadOnlyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifiedSaveTests(unittest.TestCase):
+    """A hidden draft is only reported as saved once it is found in Drafts."""
+
+    def _scripts(self):
+        _, compose = _capture(
+            lambda: compose_tools.compose_email(
+                account="Work", to="a@example.com", subject="S", body="B", mode="draft"
+            )
+        )
+        _, create = _capture(
+            lambda: compose_tools.manage_drafts(
+                account="Work", action="create", subject="S", to="a@example.com", body="B"
+            )
+        )
+        _, forward = _capture(
+            lambda: compose_tools.forward_email(
+                account="Work", to="a@example.com", message_id="42", mode="draft"
+            )
+        )
+        return {
+            "compose": (compose[-1], "✓ Email saved as draft!"),
+            "create": (create[-1], "✓ Draft created successfully!"),
+            "forward": (forward[-1], "Forward saved as draft (not sent)."),
+        }
+
+    def test_snapshot_failure_does_not_block_the_save(self):
+        for name, (script, _) in self._scripts().items():
+            with self.subTest(name):
+                guard = script.index("set draftSnapshotOK to false")
+                snapshot = script.index("set priorDraftIDs to id of every message of drafts mailbox")
+                ok = script.index("set draftSnapshotOK to true")
+                self.assertLess(guard, snapshot)
+                self.assertLess(snapshot, ok)
+                self.assertEqual(script[guard:snapshot].count("try"), 1)
+                self.assertIn("if draftSnapshotOK then", script)
+
+    def test_success_is_claimed_only_with_a_found_draft_id(self):
+        for name, (script, success) in self._scripts().items():
+            with self.subTest(name):
+                self.assertEqual(script.count(success), 1)
+                not_found = script.index('if savedDraftID is "" then')
+                ambiguous = script.index('else if savedDraftID is "ambiguous" then')
+                claimed = script.index(success)
+                self.assertLess(not_found, ambiguous)
+                self.assertLess(ambiguous, claimed)
+                self.assertIn("(not verified)", script[not_found:ambiguous])
+                self.assertIn('"Draft id: " & savedDraftID', script[claimed:])
+                self.assertNotIn("unknown (saved", script)
+
+    def test_lookups_after_save_cannot_raise(self):
+        # An error after `save` would make the tool say "Error" for a draft
+        # that exists, and a retry would create a duplicate.
+        script = compose_tools._save_hidden_draft_script("m")
+        after_save = script[script.index("save m"):]
+        lookup = after_save.index("subject of («class mssg» id candidateID of drafts mailbox)")
+        self.assertIn("try", after_save[:lookup].rsplit("repeat with candidateRef", 1)[1])
+        listing = after_save.index("set currentDraftIDs to id of every message of drafts mailbox")
+        self.assertTrue(after_save[:listing].rstrip().endswith("try"))
+
+    def test_more_than_one_new_match_is_ambiguous(self):
+        script = compose_tools._save_hidden_draft_script("m")
+        self.assertIn("if (count of newDraftIDs) is greater than 1 then", script)
+        self.assertIn('set savedDraftID to "ambiguous"', script)
+
+    def test_forward_skips_attachments_it_cannot_copy(self):
+        script, _ = self._scripts()["forward"]
+        loop = script[script.index("repeat with anAttachment"):]
+        save = loop.index("save anAttachment in (POSIX file attachmentPath)")
+        self.assertIn("try", loop[:save].rsplit("attachmentPath to", 1)[1])
+        self.assertIn("set end of skippedAttachments to attachmentName", loop)
+        self.assertIn('"Original attachments copied: " & copiedCount & " of " & attachmentCount', script)
+        self.assertIn("⚠ Not copied", script)
+        self.assertLess(
+            script.index("set end of skippedAttachments"), script.index("save forwardMessage")
+        )

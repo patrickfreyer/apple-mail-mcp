@@ -667,38 +667,81 @@ def _find_message_script(
 
 # Snapshot the ids in Mail's Drafts mailbox (all accounts) before a hidden
 # draft is created, so the saved copy can be told apart from existing drafts.
+# The snapshot has its own try: a Drafts mailbox Mail can't read must not stop
+# the draft from being saved. Without a snapshot the id lookup is skipped and
+# the result says the draft is unverified.
 _DRAFT_SNAPSHOT_SCRIPT = """
-            set priorDraftIDs to id of every message of drafts mailbox"""
+            set priorDraftIDs to {}
+            set draftSnapshotOK to false
+            try
+                set priorDraftIDs to id of every message of drafts mailbox
+                set draftSnapshotOK to true
+            end try"""
 
 
 def _save_hidden_draft_script(message_var: str) -> str:
     """Save a hidden (visible:false) outgoing message and find its draft id.
 
     ``save`` writes the message to Drafts without opening a window. The new
-    draft is the one id that wasn't in the snapshot and has this subject;
-    if none turns up, ``savedDraftID`` says so instead of giving an id. Needs
-    _DRAFT_SNAPSHOT_SCRIPT to have run before the message was made.
+    draft is the one id that wasn't in the snapshot and has this subject.
+    ``savedDraftID`` stays "" when none turns up (or the snapshot failed);
+    when more than one new draft matches (e.g. Gmail sync copies) it is set
+    to "ambiguous". Lookups after ``save`` never raise, so a caller can't
+    report an error for a draft that was saved (and retry into a duplicate).
+    Needs _DRAFT_SNAPSHOT_SCRIPT to have run before the message was made;
+    print the outcome with _draft_saved_lines.
     """
     return f"""
             set savedDraftSubject to subject of {message_var}
             save {message_var}
             set savedDraftID to ""
-            repeat 40 times
-                delay 0.25
-                set currentDraftIDs to id of every message of drafts mailbox
-                repeat with candidateRef in currentDraftIDs
-                    set candidateID to contents of candidateRef
-                    if priorDraftIDs does not contain candidateID then
-                        if subject of («class mssg» id candidateID of drafts mailbox) is savedDraftSubject then
-                            set savedDraftID to candidateID as string
-                            exit repeat
+            if draftSnapshotOK then
+                repeat 40 times
+                    delay 0.25
+                    set newDraftIDs to {{}}
+                    try
+                        set currentDraftIDs to id of every message of drafts mailbox
+                    on error
+                        set currentDraftIDs to {{}}
+                    end try
+                    repeat with candidateRef in currentDraftIDs
+                        set candidateID to contents of candidateRef
+                        if priorDraftIDs does not contain candidateID then
+                            try
+                                if subject of («class mssg» id candidateID of drafts mailbox) is savedDraftSubject then
+                                    set end of newDraftIDs to candidateID
+                                end if
+                            end try
                         end if
+                    end repeat
+                    if (count of newDraftIDs) is greater than 1 then
+                        set savedDraftID to "ambiguous"
+                        exit repeat
+                    end if
+                    if (count of newDraftIDs) is 1 then
+                        set savedDraftID to (item 1 of newDraftIDs) as string
+                        exit repeat
                     end if
                 end repeat
-                if savedDraftID is not "" then exit repeat
-            end repeat
-            if savedDraftID is "" then set savedDraftID to "unknown (saved, but not yet listed in Drafts)"
+            end if
 """
+
+
+def _draft_saved_lines(success_text: str) -> str:
+    """AppleScript that reports a hidden draft save, by what was verified.
+
+    Claims success with a draft id only when the new draft was found in
+    Drafts; otherwise says the save was issued but not verified.
+    """
+    return f"""
+            if savedDraftID is "" then
+                set outputText to outputText & "⚠ Save was issued, but the new draft did not show up in Drafts within 10 s (not verified). Check Drafts before retrying." & return
+            else if savedDraftID is "ambiguous" then
+                set outputText to outputText & "⚠ Saved, but more than one new draft with this subject appeared in Drafts, so its id is not certain. Check Drafts before retrying." & return
+            else
+                set outputText to outputText & "{success_text}" & return
+                set outputText to outputText & "Draft id: " & savedDraftID & return
+            end if"""
 
 
 def _verify_saved_reply_body(
@@ -1329,7 +1372,7 @@ def compose_email(
 
     # Determine behavior per mode
     snapshot_script = ""
-    draft_id_line = ""
+    result_lines = ""
     if mode == "send":
         header_text = "COMPOSING EMAIL"
         visible = "false"
@@ -1348,7 +1391,10 @@ def compose_email(
         snapshot_script = _DRAFT_SNAPSHOT_SCRIPT
         send_command = _save_hidden_draft_script("newMessage")
         success_text = "✓ Email saved as draft!"
-        draft_id_line = 'set outputText to outputText & "Draft id: " & savedDraftID & return'
+        result_lines = _draft_saved_lines(success_text)
+
+    if not result_lines:
+        result_lines = f'set outputText to outputText & "{success_text}" & return'
 
     script = f'''
     tell application "Mail"
@@ -1378,8 +1424,7 @@ def compose_email(
             -- Send, save as draft, or leave open for review
             {send_command}
 
-            set outputText to outputText & "{success_text}" & return
-            {draft_id_line}
+            {result_lines}
             set outputText to outputText & "To: {safe_to}" & return
             set outputText to outputText & "Subject: {escaped_subject}" & return
     '''
@@ -1482,6 +1527,8 @@ tell application "Mail"
 
             -- Copy each original attachment (own folder, so equal names can't clash)
             set attachmentCount to 0
+            set copiedCount to 0
+            set skippedAttachments to {{}}
             repeat with anAttachment in (mail attachments of foundMessage)
                 set attachmentCount to attachmentCount + 1
                 set attachmentFolder to "{escape_applescript(attachment_dir)}/" & attachmentCount
@@ -1496,19 +1543,31 @@ tell application "Mail"
                 set AppleScript's text item delimiters to ""
                 if attachmentName is "" or attachmentName is "." or attachmentName is ".." then set attachmentName to "attachment"
                 set attachmentPath to attachmentFolder & "/" & attachmentName
-                save anAttachment in (POSIX file attachmentPath)
-                tell forwardMessage
-                    make new attachment with properties {{file name:(POSIX file attachmentPath)}} at after the last paragraph
-                end tell
-                delay 1
+                -- One attachment that can't be saved (e.g. not downloaded yet
+                -- on IMAP) must not lose the whole draft: skip and report it.
+                try
+                    save anAttachment in (POSIX file attachmentPath)
+                    tell forwardMessage
+                        make new attachment with properties {{file name:(POSIX file attachmentPath)}} at after the last paragraph
+                    end tell
+                    set copiedCount to copiedCount + 1
+                    delay 1
+                on error
+                    set end of skippedAttachments to attachmentName
+                end try
             end repeat
             {_save_hidden_draft_script("forwardMessage")}
 
-            set outputText to outputText & "Forward saved as draft (not sent)." & return
-            set outputText to outputText & "Draft id: " & savedDraftID & return
+            {_draft_saved_lines("Forward saved as draft (not sent).")}
             set outputText to outputText & "To: {escape_applescript(to)}" & return
             set outputText to outputText & "Subject: " & forwardSubject & return
-            set outputText to outputText & "Original attachments copied: " & attachmentCount & return
+            set outputText to outputText & "Original attachments copied: " & copiedCount & " of " & attachmentCount & return
+            if (count of skippedAttachments) > 0 then
+                set AppleScript's text item delimiters to ", "
+                set skippedText to skippedAttachments as string
+                set AppleScript's text item delimiters to ""
+                set outputText to outputText & "⚠ Not copied (could not be saved from the original): " & skippedText & return
+            end if
         end if
     on error errMsg
         return "Error: " & errMsg
@@ -1948,8 +2007,7 @@ def manage_drafts(
                 -- Save to Drafts (don't send). The message stays hidden.
                 {_save_hidden_draft_script("newDraft")}
 
-                set outputText to outputText & "✓ Draft created successfully!" & return & return
-                set outputText to outputText & "Draft id: " & savedDraftID & return
+                {_draft_saved_lines("✓ Draft created successfully!")}
                 set outputText to outputText & "Subject: {escaped_subject}" & return
                 set outputText to outputText & "To: {safe_to}" & return
 
